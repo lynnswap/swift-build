@@ -219,6 +219,7 @@ private struct ListSessionsHandler: MessageHandler {
 private struct WaitForQuiescenceHandler: MessageHandler {
     func handle(request: Request, message: WaitForQuiescenceRequest) async throws -> VoidResponse {
         let session = try request.session(for: message)
+        await session.dependencyGraphRequestCoordinator.waitForQuiescence()
         await session.buildDescriptionManager.waitForBuildDescriptionSerialization()
         return VoidResponse()
     }
@@ -227,6 +228,7 @@ private struct WaitForQuiescenceHandler: MessageHandler {
 private struct DeleteSessionHandler: MessageHandler {
     func handle(request: Request, message: DeleteSessionRequest) async throws -> VoidResponse {
         let session = try request.session(for: message)
+        await session.dependencyGraphRequestCoordinator.close()
         await session.buildDescriptionManager.waitForBuildDescriptionSerialization()
         request.buildService.sessionMap.removeValue(forKey: session.UID)
         return VoidResponse()
@@ -315,6 +317,8 @@ private struct SetSessionSystemInfoMsg: MessageHandler {
             throw MsgParserError.missingWorkspaceContext
         }
 
+        session.dependencyGraphRequestCoordinator.cancelAll()
+
         // Update the workspace context.
         workspaceContext.updateSystemInfo(SystemInfo(operatingSystemVersion: message.operatingSystemVersion, productBuildVersion: message.productBuildVersion, nativeArchitecture: message.nativeArchitecture))
 
@@ -334,6 +338,8 @@ private struct SetSessionUserInfoMsg: MessageHandler {
             var fs: any FSProxy
         }
 
+        session.dependencyGraphRequestCoordinator.cancelAll()
+
         // Update the workspace context.
         workspaceContext.updateUserInfo(UserInfo(user: message.user, group: message.group, uid: message.uid, gid: message.gid, home: Path(message.home), processEnvironment: message.processEnvironment, buildSystemEnvironment: message.buildSystemEnvironment))
 
@@ -348,6 +354,7 @@ private struct SetSessionUserPreferencesMsg: MessageHandler {
             throw MsgParserError.missingWorkspaceContext
         }
 
+        session.dependencyGraphRequestCoordinator.cancelAll()
         workspaceContext.updateUserPreferences(UserPreferences(
             enableDebugActivityLogs: message.enableDebugActivityLogs,
             enableBuildDebugging: message.enableBuildDebugging,

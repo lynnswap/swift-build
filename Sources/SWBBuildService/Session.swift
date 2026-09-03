@@ -149,8 +149,16 @@ public final class Session {
     /// The unique ID of the session.
     let UID: String
 
+    package let dependencyGraphRequestCoordinator = DependencyGraphRequestCoordinator()
+
     /// The active workspace session
-    public internal(set) var workspaceContext: WorkspaceContext?
+    public internal(set) var workspaceContext: WorkspaceContext? {
+        willSet {
+            if workspaceContext !== newValue {
+                dependencyGraphRequestCoordinator.cancelAll()
+            }
+        }
+    }
 
     /// The incremental PIF loader.
     private let incrementalPIFLoader: IncrementalPIFLoader
