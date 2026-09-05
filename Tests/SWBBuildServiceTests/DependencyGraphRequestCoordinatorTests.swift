@@ -107,6 +107,9 @@ import Testing
         } completion: { _ in
         }
 
+        await firstForegroundStarted.wait()
+        await secondForegroundStarted.wait()
+
         firstCoordinator.submit(lane: .foreground, priority: .userInitiated) {
             activity.begin("foreground-queued")
             defer { activity.end("foreground-queued") }
@@ -114,9 +117,6 @@ import Testing
             return makeResponse("foreground-queued")
         } completion: { _ in
         }
-
-        await firstForegroundStarted.wait()
-        await secondForegroundStarted.wait()
 
         #expect(activity.startCount("index-b") == 0)
         #expect(activity.startCount("foreground-queued") == 0)
@@ -141,6 +141,7 @@ import Testing
         let coordinator = makeCoordinator()
         let activeStarted = WaitCondition()
         let releaseActive = WaitCondition()
+        let cancellationObserved = WaitCondition()
         let activity = ActivityRecorder()
         let sequence = SequenceRecorder()
         let lifecycleDriver = LifecycleDriver()
@@ -153,7 +154,11 @@ import Testing
             defer { activity.end("active") }
             sequence.record("operation-started")
             activeStarted.signal()
-            await releaseActive.wait()
+            await withTaskCancellationHandler {
+                await releaseActive.wait()
+            } onCancel: {
+                cancellationObserved.signal()
+            }
             sequence.record("operation-finished")
             return makeResponse("late-success")
         } completion: {
@@ -176,8 +181,9 @@ import Testing
             await lifecycleDriver.close(coordinator, sequence: sequence)
         }
 
-        await activeRecorder.received.wait()
+        await cancellationObserved.wait()
         await queuedRecorder.received.wait()
+        #expect(activeRecorder.outcomes.isEmpty)
 
         coordinator.submit(lane: .index, priority: .utility) {
             Issue.record("A closed coordinator must not start new work")
@@ -197,11 +203,12 @@ import Testing
         #expect(lateRecorder.outcomes == [.cancelled])
         #expect(activity.startCount("active") == 1)
         #expect(activity.startCount("queued") == 0)
-        #expect(sequence.index(of: "operation-finished") < sequence.index(of: "close-returned"))
+        #expect(sequence.index(of: "operation-finished") < sequence.index(of: "active-reply"))
+        #expect(sequence.index(of: "active-reply") < sequence.index(of: "close-returned"))
     }
 
     @Test
-    func closeWaitsForCommittedReplyWithoutCancellingIt() async {
+    func closeWaitsForCommittedReplyAndPreservesItsOutcome() async {
         let coordinator = makeCoordinator()
         let releaseReply = DispatchSemaphore(value: 0)
         let replyStarted = WaitCondition()
@@ -274,6 +281,86 @@ import Testing
 
         #expect(sequence.index(of: "reply-started") < sequence.index(of: "reply-finished"))
         #expect(sequence.index(of: "reply-finished") < sequence.index(of: "quiescence-returned"))
+    }
+
+    @Test
+    func closeDoesNotWaitForAnotherSessionsIndexOperation() async throws {
+        let indexQueue = AsyncOperationQueue(concurrentTasks: 1)
+        let started = WaitCondition()
+        let release = WaitCondition()
+        let blocker = _Concurrency.Task {
+            try await indexQueue.withOperation {
+                started.signal()
+                await release.wait()
+            }
+        }
+        await started.wait()
+
+        let coordinator = makeCoordinator(indexQueue: indexQueue)
+        let recorder = OutcomeRecorder()
+        coordinator.submit(lane: .index, priority: .utility) {
+            Issue.record("A cancelled queued request must not enter graph construction")
+            return makeResponse("unexpected")
+        } completion: {
+            recorder.record($0)
+        }
+
+        await coordinator.close()
+        #expect(recorder.outcomes == [.cancelled])
+        release.signal()
+        try await blocker.value
+    }
+
+    @Test
+    func deinitRepliesBeforeActiveOperationFinishes() async throws {
+        var coordinator: DependencyGraphRequestCoordinator? = makeCoordinator()
+        let started = WaitCondition()
+        let release = WaitCondition()
+        let finished = WaitCondition()
+        let recorder = OutcomeRecorder()
+
+        try #require(coordinator).submit(lane: .foreground, priority: .userInitiated) {
+            started.signal()
+            await release.wait()
+            finished.signal()
+            return makeResponse("late-success")
+        } completion: {
+            recorder.record($0)
+        }
+
+        await started.wait()
+        coordinator = nil
+        #expect(recorder.outcomes == [.cancelled])
+        release.signal()
+        await finished.wait()
+    }
+
+    @Test
+    func concurrentSubmissionAndCloseReplyExactlyOnce() async {
+        let coordinator = makeCoordinator()
+        let replyCounts = SWBMutex<[Int: Int]>([:])
+
+        await withTaskGroup(of: Void.self) { group in
+            for id in 0..<128 {
+                group.addTask {
+                    coordinator.submit(lane: id.isMultiple(of: 2) ? .index : .foreground, priority: .medium) {
+                        await _Concurrency.Task.yield()
+                        return makeResponse(String(id))
+                    } completion: { _ in
+                        replyCounts.withLock { $0[id, default: 0] += 1 }
+                    }
+                }
+                if id.isMultiple(of: 16) {
+                    group.addTask {
+                        await coordinator.close()
+                    }
+                }
+            }
+        }
+        await coordinator.close()
+
+        #expect(replyCounts.withLock { $0.count } == 128)
+        #expect(replyCounts.withLock { $0.values.allSatisfy { $0 == 1 } })
     }
 }
 

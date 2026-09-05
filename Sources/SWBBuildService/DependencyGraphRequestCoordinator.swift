@@ -34,16 +34,9 @@ package final class DependencyGraphRequestCoordinator: Sendable {
         let completion: Completion
     }
 
-    private struct DrainingTask: Sendable {
-        let task: _Concurrency.Task<Void, Never>
-        var operationFinished: Bool
-        var replyFinished: Bool
-    }
-
     private struct State: ~Copyable {
         var acceptsNewOperations = true
         var operations: [UUID: Operation] = [:]
-        var drainingTasks: [UUID: DrainingTask] = [:]
     }
 
     // Index graph requests are background work and can arrive from multiple sessions at once.
@@ -60,7 +53,16 @@ package final class DependencyGraphRequestCoordinator: Sendable {
     }
 
     deinit {
-        _ = beginClose()
+        // Request.service is unowned, so pending replies must not outlive session
+        // teardown. A task calling finish retains this coordinator through its reply;
+        // once deinit starts, the remaining tasks cannot promote their weak reference.
+        let operations = state.withLock { Array($0.operations.values) }
+        for operation in operations {
+            operation.task.cancel()
+        }
+        for operation in operations {
+            operation.completion(.cancelled)
+        }
     }
 
     package func submit(
@@ -95,7 +97,7 @@ package final class DependencyGraphRequestCoordinator: Sendable {
                 } catch {
                     outcome = .failure(String(describing: error))
                 }
-                self?.finish(id: id, outcome: outcome)
+                self?.finish(id: id, outcome: outcome, completion: completion)
             }
             state.operations[id] = Operation(task: task, completion: completion)
             return false
@@ -107,11 +109,16 @@ package final class DependencyGraphRequestCoordinator: Sendable {
     }
 
     package func close() async {
-        let tasks = beginClose()
+        let tasks = state.withLock { state in
+            state.acceptsNewOperations = false
+            return state.operations.values.map(\.task)
+        }
+        for task in tasks {
+            task.cancel()
+        }
         for task in tasks {
             await task.value
         }
-        await waitForQuiescence()
     }
 
     package func waitForQuiescence() async {
@@ -123,7 +130,7 @@ package final class DependencyGraphRequestCoordinator: Sendable {
         // arbitrary concurrent callers.
         while true {
             let tasks = state.withLock { state in
-                Array(state.operations.values.map(\.task)) + Array(state.drainingTasks.values.map(\.task))
+                state.operations.values.map(\.task)
             }
             if tasks.isEmpty {
                 return
@@ -134,72 +141,15 @@ package final class DependencyGraphRequestCoordinator: Sendable {
         }
     }
 
-    private func finish(id: UUID, outcome: Outcome) {
-        let completion = state.withLock { state -> Completion? in
-            if let operation = state.operations.removeValue(forKey: id) {
-                state.drainingTasks[id] = DrainingTask(task: operation.task, operationFinished: true, replyFinished: false)
-                return operation.completion
-            }
-
-            if var drainingTask = state.drainingTasks[id] {
-                drainingTask.operationFinished = true
-                if drainingTask.replyFinished {
-                    state.drainingTasks.removeValue(forKey: id)
-                } else {
-                    state.drainingTasks[id] = drainingTask
-                }
-            }
-            return nil
+    private func finish(id: UUID, outcome: Outcome, completion: Completion) {
+        let committedOutcome = state.withLock { state in
+            state.acceptsNewOperations ? outcome : .cancelled
         }
-        if let completion {
-            completion(outcome)
-            markRepliesFinished(for: [id])
-        }
-    }
-
-    private func beginClose() -> [_Concurrency.Task<Void, Never>] {
-        let cancelled = state.withLock { state -> (ids: [UUID], tasks: [_Concurrency.Task<Void, Never>], completions: [Completion]) in
-            state.acceptsNewOperations = false
-
-            var cancelledIDs: [UUID] = []
-            var tasks: [_Concurrency.Task<Void, Never>] = []
-            var completions: [Completion] = []
-            let ids = Array(state.operations.keys)
-            for id in ids {
-                guard let operation = state.operations.removeValue(forKey: id) else {
-                    continue
-                }
-                cancelledIDs.append(id)
-                tasks.append(operation.task)
-                completions.append(operation.completion)
-                state.drainingTasks[id] = DrainingTask(task: operation.task, operationFinished: false, replyFinished: false)
-            }
-            return (cancelledIDs, tasks, completions)
-        }
-
-        for task in cancelled.tasks {
-            task.cancel()
-        }
-        for completion in cancelled.completions {
-            completion(.cancelled)
-        }
-        markRepliesFinished(for: cancelled.ids)
-        return cancelled.tasks
-    }
-
-    private func markRepliesFinished(for ids: [UUID]) {
+        // Keep the task registered through the callback so close and quiescence
+        // cannot return while a terminal reply is still being sent.
+        completion(committedOutcome)
         state.withLock { state in
-            for id in ids {
-                guard var drainingTask = state.drainingTasks[id] else {
-                    continue
-                }
-                drainingTask.replyFinished = true
-                if drainingTask.operationFinished {
-                    state.drainingTasks.removeValue(forKey: id)
-                } else {
-                    state.drainingTasks[id] = drainingTask
-                }
-            }
+            state.operations[id] = nil
         }
     }
 }
