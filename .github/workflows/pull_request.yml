@@ -1,164 +1,93 @@
-name: Pull request
+name: Fork PR validation
+
+on:
+  pull_request:
+    branches: [validation/upstream-main]
+    types: [opened, reopened, synchronize]
 
 permissions:
   contents: read
 
-on:
-  pull_request:
-    types: [opened, reopened, synchronize]
-
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: fork-pr-validation-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
-  tests:
-    name: Test
-    uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.14
-    needs: [soundness, space-format-check]
-    with:
-      enable_cross_pr_testing: true
-      linux_os_versions: '["bookworm", "noble", "jammy", "rhel-ubi9"]'
-      linux_pre_build_command: ./.github/scripts/prebuild.sh
-      linux_build_command: 'swift test --no-parallel'
-      linux_swift_versions: '["nightly-main", "nightly-6.4.x"]'
-      linux_host_archs: '["x86_64", "aarch64"]'
-      freebsd_pre_build_command: ./.github/scripts/prebuild.sh
-      freebsd_build_command: 'swift test --no-parallel'
-      enable_freebsd_checks: true
-      windows_build_timeout: 180
-      windows_pre_build_command: 'Invoke-Program .\.github\scripts\prebuild.ps1'
-      windows_swift_versions: '["nightly-main", "nightly-6.4.x"]'
-      windows_build_command: 'Invoke-Program swift test --no-parallel'
-      enable_linux_static_sdk_build: true
-      enable_android_sdk_build: true
-      android_sdk_build_command: "swift build --build-tests"
-      android_ndk_versions: '["r27d", "r29"]'
-      linux_static_sdk_build_command: SWIFTBUILD_STATIC_LINK=1 LLBUILD_STATIC_LINK=1 swift build
-      enable_ios_checks: true
-      enable_macos_checks: true
-      macos_xcode_versions: '["swift_6.3", "swift_6.4"]'
-      ios_host_xcode_versions: '["swift_6.4"]'
-      macos_pre_build_command: ./.github/scripts/prebuild.sh
-      macos_build_command:
-        swift test &&
-        /usr/bin/xcrun xcodebuild -workspace . -scheme SwiftBuild-Package -destination generic/platform=iOS
-  tests_without_docker:
-    name: Test without Docker
-    uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.14
-    needs: [soundness, space-format-check]
-    with:
-      enable_linux_checks: false
-      enable_windows_docker: false
-      windows_build_timeout: 180
-      windows_pre_build_command: 'Invoke-Program .\.github\scripts\prebuild.ps1'
-      windows_swift_versions: '["nightly-main", "nightly-6.4.x"]'
-      windows_build_command: 'Invoke-Program swift test --no-parallel'
-      windows_os_versions: '["windows-2022", "windows-11-arm"]'
-  cmake-smoke-test:
-    name: cmake-smoke-test
-    uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.14
-    needs: [soundness, space-format-check]
-    with:
-      linux_os_versions: '["noble"]'
-      linux_pre_build_command: SKIP_ANDROID=1 INSTALL_CMAKE=1 ./.github/scripts/prebuild.sh
-      linux_build_command: 'swift package -Xbuild-tools-swiftc -DUSE_PROCESS_SPAWNING_WORKAROUND cmake-smoke-test --disable-sandbox --cmake-path `which cmake` --ninja-path `which ninja` --extra-cmake-arg -DCMAKE_C_COMPILER=`which clang` --extra-cmake-arg -DCMAKE_CXX_COMPILER=`which clang++` --extra-cmake-arg -DCMAKE_Swift_COMPILER=`which swiftc`'
-      linux_swift_versions: '["nightly-main"]'
-      linux_host_archs: '["x86_64", "aarch64"]'
-      enable_macos_checks: true
-      macos_xcode_versions: '["swift_6.4"]'
-      macos_pre_build_command: SKIP_ANDROID=1 INSTALL_CMAKE=1 ./.github/scripts/prebuild.sh
-      macos_build_command: 'export PATH=$PATH:$RUNNER_TOOL_CACHE && swift package cmake-smoke-test --disable-sandbox --cmake-path `which cmake` --ninja-path `which ninja` --extra-cmake-arg -DCMAKE_C_COMPILER=`which clang` --extra-cmake-arg -DCMAKE_CXX_COMPILER=`which clang++` --extra-cmake-arg -DCMAKE_Swift_COMPILER=`which swiftc`'
-      windows_build_timeout: 180
-      windows_pre_build_command: 'Invoke-Program .\.github\scripts\prebuild.ps1 -SkipAndroid -InstallCMake'
-      windows_swift_versions: '["nightly-main"]'
-      windows_build_command: 'Invoke-Program swift package cmake-smoke-test --disable-sandbox --cmake-path (Get-Command cmake).Path --ninja-path (Get-Command ninja).Path --extra-cmake-arg "-DCMAKE_C_COMPILER=$((Get-Command clang).Path)" --extra-cmake-arg "-DCMAKE_CXX_COMPILER=$((Get-Command clang).Path)" --extra-cmake-arg "-DCMAKE_Swift_COMPILER=$((Get-Command swiftc).Path)" --extra-cmake-arg "-DCMAKE_STATIC_LIBRARY_PREFIX_Swift=lib" --extra-cmake-arg "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL"'
-  wasm-integration-tests:
-    name: Wasm Integration Tests
-    uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.14
-    needs: [soundness, space-format-check]
-    with:
-      enable_linux_checks: false
-      enable_windows_checks: false
-      enable_macos_checks: false
-      enable_wasm_sdk_build: true
-      wasm_sdk_versions: '["nightly-main"]'
-      wasm_sdk_pre_build_command: SKIP_ANDROID=1 ./.github/scripts/prebuild.sh
-      # This is a hack - replace the build command with a test command and drop the --swift-sdk arg the workflow appends.
-      wasm_sdk_build_command: "swift test --filter WebAssemblyIntegrationTests #"
-  static-linux-sdk-integration-tests:
-    name: Static Linux SDK Integration Tests
-    uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.14
-    needs: [soundness, space-format-check]
-    with:
-      enable_linux_checks: false
-      enable_windows_checks: false
-      enable_macos_checks: false
-      enable_linux_static_sdk_build: true
-      linux_static_sdk_versions: '["nightly-main"]'
-      linux_static_sdk_pre_build_command: SKIP_ANDROID=1 ./.github/scripts/prebuild.sh
-      # This is a hack - replace the build command with a test command and drop the --swift-sdk arg the workflow appends.
-      linux_static_sdk_build_command: "swift test --filter StaticLinuxSDKIntegrationTests #"
-  swiftpm-self-hosted-tests:
-    name: Test SwiftPM
-    needs: [soundness, space-format-check]
-    uses: swiftlang/github-workflows/.github/workflows/swift_package_test.yml@0.0.14
-    with:
-      linux_os_versions: '["jammy"]'
-      linux_swift_versions: '["nightly-main"]'
-      linux_pre_build_command: ./.github/scripts/prebuild.sh && ./.github/scripts/clone-swiftpm-deps.sh "${{ github.base_ref }}"
-      linux_build_command: 'SWIFTCI_USE_LOCAL_DEPS=1 swift test --package-path ../swiftpm'
-      enable_macos_checks: true
-      macos_build_timeout: 90
-      macos_xcode_versions: '["swift_6.4"]'
-      macos_pre_build_command: ./.github/scripts/prebuild.sh && ./.github/scripts/clone-swiftpm-deps.sh "${{ github.base_ref }}"
-      macos_build_command: 'SWIFTCI_USE_LOCAL_DEPS=1 swift test --package-path ../swiftpm --skip testSDKTracking'
-      enable_windows_checks: false
-
-  soundness:
-    name: Soundness
-    uses: swiftlang/github-workflows/.github/workflows/soundness.yml@0.0.14
-    with:
-      license_header_check_project_name: "Swift"
-      api_breakage_check_enabled: false
-      format_check_enabled: false
-
-  space-format-check:
-    name: Space format check
-    runs-on: ubuntu-latest
+  format:
+    name: Format and merge contents
+    if: github.repository == 'lynnswap/swift-build'
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      - name: Run space format check
-        run: cat .github/scripts/format-check.sh | bash
-
-  build-verdicts:
-    name: Build Verdicts
-    runs-on: ubuntu-latest
-    needs:
-      - tests
-      - tests_without_docker
-      - cmake-smoke-test
-      - wasm-integration-tests
-      - static-linux-sdk-integration-tests
-      - swiftpm-self-hosted-tests
-      - soundness
-      - space-format-check
-    if: always()  # Runs even if previous jobs fail so it can evaluate them
-    steps:
-      - name: Install required tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends coreutils jq
-      - name: Check upstream job statuses
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Verify the tested merge contains the submitted code
         env:
-          NEEDS_JSON: ${{ toJSON(needs) }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          failed=$(printf '%s' "$NEEDS_JSON" | jq -r 'to_entries | map(select(.value.result != "success")) | .[] | "\(.key): \(.value.result)"')
-          if [ -n "$failed" ]; then
-            echo "The following required jobs did not succeed:"
-            printf '%s\n' "$failed"
-            exit 1
-          fi
-          echo "All required jobs passed successfully!"
+          git rev-parse HEAD
+          git diff --exit-code "$PR_HEAD_SHA" HEAD -- . ':!.github/workflows/pull_request.yml'
+      - name: Check formatting
+        run: bash .github/scripts/format-check.sh
+
+  macos:
+    name: macOS full suite (Xcode 27)
+    if: github.repository == 'lynnswap/swift-build'
+    runs-on: xcode-27
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Record toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+      - name: Run full test suite
+        run: swift test --disable-sandbox --jobs 3
+
+  macos-tsan:
+    name: macOS coordinator TSan (100 repetitions)
+    if: github.repository == 'lynnswap/swift-build'
+    runs-on: xcode-27
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+      LIBDISPATCH_COOPERATIVE_POOL_STRICT: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Record toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+      - name: Run coordinator tests with Thread Sanitizer
+        run: >-
+          swift test --disable-sandbox --jobs 3
+          --sanitize thread
+          --filter DependencyGraphRequestCoordinatorTests
+          --maximum-repetitions 100 --repeat-until fail
+
+  linux:
+    name: Linux full suite (Swift 6.4 nightly)
+    if: github.repository == 'lynnswap/swift-build'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container: swiftlang/swift:nightly-6.4.x-noble
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install build dependencies
+        env:
+          SKIP_ANDROID: '1'
+        run: bash .github/scripts/prebuild.sh
+      - name: Record toolchain
+        run: swift --version
+      - name: Run full test suite
+        run: swift test --no-parallel --jobs 4
