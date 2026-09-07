@@ -9,3 +9,5 @@
 .swift-version
 CODEOWNERS
 Package.swift
+Utilities/CustomXcodeBuildService/Distribution/ServiceDependencies.resolved
+Utilities/CustomXcodeBuildService/Distribution/install.sh.in
