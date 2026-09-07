@@ -30,7 +30,9 @@ If you have already downloaded and verified the archive, extract it and run this
 
 The installation lives in `~/Library/Developer/CustomXcodeBuildService`. Each release has its own directory under `versions`, and the `current` symlink selects the release. The command is made available at `~/.local/bin/custom-xcode-build-service`.
 
-Quit and reopen Xcode after installation. You can then continue to open workspaces from Finder or use your usual Xcode shortcut. The command does not close Xcode or stop builds for you.
+After installation, quit and reopen **Xcode, your terminal application, and AI agent applications**. Start terminal-based agents from the restarted terminal application; opening a new window in an already-running terminal app may retain the old environment. Their child processes, including `make` and `xcodebuild`, inherit the selected service environment.
+
+You can then continue to open workspaces from Finder or use your usual Xcode shortcut. The command does not close applications or stop builds for you.
 
 ## Check the selected service
 
@@ -46,7 +48,7 @@ A LaunchAgent at `~/Library/LaunchAgents/io.github.lynnswap.custom-xcode-build-s
 
 ## Update or remove
 
-To update, run the new release's `install.sh`. The new release is prepared before the selected version is changed. Old version directories remain available to processes that still use them. Restart Xcode to start using the new version.
+To update, run the new release's `install.sh`. The new release is prepared before the selected version is changed. Old version directories remain available to processes that still use them. Restart Xcode, terminal applications, and AI agents to start using the new version.
 
 To restore Xcode's bundled service, first quit Xcode and allow any command-line builds using the custom service to finish, then run:
 
@@ -56,16 +58,7 @@ To restore Xcode's bundled service, first quit Xcode and allow any command-line 
 
 Uninstall removes the tool's login configuration, environment selection, command, and release payloads. It refuses to remove files while your Xcode, `xcodebuild`, or an installed service is running. It remains available if Xcode has been updated or removed. The installation directory retains only `.owner` and `.lock`, so simultaneous commands and later reinstalls continue to share the same lock.
 
-An already-running terminal does not receive changes to the launchd environment. Restart terminal sessions that inherited the old selection. For a build from an existing terminal, explicitly pass the selected environment:
-
-```sh
-(
-    service_path="$(launchctl getenv XCBBUILDSERVICE_PATH)"
-    test -x "$service_path" || { echo "No installed custom service is selected." >&2; exit 1; }
-    env XCBBUILDSERVICE_PATH="$service_path" DisableConcurrentDependencyResolution=0 \
-        xcodebuild -workspace MyApp.xcworkspace -scheme MyApp build
-)
-```
+After uninstalling, restart terminal and AI agent applications that inherited the custom selection before running command-line builds again. Already-running processes are not updated retroactively.
 
 ## Build and package a release
 

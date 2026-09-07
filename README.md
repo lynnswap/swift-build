@@ -5,6 +5,8 @@ Swift Build is a high-level build system based on [llbuild](https://github.com/s
 
 For this fork's optional prebuilt service and management command, see [Custom Xcode Build Service](Utilities/CustomXcodeBuildService.md).
 
+After installing or updating it, quit and reopen Xcode, your terminal application, and AI agent applications. Start terminal-based agents from the restarted terminal so their command-line builds inherit the new environment.
+
 Usage
 -----
 
