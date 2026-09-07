@@ -62,16 +62,17 @@ After uninstalling, restart terminal and AI agent applications that inherited th
 
 ## Build and package a release
 
-Release creation requires committed source and Xcode 27. The build runs from an isolated copy of `HEAD` (or the explicit `--revision` commit) and uses the pinned service dependencies in `.github/custom-build-service/ServiceDependencies.resolved`. Uncommitted edits are not part of the release. The developer's checkout and `Package.resolved` are not rewritten.
+Release creation requires committed source and Xcode 27. The build runs from an isolated copy of `HEAD` (or the explicit `--revision` commit) and uses the pinned service dependencies in `Distribution/ServiceDependencies.resolved`. Uncommitted edits are not part of the release. The developer's checkout and `Package.resolved` are not rewritten.
 
-From the repository root, use new or empty output directories:
+Build, package, and verify are subcommands of `Distribution/release.py`. From the repository root, use new or empty output directories:
 
 ```sh
-Utilities/build-custom-xcode-build-service.sh \
+cd Utilities/CustomXcodeBuildService
+python3 Distribution/release.py build \
     --version custom-v0.1.0 --output-dir /tmp/custom-service-build
-Utilities/package-custom-xcode-build-service.sh \
+python3 Distribution/release.py package \
     --build-dir /tmp/custom-service-build --output-dir /tmp/custom-service-release
-Utilities/verify-custom-xcode-build-service.sh \
+python3 Distribution/release.py verify \
     --release-dir /tmp/custom-service-release
 ```
 
@@ -89,10 +90,11 @@ The **Custom Xcode build service** GitHub Actions workflow builds and verifies a
 
 The management command is a separate macOS-only Swift package. It does not import the build-system libraries: installing a local tool has different platform and dependency requirements from Swift Build's cross-platform package. The two executables share a release archive and manifest, not a Swift API.
 
+Run development checks from the repository root:
+
 ```sh
 swift test --package-path Utilities/CustomXcodeBuildService
-python3 Utilities/Tests/test_custom_xcode_build_service_installer.py
-python3 -m unittest discover -s .github/custom-build-service -p 'test_*.py'
+python3 -m unittest discover -s Utilities/CustomXcodeBuildService/Distribution/tests -p 'test_*.py'
 ```
 
 The management tests use temporary installation directories and a command runner at the process boundary. They do not change your login environment or stop Xcode.

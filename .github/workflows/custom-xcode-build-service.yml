@@ -6,9 +6,7 @@ on:
       - 'Package.swift'
       - 'Sources/**'
       - 'Utilities/CustomXcodeBuildService/**'
-      - 'Utilities/Tests/test_custom_xcode_build_service_installer.py'
-      - 'Utilities/*custom-xcode-build-service*'
-      - '.github/custom-build-service/**'
+      - '.github/actionlint.yaml'
       - '.github/workflows/custom-xcode-build-service*.yml'
   push:
     tags:
@@ -46,23 +44,20 @@ jobs:
           persist-credentials: false
       - name: Check distribution scripts
         run: |
-          bash -n Utilities/build-custom-xcode-build-service.sh
-          bash -n Utilities/package-custom-xcode-build-service.sh
-          bash -n Utilities/verify-custom-xcode-build-service.sh
-          bash -n Utilities/install-custom-xcode-build-service.sh.in
-          python3 -m unittest discover -s .github/custom-build-service -p 'test_*.py'
-          python3 Utilities/Tests/test_custom_xcode_build_service_installer.py
+          sh -n Utilities/CustomXcodeBuildService/Distribution/install.sh.in
+          python3 -m unittest discover -s Utilities/CustomXcodeBuildService/Distribution/tests -p 'test_*.py'
       - name: Build committed service and management CLI
         run: |
-          Utilities/build-custom-xcode-build-service.sh \
+          python3 Utilities/CustomXcodeBuildService/Distribution/release.py build \
             --version "$RELEASE_VERSION" --output-dir "$RUNNER_TEMP/custom-service-build" --jobs 2
       - name: Package binaries, resources, and licenses
         run: |
-          Utilities/package-custom-xcode-build-service.sh \
+          python3 Utilities/CustomXcodeBuildService/Distribution/release.py package \
             --build-dir "$RUNNER_TEMP/custom-service-build" --output-dir "$RUNNER_TEMP/custom-service-release"
       - name: Verify archive and relocated Xcode build
         run: |
-          Utilities/verify-custom-xcode-build-service.sh --release-dir "$RUNNER_TEMP/custom-service-release"
+          python3 Utilities/CustomXcodeBuildService/Distribution/release.py verify \
+            --release-dir "$RUNNER_TEMP/custom-service-release"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: custom-xcode-build-service-release
