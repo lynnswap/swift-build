@@ -42,20 +42,22 @@ func rejectsInvalidReleaseVersions(version: String) throws {
     let fixture = try Fixture()
     let package = try fixture.package("custom-v1.0.0")
     try FileManager.default.removeItem(at: package.appendingPathComponent("libexec/swift-build/SwiftBuild_SWBCore.bundle"))
-    #expect(throws: ServiceError.self) { try ReleasePackage(directory: package) }
+    #expect(throws: (any Error).self) { try fixture.manager.install(from: package) }
     let additional = try fixture.package("custom-v1.0.1")
     try fixture.write("unexpected", to: additional.appendingPathComponent("extra"))
-    #expect(throws: ServiceError.self) { try ReleasePackage(directory: additional) }
+    #expect(throws: ServiceError.self) { try fixture.manager.install(from: additional) }
+    #expect(try !fixture.store.exists(fixture.store.root))
 }
 
 @Test func rejectsSymlinksEvenWithinPackage() throws {
     let fixture = try Fixture()
     let package = try fixture.package("custom-v1.0.0")
     try FileManager.default.createSymbolicLink(atPath: package.appendingPathComponent("licenses/escape").path, withDestinationPath: fixture.directory.path)
-    #expect(throws: ServiceError.self) { try ReleasePackage(directory: package) }
+    #expect(throws: ServiceError.self) { try fixture.manager.install(from: package) }
     try FileManager.default.removeItem(at: package.appendingPathComponent("licenses/escape"))
     try FileManager.default.createSymbolicLink(atPath: package.appendingPathComponent("licenses/link").path, withDestinationPath: "LICENSE.txt")
-    #expect(throws: ServiceError.self) { try ReleasePackage(directory: package) }
+    #expect(throws: ServiceError.self) { try fixture.manager.install(from: package) }
+    #expect(try !fixture.store.exists(fixture.store.root))
 }
 
 @Test func rejectsArchivePathAndNonExecutablePayload() throws {
