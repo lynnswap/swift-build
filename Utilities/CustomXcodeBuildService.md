@@ -10,7 +10,7 @@ The setting applies to the current user's Xcode processes across all projects. I
 - Xcode 27 selected in Xcode's **Settings > Locations > Command Line Tools**.
 - A custom-service release built and verified with that exact Xcode build version. The release's `manifest.json` records this information, and installation checks it.
 
-Use the command as your normal logged-in user, without `sudo`. It must run in your GUI login session.
+Use the command as your normal logged-in user, without `sudo`, from a terminal opened in your GUI login session. SSH and background sessions are rejected before installation settings are changed, even when the same user is also logged in through the desktop.
 
 ## Install a published release
 
