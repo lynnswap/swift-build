@@ -113,8 +113,11 @@ python3 Distribution/release.py verify \
 Builds use committed source and pinned dependencies in an isolated directory.
 The output contains the archive, checksums, and a version-specific installer.
 
-Write the release notes in `Distribution/ReleaseNotes/<tag>.md`, then push the
-`custom-v*` tag to publish through the [release workflow](../../.github/workflows/custom-xcode-build-service.yml).
+Create a draft GitHub Release for the `custom-v*` tag and write its title and
+release notes there. Then push that tag to run the
+[release workflow](../../.github/workflows/custom-xcode-build-service.yml), which
+uploads the verified assets and publishes the draft without changing its title
+or notes.
 Stable releases become **Latest**; prereleases do not replace it.
 
 </details>

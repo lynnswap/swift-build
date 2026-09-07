@@ -42,18 +42,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - name: Require notes for the release tag
-        if: github.event_name == 'push'
-        run: |
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-
-          directory = Path('Utilities/CustomXcodeBuildService/Distribution/ReleaseNotes')
-          path = directory / f"{os.environ['RELEASE_VERSION']}.md"
-          if not path.read_text().strip():
-              raise SystemExit(f'Release notes must contain non-whitespace text: {path}')
-          PY
       - name: Check distribution scripts
         run: |
           sh -n Utilities/CustomXcodeBuildService/Distribution/install.sh.in
@@ -86,10 +74,6 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: custom-xcode-build-service-release
@@ -103,23 +87,29 @@ jobs:
           [[ "$RELEASE_TAG" =~ ^custom-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]
           cd assets
           shasum -a 256 -c SHA256SUMS.txt
+          gh release view "$RELEASE_TAG" --json isDraft,body > release.json
           python3 - <<'PY'
           import json
           import os
+          from pathlib import Path
           import tarfile
 
+          release = json.loads(Path('release.json').read_text())
+          if not release['isDraft']:
+              raise SystemExit('Prepare a draft GitHub Release before pushing the release tag.')
+          if not release['body'].strip():
+              raise SystemExit('The draft GitHub Release must contain release notes.')
           with tarfile.open('custom-xcode-build-service-darwin-arm64.tar.gz') as archive:
               manifest = json.load(archive.extractfile('manifest.json'))
           if manifest['version'] != os.environ['RELEASE_TAG']:
               raise SystemExit('Archive version does not match the release tag.')
           PY
-          release_args=(--verify-tag)
+          release_args=(--verify-tag --draft=false)
           if [[ "${RELEASE_TAG#custom-v}" == *-* ]]; then
             release_args+=(--prerelease --latest=false)
           else
-            release_args+=(--latest)
+            release_args+=(--prerelease=false --latest)
           fi
-          gh release create "$RELEASE_TAG" \
-            custom-xcode-build-service-darwin-arm64.tar.gz SHA256SUMS.txt install.sh \
-            "${release_args[@]}" --title "Custom Xcode Build Service ${RELEASE_TAG#custom-v}" \
-            --notes-file "../Utilities/CustomXcodeBuildService/Distribution/ReleaseNotes/$RELEASE_TAG.md"
+          gh release upload "$RELEASE_TAG" \
+            custom-xcode-build-service-darwin-arm64.tar.gz SHA256SUMS.txt install.sh
+          gh release edit "$RELEASE_TAG" "${release_args[@]}"
