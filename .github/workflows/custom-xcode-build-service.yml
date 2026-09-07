@@ -106,25 +106,12 @@ jobs:
           python3 - <<'PY'
           import json
           import os
-          from pathlib import Path
           import tarfile
 
           with tarfile.open('custom-xcode-build-service-darwin-arm64.tar.gz') as archive:
               manifest = json.load(archive.extractfile('manifest.json'))
           if manifest['version'] != os.environ['RELEASE_TAG']:
               raise SystemExit('Archive version does not match the release tag.')
-          notes = Path('../Utilities/CustomXcodeBuildService/Distribution/ReleaseNotes')
-          notes = (notes / f"{os.environ['RELEASE_TAG']}.md").read_text().rstrip()
-          Path('release-notes.md').write_text(
-              notes + '\n\n### Migration Notes\n\n'
-              f"Requires **Apple silicon, macOS {manifest['minimumMacOSVersion']} or later, "
-              f"and Xcode {manifest['xcodeVersion']} ({manifest['xcodeBuildVersion']})**.\n\n"
-              'Install this release:\n\n```sh\n'
-              f"curl -fsSL https://github.com/{os.environ['GH_REPO']}/releases/download/"
-              f"{os.environ['RELEASE_TAG']}/install.sh | sh\n```\n\n"
-              'Quit and reopen Xcode, your terminal application, and AI agent applications '
-              'after installation. Start terminal-based agents from the restarted terminal.\n'
-          )
           PY
           release_args=(--verify-tag)
           if [[ "${RELEASE_TAG#custom-v}" == *-* ]]; then
@@ -134,4 +121,5 @@ jobs:
           fi
           gh release create "$RELEASE_TAG" \
             custom-xcode-build-service-darwin-arm64.tar.gz SHA256SUMS.txt install.sh \
-            "${release_args[@]}" --title "Custom Xcode Build Service ${RELEASE_TAG#custom-v}" --notes-file release-notes.md
+            "${release_args[@]}" --title "Custom Xcode Build Service ${RELEASE_TAG#custom-v}" \
+            --notes-file "../Utilities/CustomXcodeBuildService/Distribution/ReleaseNotes/$RELEASE_TAG.md"
