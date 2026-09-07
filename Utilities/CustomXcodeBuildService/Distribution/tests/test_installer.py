@@ -24,7 +24,7 @@ import unittest
 
 
 ARCHIVE = "custom-xcode-build-service-darwin-arm64.tar.gz"
-TEMPLATE = Path(__file__).resolve().parents[1] / "install-custom-xcode-build-service.sh.in"
+TEMPLATE = Path(__file__).resolve().parents[1] / "install.sh.in"
 
 
 class ReleaseInstallerTests(unittest.TestCase):

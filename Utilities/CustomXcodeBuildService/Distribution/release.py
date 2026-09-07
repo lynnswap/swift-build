@@ -11,23 +11,27 @@
 ##
 ##===----------------------------------------------------------------------===##
 
-"""Producer-side staging, packaging, and relocation checks (Python standard library)."""
+"""Producer-side builds, packaging, and relocation checks (Python standard library)."""
 
 import argparse
 import gzip
 import hashlib
 import json
 import os
+import platform
 from pathlib import Path, PurePosixPath
 import re
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
 
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+DISTRIBUTION_PATH = Path("Utilities/CustomXcodeBuildService/Distribution")
 ARCHIVE = "custom-xcode-build-service-darwin-arm64.tar.gz"
 ASSETS = (ARCHIVE, "install.sh")
 BUNDLES = tuple(sorted(f"SwiftBuild_{name}.bundle" for name in (
@@ -47,8 +51,8 @@ def output(command, **kwargs):
     return subprocess.check_output(command, text=True, **kwargs).strip()
 
 
-def xcode_version():
-    lines = output(["/usr/bin/xcrun", "xcodebuild", "-version"]).splitlines()
+def xcode_version(environment=None):
+    lines = output(["/usr/bin/xcrun", "xcodebuild", "-version"], env=environment).splitlines()
     require(len(lines) == 2 and re.fullmatch(r"Xcode 27(?:\.[0-9]+)+", lines[0]),
             "Select Xcode 27 before building or verifying a distribution.")
     require(re.fullmatch(r"Build version [0-9A-Za-z]+", lines[1]), "Unexpected Xcode build version.")
@@ -156,6 +160,62 @@ def copy_licenses(source, destination):
     require(count > 0, f"No license texts found: {source}")
 
 
+def build(args):
+    require(re.fullmatch(VERSION_PATTERN, args.version),
+            "Version must look like custom-v1.2.3 or custom-v1.2.3-beta.1.")
+    require(args.jobs > 0, "--jobs must be positive.")
+    require(platform.system() == "Darwin" and platform.machine() == "arm64",
+            "Building this distribution requires an Apple Silicon Mac.")
+    revision = output(["git", "-C", str(REPOSITORY_ROOT), "rev-parse", "--verify",
+                       "--end-of-options", f"{args.revision}^{{commit}}"])
+    environment = dict(os.environ)
+    # Keep every build, test, and metadata query on the initially selected toolchain.
+    environment["DEVELOPER_DIR"] = environment.get("DEVELOPER_DIR") or output(
+        ["/usr/bin/xcode-select", "--print-path"])
+    version, build_version = xcode_version(environment)
+    empty_directory(args.output_dir)
+    directory = args.output_dir.resolve()
+    source = directory / "source"
+    source.mkdir()
+    (directory / "build").mkdir()
+    with tempfile.TemporaryFile() as archive:
+        subprocess.run(["git", "-C", str(REPOSITORY_ROOT), "archive", revision], stdout=archive, check=True)
+        archive.seek(0)
+        subprocess.run(["/usr/bin/tar", "-x", "-C", str(source)], stdin=archive, check=True)
+    pins = source / DISTRIBUTION_PATH / "ServiceDependencies.resolved"
+    shutil.copy2(pins, source / "Package.resolved")
+    (directory / "source-revision.txt").write_text(revision + "\n")
+
+    # These options change the dependency graph or service independently of the pins.
+    for key in ("SWIFTCI_USE_LOCAL_DEPS", "SWIFTBUILD_LLBUILD_FWK", "SWIFTBUILD_STATIC_LINK",
+                "XCBBUILDSERVICE_PATH", "SWBBUILDSERVICE_PATH"):
+        environment.pop(key, None)
+    common = ["--configuration", "release", "--arch", "arm64", "--jobs", str(args.jobs),
+              "--build-system", "swiftbuild", "--cache-path", str(directory / "build/cache"),
+              "--config-path", str(directory / "build/config"),
+              "--security-path", str(directory / "build/security")]
+    service_args = [*common, "--package-path", str(source),
+                    "--scratch-path", str(directory / "build/service"), "--force-resolved-versions"]
+    cli_args = [*common, "--package-path", str(source / "Utilities/CustomXcodeBuildService"),
+                "--scratch-path", str(directory / "build/cli")]
+    print(f"Xcode {version}\nBuild version {build_version}", flush=True)
+    subprocess.run(["/usr/bin/xcrun", "swift", "--version"], env=environment, check=True)
+    subprocess.run(["/usr/bin/xcrun", "swift", "build", *service_args, "--product", "SWBBuildServiceBundle"],
+                   env=environment, check=True)
+    require((source / "Package.resolved").read_bytes() == pins.read_bytes(),
+            "Building the service changed its pinned dependencies.")
+    subprocess.run(["/usr/bin/xcrun", "swift", "test", *cli_args, "--disable-xctest"],
+                   env=environment, check=True)
+    subprocess.run(["/usr/bin/xcrun", "swift", "build", *cli_args, "--product", "custom-xcode-build-service"],
+                   env=environment, check=True)
+    service_bin = output(["/usr/bin/xcrun", "swift", "build", *service_args, "--show-bin-path"], env=environment)
+    cli_bin = output(["/usr/bin/xcrun", "swift", "build", *cli_args, "--show-bin-path"], env=environment)
+    subprocess.run([sys.executable, str(source / DISTRIBUTION_PATH / "release.py"), "stage",
+                    "--build-dir", str(directory), "--service-bin", service_bin,
+                    "--cli-bin", cli_bin, "--version", args.version], env=environment, check=True)
+    print(f"Built payload: {directory / 'payload'}")
+
+
 def stage(args):
     source = args.build_dir / "source"
     payload = args.build_dir / "payload"
@@ -174,7 +234,7 @@ def stage(args):
     for bundle in BUNDLES:
         regular_tree(args.service_bin / bundle)
         shutil.copytree(args.service_bin / bundle, service_dir / bundle)
-    pins = json.loads((source / ".github/custom-build-service/ServiceDependencies.resolved").read_text())["pins"]
+    pins = json.loads((source / DISTRIBUTION_PATH / "ServiceDependencies.resolved").read_text())["pins"]
     dependencies = []
     for pin in pins:
         checkout = args.build_dir / "build/service/checkouts" / pin["identity"]
@@ -199,7 +259,7 @@ def package(args):
     payload = args.build_dir / "payload"
     manifest = validate_payload(payload)
     empty_directory(args.output_dir)
-    template = (args.build_dir / "source/Utilities/install-custom-xcode-build-service.sh.in").read_text()
+    template = (args.build_dir / "source" / DISTRIBUTION_PATH / "install.sh.in").read_text()
     require("@VERSION@" in template and "@REPOSITORY@" in template, "Missing installer template markers.")
     installer = template.replace("@VERSION@", manifest["version"]).replace("@REPOSITORY@", "lynnswap/swift-build")
     (args.output_dir / "install.sh").write_text(installer)
@@ -249,7 +309,7 @@ def extract_archive(archive_path, destination):
 
 
 def smoke_build(payload, temporary):
-    fixture = Path(__file__).resolve().parents[2] / "Tests/SwiftBuildTests/TestData/CommandLineTool"
+    fixture = REPOSITORY_ROOT / "Tests/SwiftBuildTests/TestData/CommandLineTool"
     shutil.copytree(fixture, temporary / "Smoke")
     service = payload / "libexec/swift-build/SWBBuildServiceBundle"
     environment = dict(os.environ)
@@ -309,6 +369,13 @@ def verify(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    building = commands.add_parser("build", help="Build committed source with Xcode 27 on Apple Silicon",
+                                   description="Build committed source in an isolated directory. The output must be "
+                                   "absent or empty; source, builds, and payload remain there. Does not install.")
+    building.add_argument("--version", required=True)
+    building.add_argument("--output-dir", type=Path, required=True)
+    building.add_argument("--revision", default="HEAD")
+    building.add_argument("--jobs", type=int, default=2)
     staging = commands.add_parser("stage", help="Stage built binaries, resources, licenses, and metadata")
     staging.add_argument("--build-dir", type=Path, required=True)
     staging.add_argument("--service-bin", type=Path, required=True)
@@ -321,7 +388,7 @@ def main():
     verification.add_argument("--release-dir", type=Path, required=True)
     args = parser.parse_args()
     try:
-        {"stage": stage, "package": package, "verify": verify}[args.command](args)
+        {"build": build, "stage": stage, "package": package, "verify": verify}[args.command](args)
     except (ValueError, KeyError, OSError, subprocess.CalledProcessError, tarfile.TarError) as error:
         parser.exit(1, f"error: {error}\n")
 
