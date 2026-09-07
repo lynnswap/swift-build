@@ -16,12 +16,11 @@
 import hashlib
 import io
 import os
-from pathlib import Path
 import subprocess
 import tarfile
 import tempfile
 import unittest
-
+from pathlib import Path
 
 ARCHIVE = "custom-xcode-build-service-darwin-arm64.tar.gz"
 TEMPLATE = Path(__file__).resolve().parents[1] / "install.sh.in"
@@ -29,7 +28,9 @@ TEMPLATE = Path(__file__).resolve().parents[1] / "install.sh.in"
 
 class ReleaseInstallerTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix="custom-swb-installer-test-")
+        self.temporary = tempfile.TemporaryDirectory(
+            prefix="custom-swb-installer-test-"
+        )
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.assets = self.root / "assets"
@@ -42,33 +43,46 @@ class ReleaseInstallerTests(unittest.TestCase):
             "import os, pathlib, shutil, sys\n"
             "arguments = sys.argv[1:]\n"
             "url = arguments[-1]\n"
-            "assert url.startswith('https://github.com/lynnswap/swift-build/releases/download/custom-v0.1.0/')\n"
+            "assert url.startswith('https://github.com/lynnswap/"
+            "swift-build/releases/download/custom-v0.1.0/')\n"
             "assert arguments[arguments.index('--proto') + 1] == '=https'\n"
             "destination = arguments[arguments.index('--output') + 1]\n"
-            "shutil.copyfile(pathlib.Path(os.environ['INSTALLER_TEST_ASSETS']) / url.rsplit('/', 1)[1], destination)\n"
+            "shutil.copyfile(pathlib.Path(os.environ['INSTALLER_TEST_ASSETS']) "
+            "/ url.rsplit('/', 1)[1], destination)\n"
         )
         curl.chmod(0o755)
         self.installer = self.root / "install.sh"
         self.installer.write_text(
-            TEMPLATE.read_text().replace("@VERSION@", "custom-v0.1.0").replace("@REPOSITORY@", "lynnswap/swift-build")
+            TEMPLATE.read_text()
+            .replace("@VERSION@", "custom-v0.1.0")
+            .replace("@REPOSITORY@", "lynnswap/swift-build")
         )
         self.record = self.root / "invocation.txt"
         self.environment = dict(os.environ)
-        self.environment.update({
-            "PATH": str(self.commands) + os.pathsep + os.environ["PATH"],
-            "TMPDIR": str(self.root),
-            "INSTALLER_TEST_ASSETS": str(self.assets),
-            "INSTALL_RECORD": str(self.record),
-        })
+        self.environment.update(
+            {
+                "PATH": str(self.commands) + os.pathsep + os.environ["PATH"],
+                "TMPDIR": str(self.root),
+                "INSTALLER_TEST_ASSETS": str(self.assets),
+                "INSTALL_RECORD": str(self.record),
+            }
+        )
 
     def make_archive(self, extra=None):
         with tarfile.open(self.assets / ARCHIVE, "w:gz") as archive:
-            contents = b'#!/bin/sh\nprintf "%s\\n" "$@" > "$INSTALL_RECORD"\ntest -f "$3/libexec/swift-build/SwiftBuild_SWBCore.bundle/Contents/Resources/example.xcspec"\n'
+            contents = (
+                b'#!/bin/sh\nprintf "%s\\n" "$@" > "$INSTALL_RECORD"\n'
+                b'test -f "$3/libexec/swift-build/'
+                b'SwiftBuild_SWBCore.bundle/Contents/Resources/example.xcspec"\n'
+            )
             executable = tarfile.TarInfo("bin/custom-xcode-build-service")
             executable.mode = 0o755
             executable.size = len(contents)
             archive.addfile(executable, io.BytesIO(contents))
-            resource = tarfile.TarInfo("libexec/swift-build/SwiftBuild_SWBCore.bundle/Contents/Resources/example.xcspec")
+            resource = tarfile.TarInfo(
+                "libexec/swift-build/SwiftBuild_SWBCore.bundle/"
+                "Contents/Resources/example.xcspec"
+            )
             resource.size = 4
             archive.addfile(resource, io.BytesIO(b"spec"))
             if extra is not None:
@@ -82,10 +96,15 @@ class ReleaseInstallerTests(unittest.TestCase):
     def run_installer(self, *arguments):
         return subprocess.run(
             ["/bin/sh", str(self.installer), *arguments],
-            env=self.environment, text=True, capture_output=True, check=False,
+            env=self.environment,
+            text=True,
+            capture_output=True,
+            check=False,
         )
 
-    def test_verified_payload_is_passed_to_management_command_and_temporary_files_are_removed(self):
+    def test_verified_payload_is_installed_and_temporary_files_are_removed(
+        self,
+    ):
         self.make_archive()
         result = self.run_installer()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -113,7 +132,9 @@ class ReleaseInstallerTests(unittest.TestCase):
     def test_links_and_escaping_paths_are_rejected_before_execution(self):
         for kind in ["traversal", "symlink", "hardlink", "fifo"]:
             with self.subTest(kind=kind):
-                entry = tarfile.TarInfo("../escaped" if kind == "traversal" else "licenses/extra")
+                entry = tarfile.TarInfo(
+                    "../escaped" if kind == "traversal" else "licenses/extra"
+                )
                 if kind == "symlink":
                     entry.type = tarfile.SYMTYPE
                     entry.linkname = "/tmp"
