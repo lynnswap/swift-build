@@ -14,13 +14,19 @@ Use the command as your normal logged-in user, without `sudo`, from a terminal o
 
 ## Install a published release
 
-Download `install.sh` from the desired `custom-v*` release on the fork's [Releases page](https://github.com/lynnswap/swift-build/releases), then run:
+Install the latest stable release:
 
 ```sh
-sh install.sh
+curl -fsSL https://github.com/lynnswap/swift-build/releases/latest/download/install.sh | sh
 ```
 
-The installer downloads the archive for that release, verifies its SHA256 checksum, and invokes its management command. A release must be published before this download method is available.
+The installer downloads the prebuilt archive for that release, verifies its SHA256 checksum, and invokes its management command.
+
+To install a specific release, use its tag in the URL:
+
+```sh
+curl -fsSL https://github.com/lynnswap/swift-build/releases/download/custom-v0.1.0/install.sh | sh
+```
 
 If you have already downloaded and verified the archive, extract it and run this from its root directory:
 
@@ -48,7 +54,7 @@ A LaunchAgent at `~/Library/LaunchAgents/io.github.lynnswap.custom-xcode-build-s
 
 ## Update or remove
 
-To update, run the new release's `install.sh`. The new release is prepared before the selected version is changed. Old version directories remain available to processes that still use them. Restart Xcode, terminal applications, and AI agents to start using the new version.
+To update, run the latest-release command above again. The new release is prepared before the selected version is changed. Old version directories remain available to processes that still use them. Restart Xcode, terminal applications, and AI agents to start using the new version.
 
 To restore Xcode's bundled service, first quit Xcode and allow any command-line builds using the custom service to finish, then run:
 
@@ -84,7 +90,7 @@ The release files are:
 
 The manifest records the source revision, dependency revisions, architecture, minimum macOS version, and Xcode version used to build the release. Verify the extracted archive as a complete installation; copying only `SWBBuildServiceBundle` omits its required resources.
 
-The **Custom Xcode build service** GitHub Actions workflow builds and verifies artifacts for relevant pull requests and manual runs. A manual run does not publish a release. Pushing a `custom-v*` tag to `lynnswap/swift-build` runs the same checks and publishes the verified assets for that tag. The `custom-` namespace keeps these distributions separate from upstream Swift release tags. Release builds default to two parallel jobs; `--jobs` can change the local build limit.
+The **Custom Xcode build service** GitHub Actions workflow builds and verifies artifacts for relevant pull requests and manual runs. A manual run does not publish a release. Pushing a `custom-v*` tag to `lynnswap/swift-build` runs the same checks and publishes the verified assets for that tag. Stable releases become **Latest** automatically; prerelease tags such as `custom-v0.2.0-beta.1` are marked as prereleases and do not replace Latest. The `custom-` namespace keeps these distributions separate from upstream Swift release tags. Release builds default to two parallel jobs; `--jobs` can change the local build limit.
 
 ## Development
 

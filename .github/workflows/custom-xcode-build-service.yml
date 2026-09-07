@@ -103,15 +103,22 @@ jobs:
               f"{manifest['xcodeVersion']} (build {manifest['xcodeBuildVersion']}).\n\n"
               f"Source revision: `{manifest['sourceRevision']}`. Dependency revisions and licenses "
               'are included in the archive.\n\n'
-              'Download and inspect `install.sh`, then run it to install. Restart Xcode after '
-              'installation. Use `custom-xcode-build-service status` to inspect the selection '
-              'and `custom-xcode-build-service uninstall` to return to the standard service.\n'
+              'Install this release:\n\n```sh\n'
+              f"curl -fsSL https://github.com/{os.environ['GH_REPO']}/releases/download/"
+              f"{os.environ['RELEASE_TAG']}/install.sh | sh\n```\n\n"
+              'After installation, quit and reopen Xcode, your terminal application, and AI '
+              'agent applications. Start terminal-based agents from the restarted terminal.\n\n'
+              'Use `~/.local/bin/custom-xcode-build-service status` to inspect the selection '
+              'and `~/.local/bin/custom-xcode-build-service uninstall` to return to the '
+              'standard service.\n'
           )
           PY
-          release_args=(--verify-tag --latest=false)
+          release_args=(--verify-tag)
           if [[ "${RELEASE_TAG#custom-v}" == *-* ]]; then
-            release_args+=(--prerelease)
+            release_args+=(--prerelease --latest=false)
+          else
+            release_args+=(--latest)
           fi
           gh release create "$RELEASE_TAG" \
             custom-xcode-build-service-darwin-arm64.tar.gz SHA256SUMS.txt install.sh \
-            "${release_args[@]}" --title "Custom Xcode build service $RELEASE_TAG" --notes-file release-notes.md
+            "${release_args[@]}" --title "Custom Xcode Build Service ${RELEASE_TAG#custom-v}" --notes-file release-notes.md
