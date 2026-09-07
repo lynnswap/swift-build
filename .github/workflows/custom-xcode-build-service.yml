@@ -42,6 +42,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+      - name: Require notes for the release tag
+        if: github.event_name == 'push'
+        run: test -s "Utilities/CustomXcodeBuildService/Distribution/ReleaseNotes/$RELEASE_VERSION.md"
       - name: Check distribution scripts
         run: |
           sh -n Utilities/CustomXcodeBuildService/Distribution/install.sh.in
@@ -74,6 +77,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: custom-xcode-build-service-release
@@ -97,20 +104,17 @@ jobs:
               manifest = json.load(archive.extractfile('manifest.json'))
           if manifest['version'] != os.environ['RELEASE_TAG']:
               raise SystemExit('Archive version does not match the release tag.')
+          notes = Path('../Utilities/CustomXcodeBuildService/Distribution/ReleaseNotes')
+          notes = (notes / f"{os.environ['RELEASE_TAG']}.md").read_text().rstrip()
           Path('release-notes.md').write_text(
-              'Prebuilt custom Swift Build service and management CLI for Apple Silicon.\n\n'
-              f"Requires macOS {manifest['minimumMacOSVersion']} or later and Xcode "
-              f"{manifest['xcodeVersion']} (build {manifest['xcodeBuildVersion']}).\n\n"
-              f"Source revision: `{manifest['sourceRevision']}`. Dependency revisions and licenses "
-              'are included in the archive.\n\n'
+              notes + '\n\n### Migration Notes\n\n'
+              f"Requires **Apple silicon, macOS {manifest['minimumMacOSVersion']} or later, "
+              f"and Xcode {manifest['xcodeVersion']} ({manifest['xcodeBuildVersion']})**.\n\n"
               'Install this release:\n\n```sh\n'
               f"curl -fsSL https://github.com/{os.environ['GH_REPO']}/releases/download/"
               f"{os.environ['RELEASE_TAG']}/install.sh | sh\n```\n\n"
-              'After installation, quit and reopen Xcode, your terminal application, and AI '
-              'agent applications. Start terminal-based agents from the restarted terminal.\n\n'
-              'Use `~/.local/bin/custom-xcode-build-service status` to inspect the selection '
-              'and `~/.local/bin/custom-xcode-build-service uninstall` to return to the '
-              'standard service.\n'
+              'Quit and reopen Xcode, your terminal application, and AI agent applications '
+              'after installation. Start terminal-based agents from the restarted terminal.\n'
           )
           PY
           release_args=(--verify-tag)
