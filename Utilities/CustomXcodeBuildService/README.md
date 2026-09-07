@@ -98,8 +98,9 @@ custom-xcode-build-service status
 
 Status shows the installed release, the selected service (`custom` or `bundled`),
 the launchd settings for future processes, and the build services actually
-running. These can differ until applications are restarted. If the launchd
-settings differ from the saved selection, status reports the mismatch.
+running. Running services can still reflect the previous choice until
+applications are restarted. If the launchd settings differ from the saved
+selection, status reports the mismatch and the command to reapply your choice.
 
 ## Uninstall
 
