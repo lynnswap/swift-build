@@ -6,6 +6,7 @@ on:
       - 'Package.swift'
       - 'Sources/**'
       - 'Utilities/CustomXcodeBuildService/**'
+      - 'Utilities/Tests/test_custom_xcode_build_service_installer.py'
       - 'Utilities/*custom-xcode-build-service*'
       - '.github/custom-build-service/**'
       - '.github/workflows/custom-xcode-build-service*.yml'
@@ -50,6 +51,7 @@ jobs:
           bash -n Utilities/verify-custom-xcode-build-service.sh
           bash -n Utilities/install-custom-xcode-build-service.sh.in
           python3 -m unittest discover -s .github/custom-build-service -p 'test_*.py'
+          python3 Utilities/Tests/test_custom_xcode_build_service_installer.py
       - name: Build committed service and management CLI
         run: |
           Utilities/build-custom-xcode-build-service.sh \

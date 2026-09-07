@@ -1,4 +1,4 @@
-# Custom Xcode build service
+# Custom Xcode Build Service
 
 Use this fork's prebuilt Swift Build service with ordinary Xcode launches, including opening a workspace from Finder. The release contains the service, its resource bundles, and the `custom-xcode-build-service` management command. Installation does not build Swift sources or modify Xcode.app.
 
@@ -54,7 +54,7 @@ To restore Xcode's bundled service, first quit Xcode and allow any command-line 
 ~/.local/bin/custom-xcode-build-service uninstall
 ```
 
-Uninstall removes the tool's login configuration and environment selection, and cleans up its installed files. It refuses to remove files while Xcode or an installed service is running. It remains available if Xcode has been updated or removed.
+Uninstall removes the tool's login configuration, environment selection, command, and release payloads. It refuses to remove files while your Xcode, `xcodebuild`, or an installed service is running. It remains available if Xcode has been updated or removed. The installation directory retains only `.owner` and `.lock`, so simultaneous commands and later reinstalls continue to share the same lock.
 
 An already-running terminal does not receive changes to the launchd environment. Restart terminal sessions that inherited the old selection. For a build from an existing terminal, explicitly pass the selected environment:
 
@@ -69,7 +69,7 @@ An already-running terminal does not receive changes to the launchd environment.
 
 ## Build and package a release
 
-Release creation requires a clean, committed checkout and Xcode 27. The build runs from an isolated copy of the committed source and uses the pinned service dependencies in `.github/custom-build-service/ServiceDependencies.resolved`. The developer's checkout and `Package.resolved` are not rewritten.
+Release creation requires committed source and Xcode 27. The build runs from an isolated copy of `HEAD` (or the explicit `--revision` commit) and uses the pinned service dependencies in `.github/custom-build-service/ServiceDependencies.resolved`. Uncommitted edits are not part of the release. The developer's checkout and `Package.resolved` are not rewritten.
 
 From the repository root, use new or empty output directories:
 
@@ -90,6 +90,8 @@ The release files are:
 
 The manifest records the source revision, dependency revisions, architecture, minimum macOS version, and Xcode version used to build the release. Verify the extracted archive as a complete installation; copying only `SWBBuildServiceBundle` omits its required resources.
 
+The **Custom Xcode build service** GitHub Actions workflow builds and verifies artifacts for relevant pull requests and manual runs. A manual run does not publish a release. Pushing a `custom-v*` tag to `lynnswap/swift-build` runs the same checks and publishes the verified assets for that tag. The `custom-` namespace keeps these distributions separate from upstream Swift release tags. Release builds default to two parallel jobs; `--jobs` can change the local build limit.
+
 ## Development
 
 The management command is a separate macOS-only Swift package. It does not import the build-system libraries: installing a local tool has different platform and dependency requirements from Swift Build's cross-platform package. The two executables share a release archive and manifest, not a Swift API.
@@ -97,6 +99,7 @@ The management command is a separate macOS-only Swift package. It does not impor
 ```sh
 swift test --package-path Utilities/CustomXcodeBuildService
 python3 Utilities/Tests/test_custom_xcode_build_service_installer.py
+python3 -m unittest discover -s .github/custom-build-service -p 'test_*.py'
 ```
 
 The management tests use temporary installation directories and a command runner at the process boundary. They do not change your login environment or stop Xcode.
