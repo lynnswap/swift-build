@@ -66,7 +66,7 @@ import Testing
     #expect(try fixture.store.exists(fixture.store.command))
 }
 
-@Test(arguments: ["status", "activate", "reinstall", "update"])
+@Test(arguments: ["status", "activate", "use", "reinstall", "update"])
 func installedReleaseRemainsUsableAfterBuilds(command: String) throws {
     let fixture = try Fixture()
     let package = try fixture.package("custom-v1.0.0")
@@ -85,6 +85,9 @@ func installedReleaseRemainsUsableAfterBuilds(command: String) throws {
     case "activate":
         fixture.runner.settings = [:]
         _ = try fixture.manager.activate()
+    case "use":
+        _ = try fixture.manager.use(.bundled)
+        _ = try fixture.manager.use(.custom)
     case "reinstall":
         _ = try fixture.manager.install(from: package)
     default:
@@ -226,7 +229,8 @@ func refusesForeignEnvironment(key: String) throws {
     let status = try fixture.manager.status()
     #expect(status.contains("custom release selected for future processes"))
     #expect(status.contains("PID 123: /Applications/Xcode.app"))
-    #expect(status.contains("PID 456: \(selected.service.path) [selected release]"))
+    #expect(status.contains("Selected service: custom"))
+    #expect(status.contains("PID 456: \(selected.service.path) [installed custom release]"))
     #expect(!status.contains("PID 789"))
     #expect(throws: ServiceError.self) { try fixture.manager.uninstall() }
     #expect(fixture.runner.loaded)
@@ -378,7 +382,7 @@ func uninstallRemovesIncompleteInstallation(missingPath: String) throws {
     #expect(try !fixture.store.exists(fixture.store.root))
 }
 
-@Test(arguments: ["Background", "System", "wrongUID"], ["install", "activate", "uninstall", "status"])
+@Test(arguments: ["Background", "System", "wrongUID"], ["install", "activate", "uninstall", "status", "use custom", "use bundled"])
 func rejectsForeignLaunchdContextBeforeFilesystemAndEnvironmentChanges(context: String, command: String) throws {
     let fixture = try Fixture()
     let package = try fixture.package("custom-v1.0.0")
@@ -397,6 +401,8 @@ func rejectsForeignLaunchdContextBeforeFilesystemAndEnvironmentChanges(context: 
         case "install": _ = try fixture.manager.install(from: package)
         case "activate": _ = try fixture.manager.activate()
         case "uninstall": _ = try fixture.manager.uninstall()
+        case "use custom": _ = try fixture.manager.use(.custom)
+        case "use bundled": _ = try fixture.manager.use(.bundled)
         default: _ = try fixture.manager.status()
         }
     }
@@ -430,6 +436,183 @@ func rejectsForeignLaunchdContextBeforeFilesystemAndEnvironmentChanges(context: 
     #expect(try fixture.manager.uninstall() == "No custom build service is installed.")
     #expect(fixture.runner.launchctlMutations == mutations)
     #expect(try Set(FileManager.default.contentsOfDirectory(atPath: fixture.store.root.path)) == [".owner", ".lock"])
+}
+
+@Test func switchesServicesWithoutRemovingReleasesOrStoppingBuilds() throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    let installed = try #require(try fixture.store.selectedPackage())
+    fixture.runner.processes = "123 /Applications/Xcode.app/Contents/MacOS/Xcode\n456 \(installed.service.path)\n"
+
+    _ = try fixture.manager.use(.bundled)
+
+    #expect(try fixture.store.selectedService() == .bundled)
+    #expect(fixture.runner.settings.isEmpty)
+    #expect(!fixture.runner.loaded)
+    #expect(try !fixture.store.exists(fixture.store.agent))
+    #expect(try fixture.store.selectedPackage()?.directory == installed.directory)
+    #expect(FileManager.default.isExecutableFile(atPath: fixture.store.command.path))
+    let status = try fixture.manager.status()
+    #expect(status.contains("Installed: custom-v1.0.0"))
+    #expect(status.contains("Selected service: bundled"))
+    #expect(status.contains("Launchd selection: bundled"))
+    #expect(status.contains("PID 456: \(installed.service.path) [installed custom release]"))
+    #expect(!status.contains("do not match the saved selection"))
+    let mutations = fixture.runner.launchctlMutations
+    _ = try fixture.manager.use(.bundled)
+    #expect(fixture.runner.launchctlMutations == mutations)
+
+    _ = try fixture.manager.use(.custom)
+    _ = try fixture.manager.use(.custom)
+
+    #expect(try fixture.store.selectedService() == .custom)
+    #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == installed.service.path)
+    #expect(fixture.runner.settings["DisableConcurrentDependencyResolution"] == "0")
+    #expect(fixture.runner.loaded)
+    #expect(try fixture.store.exists(fixture.store.agent))
+}
+
+@Test(arguments: ["custom-v1.0.0", "custom-v1.0.1"])
+func installingPreservesBundledSelection(version: String) throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    let oldPackage = try #require(try fixture.store.selectedPackage())
+    _ = try fixture.manager.use(.bundled)
+
+    let output = try fixture.manager.install(from: fixture.package(version))
+
+    #expect(output.contains("Selected service: bundled"))
+    #expect(try fixture.store.selectedPackage()?.manifest.version == version)
+    #expect(try fixture.store.selectedService() == .bundled)
+    #expect(fixture.runner.settings.isEmpty)
+    #expect(!fixture.runner.loaded)
+    #expect(try !fixture.store.exists(fixture.store.agent))
+    #expect(try fixture.store.exists(oldPackage.directory))
+    #expect(FileManager.default.isExecutableFile(atPath: fixture.store.command.path))
+    _ = try fixture.manager.use(.custom)
+    #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == (try fixture.store.selectedPackage()?.service.path))
+}
+
+@Test func lateActivationRespectsBundledSelectionWithoutInspectingCustomPackageOrOverrides() throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    _ = try fixture.manager.use(.bundled)
+    try fixture.write("{broken", to: fixture.store.current.appendingPathComponent("manifest.json"))
+    fixture.runner.xcodeStatus = 1
+    fixture.runner.settings = ["XCBBUILDSERVICE_PATH": "/another/service"]
+    let mutations = fixture.runner.launchctlMutations
+
+    #expect(try fixture.manager.activate().contains("no custom activation is needed"))
+
+    #expect(fixture.runner.settings == ["XCBBUILDSERVICE_PATH": "/another/service"])
+    #expect(fixture.runner.launchctlMutations == mutations)
+    #expect(!fixture.runner.loaded)
+}
+
+@Test(arguments: ["manifest.json", "libexec/swift-build/SWBBuildServiceBundle", "bin/custom-xcode-build-service"])
+func selectingBundledWorksAfterXcodeUpdateAndPayloadDamage(missingPath: String) throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    try FileManager.default.removeItem(at: fixture.store.current.appendingPathComponent(missingPath))
+    fixture.runner.xcodeStatus = 1
+
+    _ = try fixture.manager.use(.bundled)
+
+    #expect(fixture.runner.settings.isEmpty)
+    #expect(!fixture.runner.loaded)
+    #expect(try fixture.store.selectedService() == .bundled)
+    #expect(try fixture.store.exists(fixture.store.current))
+}
+
+@Test func selectingCustomRequiresAnInstalledCompatibleRelease() throws {
+    let fixture = try Fixture()
+    #expect(throws: ServiceError.self) { try fixture.manager.use(.custom) }
+    #expect(try !fixture.store.exists(fixture.store.root))
+    _ = try fixture.manager.use(.bundled)
+    #expect(try !fixture.store.exists(fixture.store.root))
+    #expect(fixture.runner.launchctlMutations.isEmpty)
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    _ = try fixture.manager.use(.bundled)
+    fixture.runner.xcodeVersion = "Xcode 28.0\nBuild version 28A100\n"
+    #expect(throws: ServiceError.self) { try fixture.manager.use(.custom) }
+    #expect(try fixture.store.selectedService() == .bundled)
+    #expect(fixture.runner.settings.isEmpty)
+    #expect(!fixture.runner.loaded)
+    _ = try fixture.manager.uninstall()
+    _ = try fixture.manager.use(.bundled)
+    #expect(throws: ServiceError.self) { try fixture.manager.use(.custom) }
+    #expect(try Set(FileManager.default.contentsOfDirectory(atPath: fixture.store.root.path)) == [".owner", ".lock"])
+}
+
+@Test(arguments: ["bootout", "DisableConcurrentDependencyResolution", "XCBBUILDSERVICE_PATH"])
+func failedBundledSelectionRestoresCustomSelection(failure: String) throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    let settings = fixture.runner.settings
+    fixture.runner.failOnce = failure == "bootout" ? ["bootout", fixture.manager.environment.job] : ["unsetenv", failure]
+
+    #expect(throws: ServiceError.self) { try fixture.manager.use(.bundled) }
+
+    #expect(fixture.runner.settings == settings)
+    #expect(fixture.runner.loaded)
+    #expect(try fixture.store.selectedService() == .custom)
+    #expect(try fixture.store.exists(fixture.store.command))
+}
+
+@Test(arguments: ["bootstrap", "XCBBUILDSERVICE_PATH", "DisableConcurrentDependencyResolution"])
+func failedCustomSelectionRestoresBundledSelection(failure: String) throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    let installed = try #require(try fixture.store.selectedPackage())
+    _ = try fixture.manager.use(.bundled)
+    fixture.runner.failOnce = failure == "bootstrap"
+        ? ["bootstrap", fixture.manager.environment.domain, fixture.store.agent.path]
+        : ["setenv", failure, failure == "XCBBUILDSERVICE_PATH" ? installed.service.path : "0"]
+
+    #expect(throws: ServiceError.self) { try fixture.manager.use(.custom) }
+
+    #expect(fixture.runner.settings.isEmpty)
+    #expect(!fixture.runner.loaded)
+    #expect(try fixture.store.selectedService() == .bundled)
+    #expect(try fixture.store.selectedPackage()?.directory == installed.directory)
+    _ = try fixture.manager.use(.custom)
+    #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == installed.service.path)
+}
+
+@Test(arguments: [BuildService.custom, .bundled], ["environment", "plist", "job"])
+func selectionRefusesForeignConfiguration(service: BuildService, conflict: String) throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    switch conflict {
+    case "environment": fixture.runner.settings["XCBBUILDSERVICE_PATH"] = "/another/service"
+    case "plist": try fixture.write("foreign plist", to: fixture.store.agent)
+    default: try fixture.store.remove(fixture.store.agent)
+    }
+    let settings = fixture.runner.settings
+    let mutations = fixture.runner.launchctlMutations
+
+    #expect(throws: (any Error).self) { try fixture.manager.use(service) }
+
+    #expect(fixture.runner.settings == settings)
+    #expect(fixture.runner.launchctlMutations == mutations)
+    #expect(fixture.runner.loaded)
+}
+
+@Test func statusAndUpdateReconcileOwnedEnvironmentWithBundledSelection() throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    let staleSettings = fixture.runner.settings
+    _ = try fixture.manager.use(.bundled)
+    fixture.runner.settings = staleSettings
+
+    let status = try fixture.manager.status()
+    #expect(status.contains("Selected service: bundled"))
+    #expect(status.contains("Launchd selection: custom release selected for future processes"))
+    #expect(status.contains("Run use bundled to reapply it"))
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.1"))
+    #expect(fixture.runner.settings.isEmpty)
+    #expect(try fixture.store.selectedService() == .bundled)
+    #expect(!fixture.runner.loaded)
 }
 
 final class Fixture {
