@@ -10,10 +10,12 @@ Use `custom-xcode-build-service <command>`:
 
 | Command | What it does |
 | --- | --- |
-| `install [--package DIR]` | Install an extracted release package. |
+| `install [--package DIR]` | Install or update an extracted release package. |
+| `use custom` | Select the installed custom service, including after login. |
+| `use bundled` | Select Xcode's bundled service, keeping the CLI and installed releases. |
 | `status` | Show the installed release, selected service, and running services. |
 | `uninstall` | Remove the tool and restore Xcode's bundled service. |
-| `activate` | Reapply the selection; the login helper runs this automatically. |
+| `activate` | Reapply custom if selected; the login helper runs this automatically. |
 | `--help` | Show usage and options. |
 
 ## Requirements
@@ -29,7 +31,9 @@ Use `custom-xcode-build-service <command>`:
 curl -fsSL https://github.com/lynnswap/swift-build/releases/latest/download/install.sh | sh
 ```
 
-This downloads and verifies the prebuilt release. Run the same command to update.
+This downloads and verifies the prebuilt release. The first install selects the
+custom service. Run the same command to update; updates preserve your choice of
+custom or bundled service.
 
 The CLI is installed in `~/.local/bin`. If that directory is not on your `PATH`,
 add the following to your shell configuration (`~/.zshrc` for zsh):
@@ -62,6 +66,41 @@ Keep its resource bundles beside the service binary.
 
 </details>
 
+## Select a Service
+
+Switch to Xcode's bundled service while keeping the custom service installed:
+
+```sh
+custom-xcode-build-service use bundled
+```
+
+Switch back to the installed custom service:
+
+```sh
+custom-xcode-build-service use custom
+```
+
+Your choice applies to all projects for your macOS user account and persists
+across logins and updates. Repeating either command succeeds. Selecting custom
+requires an installed release and its exact Xcode build; selecting bundled also
+works after Xcode has been updated or removed.
+
+After switching, quit and reopen **Xcode, your terminal application, and AI agent
+applications**. Start terminal-based agents from the restarted terminal.
+Existing processes retain their previous environment. The command does not
+close applications or stop builds.
+
+Check the saved selection and the current environment:
+
+```sh
+custom-xcode-build-service status
+```
+
+Status shows the installed release, the selected service (`custom` or `bundled`),
+the launchd settings for future processes, and the build services actually
+running. These can differ until applications are restarted. If the launchd
+settings differ from the saved selection, status reports the mismatch.
+
 ## Uninstall
 
 Quit Xcode and let command-line builds finish, then run:
@@ -75,16 +114,18 @@ service in new builds.
 
 ## Configuration
 
-The tool manages these settings through `launchctl`:
+While custom is selected, the tool manages these settings through `launchctl`:
 
 | Setting | Value |
 | --- | --- |
 | `XCBBUILDSERVICE_PATH` | The installed service executable. |
 | `DisableConcurrentDependencyResolution` | `0` (parallel dependency resolution). |
 
-Releases are stored in `~/Library/Developer/CustomXcodeBuildService`. A helper
-in `~/Library/LaunchAgents` reapplies the selection at login. If macOS restores
-Xcode before the helper runs, restart Xcode after checking `status`.
+Releases are stored in `~/Library/Developer/CustomXcodeBuildService`. When custom
+is selected, a helper in `~/Library/LaunchAgents` reapplies it at login. Selecting
+bundled removes that helper and the tool's environment overrides while keeping
+the installed releases and CLI. If macOS restores Xcode before the custom helper
+runs, restart Xcode after checking `status`.
 
 ## Development
 
