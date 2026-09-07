@@ -1,0 +1,120 @@
+name: Custom Xcode build service
+
+on:
+  pull_request:
+    paths:
+      - 'Package.swift'
+      - 'Sources/**'
+      - 'Utilities/CustomXcodeBuildService/**'
+      - 'Utilities/*custom-xcode-build-service*'
+      - '.github/custom-build-service/**'
+      - '.github/workflows/custom-xcode-build-service*.yml'
+  push:
+    tags:
+      - 'custom-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Artifact version, such as custom-v0.1.0-beta.1 (does not publish a release)'
+        required: true
+        default: custom-v0.0.0-validation
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: custom-xcode-build-service-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    # Official arm64 Xcode 27 image (public preview); the builder checks the selected Xcode.
+    # https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md
+    runs-on: xcode-27
+    timeout-minutes: 180
+    env:
+      RELEASE_VERSION: ${{ github.event_name == 'push' && github.ref_name || inputs.version || 'custom-v0.0.0-validation' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check distribution scripts
+        run: |
+          bash -n Utilities/build-custom-xcode-build-service.sh
+          bash -n Utilities/package-custom-xcode-build-service.sh
+          bash -n Utilities/verify-custom-xcode-build-service.sh
+          bash -n Utilities/install-custom-xcode-build-service.sh.in
+          python3 -m unittest discover -s .github/custom-build-service -p 'test_*.py'
+      - name: Build committed service and management CLI
+        run: |
+          Utilities/build-custom-xcode-build-service.sh \
+            --version "$RELEASE_VERSION" --output-dir "$RUNNER_TEMP/custom-service-build" --jobs 2
+      - name: Package binaries, resources, and licenses
+        run: |
+          Utilities/package-custom-xcode-build-service.sh \
+            --build-dir "$RUNNER_TEMP/custom-service-build" --output-dir "$RUNNER_TEMP/custom-service-release"
+      - name: Verify archive and relocated Xcode build
+        run: |
+          Utilities/verify-custom-xcode-build-service.sh --release-dir "$RUNNER_TEMP/custom-service-release"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: custom-xcode-build-service-release
+          path: ${{ runner.temp }}/custom-service-release/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/custom-v') && github.repository == 'lynnswap/swift-build'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: custom-xcode-build-service-release
+          path: assets
+      - name: Publish verified custom release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^custom-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]
+          cd assets
+          shasum -a 256 -c SHA256SUMS.txt
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import tarfile
+
+          with tarfile.open('custom-xcode-build-service-darwin-arm64.tar.gz') as archive:
+              manifest = json.load(archive.extractfile('manifest.json'))
+          if manifest['version'] != os.environ['RELEASE_TAG']:
+              raise SystemExit('Archive version does not match the release tag.')
+          Path('release-notes.md').write_text(
+              'Prebuilt custom Swift Build service and management CLI for Apple Silicon.\n\n'
+              f"Requires macOS {manifest['minimumMacOSVersion']} or later and Xcode "
+              f"{manifest['xcodeVersion']} (build {manifest['xcodeBuildVersion']}).\n\n"
+              f"Source revision: `{manifest['sourceRevision']}`. Dependency revisions and licenses "
+              'are included in the archive.\n\n'
+              'Download and inspect `install.sh`, then run it to install. Restart Xcode after '
+              'installation. Use `custom-xcode-build-service status` to inspect the selection '
+              'and `custom-xcode-build-service uninstall` to return to the standard service.\n'
+          )
+          PY
+          release_args=(--verify-tag --latest=false)
+          if [[ "${RELEASE_TAG#custom-v}" == *-* ]]; then
+            release_args+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" \
+            custom-xcode-build-service-darwin-arm64.tar.gz SHA256SUMS.txt install.sh \
+            "${release_args[@]}" --title "Custom Xcode build service $RELEASE_TAG" --notes-file release-notes.md
