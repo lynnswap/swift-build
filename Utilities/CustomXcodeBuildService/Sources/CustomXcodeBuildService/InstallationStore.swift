@@ -188,24 +188,11 @@ struct InstallationStore {
 
     func remove(_ url: URL) throws { try files.removeItem(at: url) }
 
-    func validateRemoval() throws {
-        try requireOwnership()
-        let expected: Set<String> = [".owner", ".lock", "versions", "current", "staging", "activation.log"]
-        guard Set(try files.contentsOfDirectory(atPath: root.path)).isSubset(of: expected) else {
-            throw ServiceError("The installation contains unrecognized files; refusing to delete it: \(root.path)")
-        }
-        _ = try ownedServicePaths()
-    }
-
-    func ownedServicePaths() throws -> Set<String> {
-        guard try exists(versions) else { return [] }
-        var services: Set<String> = []
-        for name in try files.contentsOfDirectory(atPath: versions.path) {
-            let package = try ReleasePackage(directory: versions.appendingPathComponent(name))
-            guard package.manifest.version == name else { throw ServiceError("Unrecognized installed release: \(name)") }
-            services.insert(package.service.path)
-        }
-        return services
+    func ownsService(at path: String) -> Bool {
+        let service = URL(fileURLWithPath: path).standardizedFileURL
+        let version = service.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        return version.deletingLastPathComponent().path == versions.path
+            && path == version.appendingPathComponent("libexec/swift-build/SWBBuildServiceBundle").path
     }
 
     func removePayloads() throws {
@@ -218,9 +205,6 @@ struct InstallationStore {
 
     private func discardStaging() throws {
         guard try exists(staging) else { return }
-        guard try files.attributesOfItem(atPath: staging.path)[.type] as? FileAttributeType == .typeDirectory else {
-            throw ServiceError("Refusing an unrecognized staging path: \(staging.path)")
-        }
         // Only the lock holder writes here; after an interruption these bytes
         // are disposable and must never be interpreted as installed versions.
         try files.removeItem(at: staging)

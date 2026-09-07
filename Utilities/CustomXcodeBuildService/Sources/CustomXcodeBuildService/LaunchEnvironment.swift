@@ -18,12 +18,12 @@ struct LaunchEnvironment {
         let concurrentResolution: String?
         let legacyService: String?
 
-        func requireOwnership(among ownedServices: Set<String>) throws {
+        func requireOwnership(in store: InstallationStore) throws {
             guard legacyService == nil else {
                 throw ServiceError("SWBBUILDSERVICE_PATH is already set. Remove that override before using this command.")
             }
             if let service {
-                guard ownedServices.contains(service) else {
+                guard store.ownsService(at: service) else {
                     throw ServiceError("XCBBUILDSERVICE_PATH belongs to another setup: \(service). Remove that override first.")
                 }
                 guard concurrentResolution == nil || concurrentResolution == "0" else {

@@ -25,7 +25,7 @@ struct InstallationManager {
             let previous = try store.selectedPackage()
             try store.validateExternalPaths()
             let settings = try environment.settings()
-            try settings.requireOwnership(among: store.ownedServicePaths())
+            try settings.requireOwnership(in: store)
             let hadAgent = try store.exists(store.agent)
             let hadCommand = try store.exists(store.command)
             let wasLoaded = try environment.isLoaded()
@@ -67,7 +67,7 @@ struct InstallationManager {
             guard let selected = try store.selectedPackage() else { throw ServiceError("No custom build service is installed.") }
             try selected.requireCompatibleHost(using: environment.runner)
             let settings = try environment.settings()
-            try settings.requireOwnership(among: store.ownedServicePaths())
+            try settings.requireOwnership(in: store)
             try Transaction.perform { transaction in try apply(selected, previous: settings, transaction: transaction) }
             return "Activated \(selected.manifest.version). Quit and reopen Xcode if it was already running."
         }) else { throw ServiceError("No custom build service is installed.") }
@@ -78,17 +78,15 @@ struct InstallationManager {
         try requireUser()
         try environment.requireGUI()
         return try store.withExistingLock(access: .modify) {
-            _ = try store.selectedPackage()
-            try store.validateRemoval()
             try store.validateExternalPaths()
             let settings = try environment.settings()
-            let ownedServices = try store.ownedServicePaths()
-            try settings.requireOwnership(among: ownedServices)
+            try settings.requireOwnership(in: store)
             let hadAgent = try store.exists(store.agent)
             let hadCommand = try store.exists(store.command)
+            let hadPayloads = try store.exists(store.current) || store.exists(store.versions)
             let wasLoaded = try environment.isLoaded()
             guard !wasLoaded || hadAgent else { throw ServiceError("An unrelated job already uses \(InstallationStore.label).") }
-            guard !ownedServices.isEmpty || hadAgent || hadCommand || wasLoaded else {
+            guard hadPayloads || hadAgent || hadCommand || wasLoaded || settings.service != nil else {
                 try store.removePayloads()
                 return "No custom build service is installed."
             }
