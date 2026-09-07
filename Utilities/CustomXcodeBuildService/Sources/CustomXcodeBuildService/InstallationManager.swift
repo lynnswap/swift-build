@@ -1,3 +1,15 @@
+//===----------------------------------------------------------------------===//
+//
+// This source file is part of the Swift open source project
+//
+// Copyright (c) 2026 Apple Inc. and the Swift project authors
+// Licensed under Apache License v2.0 with Runtime Library Exception
+//
+// See http://swift.org/LICENSE.txt for license information
+// See http://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
+//
+//===----------------------------------------------------------------------===//
+
 import Foundation
 
 struct InstallationManager {
@@ -9,7 +21,7 @@ struct InstallationManager {
         let package = try ReleasePackage(directory: directory)
         try package.requireCompatibleHost(using: environment.runner)
         try environment.requireGUI()
-        return try store.withLock(create: true) {
+        return try store.withLock(access: .install) {
             let previous = try store.selectedPackage()
             try store.validateExternalPaths()
             let settings = try environment.settings()
@@ -51,7 +63,7 @@ struct InstallationManager {
     func activate() throws -> String {
         try requireUser()
         try environment.requireGUI()
-        return try store.withLock(create: false) {
+        return try store.withLock(access: .modify) {
             guard let selected = try store.selectedPackage() else { throw ServiceError("No custom build service is installed.") }
             try selected.requireCompatibleHost(using: environment.runner)
             let settings = try environment.settings()
@@ -64,7 +76,7 @@ struct InstallationManager {
     func uninstall() throws -> String {
         try requireUser()
         try environment.requireGUI()
-        return try store.withLock(create: false) {
+        return try store.withLock(access: .modify) {
             guard try store.exists(store.root) else { return "No custom build service is installed." }
             _ = try store.selectedPackage()
             try store.validateRemoval()
@@ -111,7 +123,7 @@ struct InstallationManager {
     }
 
     func status() throws -> String {
-        try store.withLock(create: false) { try lockedStatus() }
+        try store.withLock(access: .read) { try lockedStatus() }
     }
 
     private func lockedStatus() throws -> String {

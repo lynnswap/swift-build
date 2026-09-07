@@ -1,13 +1,32 @@
+//===----------------------------------------------------------------------===//
+//
+// This source file is part of the Swift open source project
+//
+// Copyright (c) 2026 Apple Inc. and the Swift project authors
+// Licensed under Apache License v2.0 with Runtime Library Exception
+//
+// See http://swift.org/LICENSE.txt for license information
+// See http://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
+//
+//===----------------------------------------------------------------------===//
+
 import Darwin
 import Foundation
 
 struct InstallationStore {
+    enum Access {
+        case read
+        case install
+        case modify
+    }
+
     static let label = "io.github.lynnswap.custom-xcode-build-service"
     private static let owner = "lynnswap/swift-build custom-xcode-build-service schema 1\n"
     let home: URL
     private let files = FileManager.default
     var root: URL { home.appendingPathComponent("Library/Developer/CustomXcodeBuildService") }
     var versions: URL { root.appendingPathComponent("versions") }
+    var staging: URL { root.appendingPathComponent("staging") }
     var current: URL { root.appendingPathComponent("current") }
     var command: URL { home.appendingPathComponent(".local/bin/custom-xcode-build-service") }
     var agent: URL { home.appendingPathComponent("Library/LaunchAgents/\(Self.label).plist") }
@@ -18,22 +37,43 @@ struct InstallationStore {
         catch let error as CocoaError where error.code == .fileReadNoSuchFile { return false }
     }
 
-    func withLock<T>(create: Bool, _ operation: () throws -> T) throws -> T {
-        var createdRoot = false
+    func withLock<T>(access: Access, _ operation: () throws -> T) throws -> T {
         if try !exists(root) {
-            guard create else { return try operation() }
-            try ensureDirectory(root.deletingLastPathComponent())
-            try files.createDirectory(at: root, withIntermediateDirectories: false)
-            try Data(Self.owner.utf8).write(to: root.appendingPathComponent(".owner"), options: .atomic)
-            createdRoot = true
+            guard access == .install else { return try operation() }
+            try initializeRoot()
         }
         try requireOwnership()
-        let descriptor = Darwin.open(root.appendingPathComponent(".lock").path, (createdRoot ? O_CREAT : 0) | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
+        let descriptor = Darwin.open(root.appendingPathComponent(".lock").path, O_RDWR | O_NOFOLLOW)
         guard descriptor >= 0 else { throw ServiceError("Cannot open installation lock: \(String(cString: strerror(errno)))") }
         defer { Darwin.close(descriptor) }
         guard flock(descriptor, LOCK_EX) == 0 else { throw ServiceError("Cannot lock installation: \(String(cString: strerror(errno)))") }
         defer { flock(descriptor, LOCK_UN) }
+        if access != .read { try discardStaging() }
         return try operation()
+    }
+
+    func initializeRoot() throws {
+        try ensureDirectory(root.deletingLastPathComponent())
+        let candidate = root.deletingLastPathComponent().appendingPathComponent(".CustomXcodeBuildService-initializing-\(UUID().uuidString)")
+        try files.createDirectory(at: candidate, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        do {
+            try Data(Self.owner.utf8).write(to: candidate.appendingPathComponent(".owner"), options: .atomic)
+            try Data().write(to: candidate.appendingPathComponent(".lock"), options: .atomic)
+            try files.setAttributes([.posixPermissions: 0o600], ofItemAtPath: candidate.appendingPathComponent(".lock").path)
+            // A normal rename could replace another publisher's directory and
+            // strand its waiters on the old lock inode. RENAME_EXCL preserves it.
+            if Darwin.renamex_np(candidate.path, root.path, UInt32(RENAME_EXCL)) != 0 {
+                let failure = errno
+                guard failure == EEXIST else {
+                    throw ServiceError("Cannot publish installation directory: \(String(cString: strerror(failure)))")
+                }
+                try files.removeItem(at: candidate)
+            }
+        } catch {
+            if try exists(candidate) { try files.removeItem(at: candidate) }
+            throw error
+        }
+        try requireOwnership()
     }
 
     func requireOwnership() throws {
@@ -97,13 +137,16 @@ struct InstallationStore {
             }
             return installed
         }
-        let staging = versions.appendingPathComponent(".staging-\(UUID().uuidString)")
+        try ensureDirectory(staging)
+        let stagedPackage = staging.appendingPathComponent("package-\(UUID().uuidString)")
         do {
-            try files.copyItem(at: package.directory, to: staging)
-            _ = try ReleasePackage(directory: staging)
-            try files.moveItem(at: staging, to: destination)
+            try files.copyItem(at: package.directory, to: stagedPackage)
+            _ = try ReleasePackage(directory: stagedPackage)
+            guard Darwin.renamex_np(stagedPackage.path, destination.path, UInt32(RENAME_EXCL)) == 0 else {
+                throw ServiceError("Cannot publish installed release: \(String(cString: strerror(errno)))")
+            }
         } catch {
-            if try exists(staging) { try files.removeItem(at: staging) }
+            if try exists(stagedPackage) { try files.removeItem(at: stagedPackage) }
             throw error
         }
         return try ReleasePackage(directory: destination)
@@ -114,7 +157,8 @@ struct InstallationStore {
             if try exists(current) { try files.removeItem(at: current) }
             return
         }
-        let temporary = root.appendingPathComponent(".current-\(UUID().uuidString)")
+        try ensureDirectory(staging)
+        let temporary = staging.appendingPathComponent("current-\(UUID().uuidString)")
         try files.createSymbolicLink(atPath: temporary.path, withDestinationPath: "versions/\(package.manifest.version)")
         if Darwin.rename(temporary.path, current.path) != 0 {
             let failure = errno
@@ -139,7 +183,7 @@ struct InstallationStore {
 
     func validateRemoval() throws {
         try requireOwnership()
-        let expected: Set<String> = [".owner", ".lock", "versions", "current", "activation.log"]
+        let expected: Set<String> = [".owner", ".lock", "versions", "current", "staging", "activation.log"]
         guard Set(try files.contentsOfDirectory(atPath: root.path)).isSubset(of: expected) else {
             throw ServiceError("The installation contains unrecognized files; refusing to delete it: \(root.path)")
         }
@@ -158,11 +202,21 @@ struct InstallationStore {
     }
 
     func removePayloads() throws {
-        for url in [current, versions, root.appendingPathComponent("activation.log")] {
+        for url in [current, versions, staging, root.appendingPathComponent("activation.log")] {
             if try exists(url) { try remove(url) }
         }
         // Keep the lock inode and its owner marker: a waiting invocation may
         // already hold this inode open when uninstall finishes.
+    }
+
+    private func discardStaging() throws {
+        guard try exists(staging) else { return }
+        guard try files.attributesOfItem(atPath: staging.path)[.type] as? FileAttributeType == .typeDirectory else {
+            throw ServiceError("Refusing an unrecognized staging path: \(staging.path)")
+        }
+        // Only the lock holder writes here; after an interruption these bytes
+        // are disposable and must never be interpreted as installed versions.
+        try files.removeItem(at: staging)
     }
 
     private func ensureDirectory(_ directory: URL) throws {
@@ -171,12 +225,14 @@ struct InstallationStore {
             return
         }
         try ensureDirectory(directory.deletingLastPathComponent())
-        if try exists(directory) {
+        if Darwin.mkdir(directory.path, 0o755) != 0 {
+            let failure = errno
+            guard failure == EEXIST else {
+                throw ServiceError("Cannot create installation directory \(directory.path): \(String(cString: strerror(failure)))")
+            }
             guard try files.attributesOfItem(atPath: directory.path)[.type] as? FileAttributeType == .typeDirectory else {
                 throw ServiceError("Expected a directory, not a file or symbolic link: \(directory.path)")
             }
-        } else {
-            try files.createDirectory(at: directory, withIntermediateDirectories: false)
         }
     }
 }
