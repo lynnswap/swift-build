@@ -68,14 +68,25 @@ func rejectsInvalidReleaseVersions(version: String) throws {
     #expect(throws: ServiceError.self) { try ReleasePackage(directory: package) }
 }
 
-@Test func rejectsCurrentLinkEscapingOwnedVersions() throws {
+@Test(arguments: [
+    "current", "versions", "versions/custom-v1.0.0",
+    "versions/custom-v1.0.0/libexec/swift-build/external",
+])
+func uninstallRemovesOwnedLinksWithoutFollowingDestinations(path: String) throws {
     let fixture = try Fixture()
     let package = try fixture.package("custom-v1.0.0")
     _ = try fixture.manager.install(from: package)
-    try FileManager.default.removeItem(at: fixture.store.current)
-    try FileManager.default.createSymbolicLink(at: fixture.store.current, withDestinationURL: package)
-    #expect(throws: ServiceError.self) { try fixture.manager.uninstall() }
-    #expect(try fixture.store.exists(package))
+    let link = fixture.store.root.appendingPathComponent(path)
+    if try fixture.store.exists(link) { try FileManager.default.removeItem(at: link) }
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: package)
+
+    _ = try fixture.manager.uninstall()
+
+    #expect(try String(contentsOf: package.appendingPathComponent("licenses/LICENSE.txt"), encoding: .utf8) == "Apache")
+    #expect(fixture.runner.settings.isEmpty)
+    #expect(!fixture.runner.loaded)
+    #expect(try !fixture.store.exists(fixture.store.versions))
+    #expect(try !fixture.store.exists(fixture.store.current))
 }
 
 @Test func rejectsSymlinkedInstallationParent() throws {

@@ -82,7 +82,6 @@ func interruptedStagingDoesNotBecomeAnInstalledVersion(command: String) throws {
     try fixture.write("preserve", to: external)
     try FileManager.default.createSymbolicLink(at: fixture.store.staging.appendingPathComponent("current-interrupted"), withDestinationURL: external)
 
-    #expect(try fixture.store.ownedServicePaths() == [selected.service.path])
     #expect(try fixture.manager.status().contains("Installed: custom-v1.0.0"))
     #expect(try fixture.store.exists(partial))
 
@@ -104,16 +103,18 @@ func interruptedStagingDoesNotBecomeAnInstalledVersion(command: String) throws {
     #expect(try String(contentsOf: external, encoding: .utf8) == "preserve")
 }
 
-@Test func mutationRefusesSymlinkedStagingWithoutDeletingItsDestination() throws {
+@Test func uninstallRemovesStagingLinkWithoutDeletingItsDestination() throws {
     let fixture = try Fixture()
     _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
     try FileManager.default.removeItem(at: fixture.store.staging)
     let external = fixture.directory.appendingPathComponent("unrelated")
     try fixture.write("preserve", to: external.appendingPathComponent("file"))
     try FileManager.default.createSymbolicLink(at: fixture.store.staging, withDestinationURL: external)
-    #expect(throws: ServiceError.self) { try fixture.manager.uninstall() }
+    _ = try fixture.manager.uninstall()
     #expect(try String(contentsOf: external.appendingPathComponent("file"), encoding: .utf8) == "preserve")
-    #expect(fixture.runner.loaded)
+    #expect(fixture.runner.settings.isEmpty)
+    #expect(!fixture.runner.loaded)
+    #expect(try !fixture.store.exists(fixture.store.staging))
 }
 
 @Test(arguments: ["read", "modify"])

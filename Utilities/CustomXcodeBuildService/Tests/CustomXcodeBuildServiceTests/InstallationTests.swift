@@ -163,12 +163,19 @@ func refusesForeignEnvironment(key: String) throws {
     #expect(fixture.runner.loaded)
 }
 
-@Test func uninstallPreservesExternallyChangedSettings() throws {
+@Test(arguments: [
+    "/someone/elses/service",
+    "Library/Developer/CustomXcodeBuildService/versions-other/custom-v1.0.0/libexec/swift-build/SWBBuildServiceBundle",
+    "Library/Developer/CustomXcodeBuildService/versions/custom-v1.0.0/libexec/swift-build/another-service",
+    "Library/Developer/CustomXcodeBuildService/versions/custom-v1.0.0/extra/libexec/swift-build/SWBBuildServiceBundle",
+])
+func uninstallPreservesExternallyChangedSettings(path: String) throws {
     let fixture = try Fixture()
     _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
-    fixture.runner.settings["XCBBUILDSERVICE_PATH"] = "/someone/elses/service"
+    let foreign = path.hasPrefix("/") ? path : fixture.store.home.appendingPathComponent(path).path
+    fixture.runner.settings["XCBBUILDSERVICE_PATH"] = foreign
     #expect(throws: ServiceError.self) { try fixture.manager.uninstall() }
-    #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == "/someone/elses/service")
+    #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == foreign)
     #expect(fixture.runner.loaded)
     #expect(try fixture.store.exists(fixture.store.root))
 }
@@ -183,14 +190,85 @@ func uninstallRefusesIdleXcodeClient(path: String) throws {
     #expect(try fixture.store.exists(fixture.store.root))
 }
 
-@Test func uninstallRefusesUnrecognizedFiles() throws {
+@Test func uninstallPreservesUnrelatedFilesInInstallationRoot() throws {
     let fixture = try Fixture()
     _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
     let foreign = fixture.store.root.appendingPathComponent("my-file")
     try fixture.write("preserve", to: foreign)
-    #expect(throws: ServiceError.self) { try fixture.manager.uninstall() }
+    _ = try fixture.manager.uninstall()
     #expect(try String(contentsOf: foreign, encoding: .utf8) == "preserve")
-    #expect(fixture.runner.loaded)
+    #expect(fixture.runner.settings.isEmpty)
+    #expect(!fixture.runner.loaded)
+    #expect(try !fixture.store.exists(fixture.store.versions))
+    #expect(try !fixture.store.exists(fixture.store.command))
+    #expect(try !fixture.store.exists(fixture.store.agent))
+}
+
+@Test(arguments: ["custom-v1.0.0", "custom-v1.0.1"])
+func uninstallRemovesReleasesWithGeneratedFiles(version: String) throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.1"))
+    let generated = fixture.store.versions.appendingPathComponent("\(version)/libexec/swift-build/WidgetPreviewExtension.dependency-scan.dia")
+    try fixture.write("diagnostics", to: generated)
+
+    _ = try fixture.manager.uninstall()
+
+    #expect(fixture.runner.settings.isEmpty)
+    #expect(!fixture.runner.loaded)
+    #expect(try !fixture.store.exists(fixture.store.versions))
+    #expect(try !fixture.store.exists(fixture.store.current))
+    #expect(try !fixture.store.exists(fixture.store.command))
+    #expect(try !fixture.store.exists(fixture.store.agent))
+}
+
+@Test(arguments: [
+    "versions",
+    "versions/custom-v1.0.0",
+    "versions/custom-v1.0.0/manifest.json",
+    "versions/custom-v1.0.0/bin/custom-xcode-build-service",
+    "versions/custom-v1.0.0/libexec/swift-build/SWBBuildServiceBundle",
+    "versions/custom-v1.0.0/libexec/swift-build/SwiftBuild_SWBCore.bundle",
+])
+func uninstallRemovesIncompleteInstallation(missingPath: String) throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    try FileManager.default.removeItem(at: fixture.store.root.appendingPathComponent(missingPath))
+
+    _ = try fixture.manager.uninstall()
+
+    #expect(fixture.runner.settings.isEmpty)
+    #expect(!fixture.runner.loaded)
+    #expect(try !fixture.store.exists(fixture.store.versions))
+    #expect(try !fixture.store.exists(fixture.store.current))
+    #expect(try !fixture.store.exists(fixture.store.command))
+    #expect(try !fixture.store.exists(fixture.store.agent))
+}
+
+@Test func uninstallDoesNotReadInstalledManifest() throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    try fixture.write("{broken", to: fixture.store.versions.appendingPathComponent("custom-v1.0.0/manifest.json"))
+
+    _ = try fixture.manager.uninstall()
+
+    #expect(fixture.runner.settings.isEmpty)
+    #expect(!fixture.runner.loaded)
+    #expect(try !fixture.store.exists(fixture.store.versions))
+}
+
+@Test func uninstallClearsOwnedSettingsAfterPayloadsWereRemoved() throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    fixture.runner.loaded = false
+    try fixture.store.remove(fixture.store.agent)
+    try fixture.store.remove(fixture.store.command)
+    try fixture.store.removePayloads()
+
+    _ = try fixture.manager.uninstall()
+
+    #expect(fixture.runner.settings.isEmpty)
+    #expect(!fixture.runner.loaded)
 }
 
 @Test func unexpectedLaunchctlErrorsAreNotAbsence() throws {
