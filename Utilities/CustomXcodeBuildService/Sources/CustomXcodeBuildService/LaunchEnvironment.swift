@@ -40,7 +40,14 @@ struct LaunchEnvironment {
     var domain: String { "gui/\(userID)" }
     var job: String { "\(domain)/\(InstallationStore.label)" }
 
-    func requireGUI() throws { _ = try command(["print", domain]) }
+    func requireGUI() throws {
+        let name = try command(["managername"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let uid = try command(["manageruid"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard name == "Aqua", UInt32(uid) == userID else {
+            throw ServiceError("Run this command from your logged-in macOS desktop session (Aqua, user \(userID)). The current launchd context is \(name), user \(uid); SSH, background, and system contexts cannot manage the GUI build-service settings.")
+        }
+        _ = try command(["print", domain])
+    }
 
     func settings() throws -> Settings {
         try Settings(service: value("XCBBUILDSERVICE_PATH"), concurrentResolution: value("DisableConcurrentDependencyResolution"), legacyService: value("SWBBUILDSERVICE_PATH"))

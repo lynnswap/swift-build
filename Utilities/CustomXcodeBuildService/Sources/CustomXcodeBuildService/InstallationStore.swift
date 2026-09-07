@@ -16,7 +16,6 @@ import Foundation
 struct InstallationStore {
     enum Access {
         case read
-        case install
         case modify
     }
 
@@ -37,11 +36,19 @@ struct InstallationStore {
         catch let error as CocoaError where error.code == .fileReadNoSuchFile { return false }
     }
 
-    func withLock<T>(access: Access, _ operation: () throws -> T) throws -> T {
-        if try !exists(root) {
-            guard access == .install else { return try operation() }
-            try initializeRoot()
-        }
+    func withInstallationLock<T>(_ operation: () throws -> T) throws -> T {
+        if try !exists(root) { try initializeRoot() }
+        return try locked(access: .modify, operation)
+    }
+
+    func withExistingLock<T>(access: Access, _ operation: () throws -> T) throws -> T? {
+        // Absence is a completed observation: a first installer may publish the
+        // root immediately afterward, so an unlocked callback cannot recheck it.
+        guard try exists(root) else { return nil }
+        return try locked(access: access, operation)
+    }
+
+    private func locked<T>(access: Access, _ operation: () throws -> T) throws -> T {
         try requireOwnership()
         let descriptor = Darwin.open(root.appendingPathComponent(".lock").path, O_RDWR | O_NOFOLLOW)
         guard descriptor >= 0 else { throw ServiceError("Cannot open installation lock: \(String(cString: strerror(errno)))") }

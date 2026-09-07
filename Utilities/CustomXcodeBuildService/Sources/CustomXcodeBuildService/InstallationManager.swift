@@ -21,7 +21,7 @@ struct InstallationManager {
         let package = try ReleasePackage(directory: directory)
         try package.requireCompatibleHost(using: environment.runner)
         try environment.requireGUI()
-        return try store.withLock(access: .install) {
+        return try store.withInstallationLock {
             let previous = try store.selectedPackage()
             try store.validateExternalPaths()
             let settings = try environment.settings()
@@ -63,30 +63,35 @@ struct InstallationManager {
     func activate() throws -> String {
         try requireUser()
         try environment.requireGUI()
-        return try store.withLock(access: .modify) {
+        guard let result = try store.withExistingLock(access: .modify, {
             guard let selected = try store.selectedPackage() else { throw ServiceError("No custom build service is installed.") }
             try selected.requireCompatibleHost(using: environment.runner)
             let settings = try environment.settings()
             try settings.requireOwnership(among: store.ownedServicePaths())
             try Transaction.perform { transaction in try apply(selected, previous: settings, transaction: transaction) }
             return "Activated \(selected.manifest.version). Quit and reopen Xcode if it was already running."
-        }
+        }) else { throw ServiceError("No custom build service is installed.") }
+        return result
     }
 
     func uninstall() throws -> String {
         try requireUser()
         try environment.requireGUI()
-        return try store.withLock(access: .modify) {
-            guard try store.exists(store.root) else { return "No custom build service is installed." }
+        return try store.withExistingLock(access: .modify) {
             _ = try store.selectedPackage()
             try store.validateRemoval()
             try store.validateExternalPaths()
             let settings = try environment.settings()
-            try settings.requireOwnership(among: store.ownedServicePaths())
+            let ownedServices = try store.ownedServicePaths()
+            try settings.requireOwnership(among: ownedServices)
             let hadAgent = try store.exists(store.agent)
             let hadCommand = try store.exists(store.command)
             let wasLoaded = try environment.isLoaded()
             guard !wasLoaded || hadAgent else { throw ServiceError("An unrelated job already uses \(InstallationStore.label).") }
+            guard !ownedServices.isEmpty || hadAgent || hadCommand || wasLoaded else {
+                try store.removePayloads()
+                return "No custom build service is installed."
+            }
             let running = try runningProcesses()
             guard !running.contains(where: {
                 ["Xcode", "xcodebuild"].contains($0.name) || (Self.serviceNames.contains($0.name) && $0.path.hasPrefix(store.versions.path + "/"))
@@ -119,16 +124,17 @@ struct InstallationManager {
             // select a service whose resources are being deleted.
             try store.removePayloads()
             return "Uninstalled the custom build service. Reopen Xcode to use its bundled service."
-        }
+        } ?? "No custom build service is installed."
     }
 
     func status() throws -> String {
-        try store.withLock(access: .read) { try lockedStatus() }
+        try environment.requireGUI()
+        return try store.withExistingLock(access: .read) {
+            try statusReport(selected: store.selectedPackage())
+        } ?? statusReport(selected: nil)
     }
 
-    private func lockedStatus() throws -> String {
-        let selected = try store.selectedPackage()
-        try environment.requireGUI()
+    private func statusReport(selected: ReleasePackage?) throws -> String {
         let settings = try environment.settings()
         let loaded = try environment.isLoaded()
         let running = try runningProcesses().filter { Self.serviceNames.contains($0.name) }

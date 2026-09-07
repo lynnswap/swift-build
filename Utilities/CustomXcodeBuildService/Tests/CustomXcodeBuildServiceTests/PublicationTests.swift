@@ -10,6 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+import Darwin
 import Dispatch
 import Foundation
 import Testing
@@ -39,7 +40,7 @@ import Testing
     DispatchQueue.concurrentPerform(iterations: 16) { _ in
         let store = InstallationStore(home: home)
         do {
-            try store.withLock(access: .install) {
+            try store.withInstallationLock {
                 try store.requireOwnership()
                 #expect(try store.exists(store.root.appendingPathComponent(".lock")))
                 let value = try #require(Int(String(contentsOf: counter, encoding: .utf8)))
@@ -113,4 +114,50 @@ func interruptedStagingDoesNotBecomeAnInstalledVersion(command: String) throws {
     #expect(throws: ServiceError.self) { try fixture.manager.uninstall() }
     #expect(try String(contentsOf: external.appendingPathComponent("file"), encoding: .utf8) == "preserve")
     #expect(fixture.runner.loaded)
+}
+
+@Test(arguments: ["read", "modify"])
+func absentInstallationDoesNotInvokeUnlockedCallback(access: String) throws {
+    let fixture = try Fixture()
+    var invoked = false
+    let result = try fixture.store.withExistingLock(access: access == "read" ? .read : .modify) {
+        invoked = true
+        try fixture.store.initializeRoot()
+        return "ran without a published lock"
+    }
+    #expect(result == nil)
+    #expect(!invoked)
+    #expect(try !fixture.store.exists(fixture.store.root))
+}
+
+@Test func concurrentFirstInstallAndUninstallCallbacksAlwaysHoldPublishedLock() throws {
+    let fixture = try Fixture()
+    let home = fixture.store.home
+    let counter = fixture.directory.appendingPathComponent("mutations")
+    try fixture.write("0", to: counter)
+
+    DispatchQueue.concurrentPerform(iterations: 32) { index in
+        let store = InstallationStore(home: home)
+        let mutation = {
+            let descriptor = Darwin.open(store.root.appendingPathComponent(".lock").path, O_RDWR)
+            guard descriptor >= 0 else { throw ServiceError("Mutation ran before a lock was published.") }
+            defer { Darwin.close(descriptor) }
+            let result = flock(descriptor, LOCK_EX | LOCK_NB)
+            let failure = errno
+            #expect(result == -1 && failure == EWOULDBLOCK)
+            let value = try #require(Int(String(contentsOf: counter, encoding: .utf8)))
+            try Data(String(value + 1).utf8).write(to: counter, options: .atomic)
+        }
+        do {
+            if index.isMultiple(of: 2) {
+                try store.withInstallationLock(mutation)
+            } else {
+                _ = try store.withExistingLock(access: .modify, mutation)
+            }
+        } catch { Issue.record(error) }
+    }
+
+    let mutations = try #require(Int(String(contentsOf: counter, encoding: .utf8)))
+    #expect((16...32).contains(mutations))
+    #expect(try Set(FileManager.default.contentsOfDirectory(atPath: fixture.store.root.path)) == [".owner", ".lock"])
 }

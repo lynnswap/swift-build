@@ -231,6 +231,60 @@ func uninstallRefusesIdleXcodeClient(path: String) throws {
     #expect(try !fixture.store.exists(fixture.store.root))
 }
 
+@Test(arguments: ["Background", "System", "wrongUID"], ["install", "activate", "uninstall", "status"])
+func rejectsForeignLaunchdContextBeforeFilesystemAndEnvironmentChanges(context: String, command: String) throws {
+    let fixture = try Fixture()
+    let package = try fixture.package("custom-v1.0.0")
+    if command != "install" {
+        _ = try fixture.manager.install(from: package)
+        try fixture.write("keep pending bytes", to: fixture.store.staging.appendingPathComponent("incomplete"))
+    }
+    let settings = fixture.runner.settings
+    let loaded = fixture.runner.loaded
+    let mutations = fixture.runner.launchctlMutations
+    fixture.runner.managerName = context == "wrongUID" ? "Aqua" : context
+    fixture.runner.managerUserID = context == "wrongUID" ? "502" : "501"
+
+    #expect(throws: ServiceError.self) {
+        switch command {
+        case "install": _ = try fixture.manager.install(from: package)
+        case "activate": _ = try fixture.manager.activate()
+        case "uninstall": _ = try fixture.manager.uninstall()
+        default: _ = try fixture.manager.status()
+        }
+    }
+
+    #expect(fixture.runner.settings == settings)
+    #expect(fixture.runner.loaded == loaded)
+    #expect(fixture.runner.launchctlMutations == mutations)
+    if command == "install" {
+        #expect(try !fixture.store.exists(fixture.store.root))
+    } else {
+        #expect(try String(contentsOf: fixture.store.staging.appendingPathComponent("incomplete"), encoding: .utf8) == "keep pending bytes")
+    }
+}
+
+@Test func uninstallWithoutInstallationIsNoOpWhileXcodeRuns() throws {
+    let fixture = try Fixture()
+    fixture.runner.processes = "123 /Applications/Xcode.app/Contents/MacOS/Xcode\n"
+    #expect(try fixture.manager.uninstall() == "No custom build service is installed.")
+    #expect(fixture.runner.launchctlMutations.isEmpty)
+    #expect(try !fixture.store.exists(fixture.store.root))
+    #expect(try fixture.manager.status().contains("Installed: none"))
+    #expect(try !fixture.store.exists(fixture.store.root))
+}
+
+@Test func repeatedUninstallWithRetainedLockIsNoOpWhileXcodeRuns() throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    _ = try fixture.manager.uninstall()
+    let mutations = fixture.runner.launchctlMutations
+    fixture.runner.processes = "123 /Applications/Xcode.app/Contents/MacOS/Xcode\n"
+    #expect(try fixture.manager.uninstall() == "No custom build service is installed.")
+    #expect(fixture.runner.launchctlMutations == mutations)
+    #expect(try Set(FileManager.default.contentsOfDirectory(atPath: fixture.store.root.path)) == [".owner", ".lock"])
+}
+
 final class Fixture {
     let directory: URL
     let runner = FakeRunner()
@@ -277,6 +331,9 @@ final class FakeRunner: ProcessRunning {
     var xcodeStatus: Int32 = 0
     var processes = ""
     var failOnce: [String]?
+    var managerName = "Aqua"
+    var managerUserID = "501"
+    var launchctlMutations: [[String]] = []
 
     func run(_ executable: String, _ arguments: [String]) throws -> ProcessResult {
         if executable == "/usr/bin/uname" { return .init(status: 0, output: "arm64\n") }
@@ -290,17 +347,25 @@ final class FakeRunner: ProcessRunning {
         guard executable == "/bin/launchctl" else { throw ServiceError("Unexpected command \(executable)") }
         if arguments == failOnce { failOnce = nil; return .init(status: 5, output: "injected failure") }
         switch arguments[0] {
+        case "managername": return .init(status: 0, output: managerName + "\n")
+        case "manageruid": return .init(status: 0, output: managerUserID + "\n")
         case "getenv": return .init(status: 0, output: settings[arguments[1]].map { $0 + "\n" } ?? "")
-        case "setenv": settings[arguments[1]] = arguments[2]
-        case "unsetenv": settings[arguments[1]] = nil
+        case "setenv":
+            launchctlMutations.append(arguments)
+            settings[arguments[1]] = arguments[2]
+        case "unsetenv":
+            launchctlMutations.append(arguments)
+            settings[arguments[1]] = nil
         case "print":
             if arguments[1].split(separator: "/").count == 3 {
                 return .init(status: loaded ? 0 : 113, output: "")
             }
         case "bootstrap":
+            launchctlMutations.append(arguments)
             guard !loaded else { throw ServiceError("Job already loaded") }
             loaded = true
         case "bootout":
+            launchctlMutations.append(arguments)
             guard loaded else { throw ServiceError("Job not loaded") }
             loaded = false
         default: throw ServiceError("Unexpected launchctl arguments \(arguments)")
