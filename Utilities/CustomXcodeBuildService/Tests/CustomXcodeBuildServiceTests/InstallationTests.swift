@@ -203,7 +203,7 @@ func uninstallRefusesIdleXcodeClient(path: String) throws {
     let package = try fixture.package("custom-v1.0.0")
     _ = try fixture.manager.install(from: package)
     let lock = fixture.store.root.appendingPathComponent(".lock")
-    let inode = try FileManager.default.attributesOfItem(atPath: lock.path)[.systemFileNumber] as? NSNumber
+    let inode = try #require(FileManager.default.attributesOfItem(atPath: lock.path)[.systemFileNumber] as? NSNumber)
     _ = try fixture.manager.uninstall()
     #expect(try Set(FileManager.default.contentsOfDirectory(atPath: fixture.store.root.path)) == [".owner", ".lock"])
     _ = try fixture.manager.install(from: package)
@@ -269,7 +269,12 @@ final class FakeRunner: ProcessRunning {
     func run(_ executable: String, _ arguments: [String]) throws -> ProcessResult {
         if executable == "/usr/bin/uname" { return .init(status: 0, output: "arm64\n") }
         if executable == "/usr/bin/xcodebuild" { return .init(status: xcodeStatus, output: xcodeVersion) }
-        if executable == "/bin/ps" { return .init(status: 0, output: processes) }
+        if executable == "/bin/ps" {
+            guard arguments == ["-U", "501", "-x", "-ww", "-o", "pid=,comm="] else {
+                throw ServiceError("Process enumeration must be scoped to the installing user.")
+            }
+            return .init(status: 0, output: processes)
+        }
         guard executable == "/bin/launchctl" else { throw ServiceError("Unexpected command \(executable)") }
         if arguments == failOnce { failOnce = nil; return .init(status: 5, output: "injected failure") }
         switch arguments[0] {

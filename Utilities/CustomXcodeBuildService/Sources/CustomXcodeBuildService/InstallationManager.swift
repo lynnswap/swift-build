@@ -127,7 +127,9 @@ struct InstallationManager {
             lines.append("Selected service: \(selected.service.path)")
         }
         let active = selected != nil && settings.service == selected?.service.path && settings.concurrentResolution == "0" && settings.legacyService == nil
-        lines.append("Launchd selection: \(active ? "custom release selected for future processes" : "not selected or conflicting")")
+        let noOverrides = settings.service == nil && settings.concurrentResolution == nil && settings.legacyService == nil
+        let selection = active ? "custom release selected for future processes" : (noOverrides ? "no custom launchd settings" : "conflicting or incomplete custom settings")
+        lines.append("Launchd selection: \(selection)")
         lines.append("XCBBUILDSERVICE_PATH: \(settings.service ?? "unset")")
         lines.append("DisableConcurrentDependencyResolution: \(settings.concurrentResolution ?? "unset")")
         lines.append("SWBBUILDSERVICE_PATH: \(settings.legacyService ?? "unset")")
@@ -153,7 +155,7 @@ struct InstallationManager {
     private static let serviceNames = ["SWBBuildService", "SWBBuildServiceBundle", "XCBBuildService"]
 
     private func runningProcesses() throws -> [(pid: String, path: String, name: String)] {
-        let output = try environment.runner.run("/bin/ps", ["-ax", "-ww", "-o", "pid=,comm="]).requireSuccess("ps")
+        let output = try environment.runner.run("/bin/ps", ["-U", String(environment.userID), "-x", "-ww", "-o", "pid=,comm="]).requireSuccess("ps")
         return output.split(whereSeparator: \.isNewline).compactMap { line in
             let columns = line.split(maxSplits: 1, whereSeparator: \.isWhitespace)
             guard columns.count == 2 else { return nil }

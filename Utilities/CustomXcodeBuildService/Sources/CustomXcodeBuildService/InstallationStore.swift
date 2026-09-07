@@ -19,14 +19,16 @@ struct InstallationStore {
     }
 
     func withLock<T>(create: Bool, _ operation: () throws -> T) throws -> T {
+        var createdRoot = false
         if try !exists(root) {
             guard create else { return try operation() }
             try ensureDirectory(root.deletingLastPathComponent())
             try files.createDirectory(at: root, withIntermediateDirectories: false)
             try Data(Self.owner.utf8).write(to: root.appendingPathComponent(".owner"), options: .atomic)
+            createdRoot = true
         }
         try requireOwnership()
-        let descriptor = Darwin.open(root.appendingPathComponent(".lock").path, O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
+        let descriptor = Darwin.open(root.appendingPathComponent(".lock").path, (createdRoot ? O_CREAT : 0) | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
         guard descriptor >= 0 else { throw ServiceError("Cannot open installation lock: \(String(cString: strerror(errno)))") }
         defer { Darwin.close(descriptor) }
         guard flock(descriptor, LOCK_EX) == 0 else { throw ServiceError("Cannot lock installation: \(String(cString: strerror(errno)))") }
