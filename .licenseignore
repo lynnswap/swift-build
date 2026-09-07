@@ -9,3 +9,5 @@
 .swift-version
 CODEOWNERS
 Package.swift
+.github/custom-build-service/ServiceDependencies.resolved
+Utilities/install-custom-xcode-build-service.sh.in
