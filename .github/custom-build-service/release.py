@@ -100,6 +100,13 @@ def validate_payload(payload):
 
 def check_binary(binary):
     require(output(["/usr/bin/lipo", "-archs", str(binary)]) == "arm64", f"Expected arm64 binary: {binary}")
+    load_commands = output(["/usr/bin/otool", "-l", str(binary)])
+    minimum_versions = re.findall(
+        r"cmd LC_BUILD_VERSION\s+cmdsize \d+\s+platform (?:1|MACOS)\s+minos ([0-9.]+)", load_commands)
+    require(len(minimum_versions) == 1, f"Missing macOS deployment target: {binary}")
+    minimum = tuple(int(component) for component in minimum_versions[0].split("."))
+    require((minimum + (0, 0, 0))[:3] <= (26, 0, 0),
+            f"Binary requires a newer OS than the distribution's macOS 26 minimum: {binary}")
     dependencies = output(["/usr/bin/otool", "-L", str(binary)]).splitlines()[1:]
     require(dependencies, f"No Mach-O dependency information: {binary}")
     for line in dependencies:
