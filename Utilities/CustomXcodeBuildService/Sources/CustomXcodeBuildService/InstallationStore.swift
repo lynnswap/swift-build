@@ -91,7 +91,7 @@ struct InstallationStore {
         }
     }
 
-    func selectedPackage() throws -> ReleasePackage? {
+    func selectedDirectory() throws -> URL? {
         guard try exists(root) else { return nil }
         try requireOwnership()
         guard try exists(current) else { return nil }
@@ -100,6 +100,11 @@ struct InstallationStore {
         guard selected.deletingLastPathComponent().path == versions.path else {
             throw ServiceError("The current link points outside the installation's versions directory.")
         }
+        return selected
+    }
+
+    func selectedPackage() throws -> ReleasePackage? {
+        guard let selected = try selectedDirectory() else { return nil }
         let package = try ReleasePackage(directory: selected)
         guard selected.lastPathComponent == package.manifest.version else {
             throw ServiceError("The selected release's directory and manifest version differ.")
@@ -139,7 +144,7 @@ struct InstallationStore {
         if try exists(destination) {
             let installed = try ReleasePackage(directory: destination)
             guard installed.manifest == package.manifest,
-                  files.contentsEqual(atPath: destination.path, andPath: package.directory.path) else {
+                  try package.matchesInstalledContents(at: destination) else {
                 throw ServiceError("Version \(package.manifest.version) is already installed with different contents. Publish a new version.")
             }
             return installed
@@ -148,7 +153,7 @@ struct InstallationStore {
         let stagedPackage = staging.appendingPathComponent("package-\(UUID().uuidString)")
         do {
             try files.copyItem(at: package.directory, to: stagedPackage)
-            _ = try ReleasePackage(directory: stagedPackage)
+            try ReleasePackage(directory: stagedPackage).validateForInstallation()
             guard Darwin.renamex_np(stagedPackage.path, destination.path, UInt32(RENAME_EXCL)) == 0 else {
                 throw ServiceError("Cannot publish installed release: \(String(cString: strerror(errno)))")
             }
@@ -159,14 +164,14 @@ struct InstallationStore {
         return try ReleasePackage(directory: destination)
     }
 
-    func select(_ package: ReleasePackage?) throws {
-        guard let package else {
+    func select(_ directory: URL?) throws {
+        guard let directory else {
             if try exists(current) { try files.removeItem(at: current) }
             return
         }
         try ensureDirectory(staging)
         let temporary = staging.appendingPathComponent("current-\(UUID().uuidString)")
-        try files.createSymbolicLink(atPath: temporary.path, withDestinationPath: "versions/\(package.manifest.version)")
+        try files.createSymbolicLink(atPath: temporary.path, withDestinationPath: "versions/\(directory.lastPathComponent)")
         if Darwin.rename(temporary.path, current.path) != 0 {
             let failure = errno
             try files.removeItem(at: temporary)

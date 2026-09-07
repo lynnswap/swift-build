@@ -66,6 +66,75 @@ import Testing
     #expect(try fixture.store.exists(fixture.store.command))
 }
 
+@Test(arguments: ["status", "activate", "reinstall", "update"])
+func installedReleaseRemainsUsableAfterBuilds(command: String) throws {
+    let fixture = try Fixture()
+    let package = try fixture.package("custom-v1.0.0")
+    _ = try fixture.manager.install(from: package)
+    let previous = try #require(try fixture.store.selectedPackage())
+    for path in [
+        "libexec/swift-build/WidgetPreviewExtension.dependency-scan.dia",
+        "libexec/swift-build/SwiftBuild_SWBCore.bundle/.DS_Store",
+    ] {
+        try fixture.write("generated", to: previous.directory.appendingPathComponent(path))
+    }
+
+    switch command {
+    case "status":
+        #expect(try fixture.manager.status().contains("Installed: custom-v1.0.0"))
+    case "activate":
+        fixture.runner.settings = [:]
+        _ = try fixture.manager.activate()
+    case "reinstall":
+        _ = try fixture.manager.install(from: package)
+    default:
+        _ = try fixture.manager.install(from: fixture.package("custom-v1.0.1"))
+    }
+
+    let selected = try #require(try fixture.store.selectedPackage())
+    #expect(selected.manifest.version == (command == "update" ? "custom-v1.0.1" : "custom-v1.0.0"))
+    #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == selected.service.path)
+    #expect(fixture.runner.loaded)
+    #expect(try fixture.store.exists(previous.directory))
+}
+
+@Test(arguments: [
+    "generated-file", "malformed-manifest", "", "manifest.json",
+    "bin/custom-xcode-build-service", "libexec/swift-build/SWBBuildServiceBundle",
+    "libexec/swift-build/SwiftBuild_SWBCore.bundle",
+], [false, true])
+func updateCanReplaceOrRestoreChangedPreviousRelease(change: String, failUpdate: Bool) throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v0.1.1"))
+    let previous = try #require(try fixture.store.selectedDirectory())
+    let selection = try FileManager.default.destinationOfSymbolicLink(atPath: fixture.store.current.path)
+    let settings = fixture.runner.settings
+    switch change {
+    case "generated-file":
+        try fixture.write("diagnostics", to: previous.appendingPathComponent("libexec/swift-build/WidgetPreviewExtension.dependency-scan.dia"))
+    case "malformed-manifest":
+        try fixture.write("{broken", to: previous.appendingPathComponent("manifest.json"))
+    default:
+        try FileManager.default.removeItem(at: previous.appendingPathComponent(change))
+    }
+    let update = try fixture.package("custom-v0.1.2")
+
+    if failUpdate {
+        fixture.runner.failOnce = ["bootstrap", fixture.manager.environment.domain, fixture.store.agent.path]
+        #expect(throws: ServiceError.self) { try fixture.manager.install(from: update) }
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: fixture.store.current.path) == selection)
+        #expect(fixture.runner.settings == settings)
+    } else {
+        _ = try fixture.manager.install(from: update)
+        let selected = try #require(try fixture.store.selectedPackage())
+        #expect(selected.manifest.version == "custom-v0.1.2")
+        #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == selected.service.path)
+    }
+    #expect(fixture.runner.loaded)
+    #expect(try fixture.store.exists(fixture.store.command))
+    #expect(try fixture.store.exists(fixture.store.agent))
+}
+
 @Test func bootstrapFailureLeavesFirstInstallInactiveAndRetryWorks() throws {
     let fixture = try Fixture()
     let package = try fixture.package("custom-v1.0.0")

@@ -19,10 +19,11 @@ struct InstallationManager {
     func install(from directory: URL) throws -> String {
         try requireUser()
         let package = try ReleasePackage(directory: directory)
+        try package.validateForInstallation()
         try package.requireCompatibleHost(using: environment.runner)
         try environment.requireGUI()
         return try store.withInstallationLock {
-            let previous = try store.selectedPackage()
+            let previous = try store.selectedDirectory()
             try store.validateExternalPaths()
             let settings = try environment.settings()
             try settings.requireOwnership(in: store)
@@ -36,7 +37,7 @@ struct InstallationManager {
                     try environment.bootout()
                     transaction.undo { try environment.bootstrap(store.agent) }
                 }
-                try store.select(installed)
+                try store.select(installed.directory)
                 transaction.undo { try store.select(previous) }
                 if !hadCommand {
                     try store.writeCommand()
