@@ -104,7 +104,10 @@ func uninstallRemovesOwnedLinksWithoutFollowingDestinations(path: String) throws
     #expect(try Command(arguments: []) == .help)
     #expect(try Command(arguments: ["install"]) == .install(package: nil))
     #expect(try Command(arguments: ["install", "--package", "/a path"]) == .install(package: "/a path"))
-    for arguments in [["install", "--package"], ["install", "--package", "--help"], ["status", "extra"], ["unknown"]] {
+    #expect(try Command(arguments: ["use", "custom"]) == .use(.custom))
+    #expect(try Command(arguments: ["use", "bundled"]) == .use(.bundled))
+    for arguments in [["install", "--package"], ["install", "--package", "--help"], ["status", "extra"], ["unknown"],
+                      ["use"], ["use", "default"], ["use", "custom", "extra"], ["use", "bundled", "extra"]] {
         #expect(throws: ServiceError.self) { try Command(arguments: arguments) }
     }
 }

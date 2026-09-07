@@ -39,6 +39,7 @@ struct CustomXcodeBuildService {
                     directory = URL(fileURLWithPath: path).resolvingSymlinksInPath().deletingLastPathComponent().deletingLastPathComponent()
                 }
                 output = try manager.install(from: directory)
+            case .use(let service): output = try manager.use(service)
             case .status: output = try manager.status()
             case .uninstall: output = try manager.uninstall()
             case .activate: output = try manager.activate()

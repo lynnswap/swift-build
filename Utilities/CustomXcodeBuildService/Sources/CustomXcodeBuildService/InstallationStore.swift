@@ -118,6 +118,17 @@ struct InstallationStore {
                 throw ServiceError("Refusing to overwrite an unrelated command: \(command.path)")
             }
         }
+        try validateAgent()
+    }
+
+    func selectedService() throws -> BuildService {
+        try validateAgent()
+        // The owned login configuration is the persistent custom selection.
+        // Its absence selects bundled without duplicating that state in a settings file.
+        return try exists(agent) ? .custom : .bundled
+    }
+
+    private func validateAgent() throws {
         if try exists(agent) {
             guard try files.attributesOfItem(atPath: agent.path)[.type] as? FileAttributeType == .typeRegular,
                   let actual = try PropertyListSerialization.propertyList(from: Data(contentsOf: agent), format: nil) as? NSDictionary,
