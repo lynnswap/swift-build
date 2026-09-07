@@ -41,6 +41,8 @@ done
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source_revision="$(git -C "$repo_root" rev-parse --verify --end-of-options "$revision^{commit}")"
+# Keep every build, test, and metadata query on the initially selected toolchain.
+export DEVELOPER_DIR="${DEVELOPER_DIR:-$(xcode-select --print-path)}"
 xcode_info="$(xcrun xcodebuild -version)"
 [[ "$xcode_info" == Xcode\ 27.* ]] || { echo "Select Xcode 27 before building." >&2; exit 1; }
 [[ ! -e "$output_dir" || -d "$output_dir" ]] || { echo "Not a directory: $output_dir" >&2; exit 1; }
