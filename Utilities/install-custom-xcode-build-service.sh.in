@@ -1,0 +1,95 @@
+#!/bin/sh
+# Copyright (c) 2026 the Swift project authors.
+# Licensed under Apache License v2.0 with Runtime Library Exception.
+# See https://swift.org/LICENSE.txt for license information.
+
+set -eu
+
+version='@VERSION@'
+repository='@REPOSITORY@'
+archive='custom-xcode-build-service-darwin-arm64.tar.gz'
+
+usage() {
+    printf '%s\n' 'Usage: install.sh' \
+        'Downloads the prebuilt custom Xcode build service and installs it for the current user.'
+}
+
+case "$#:${1:-}" in
+    0:) ;;
+    1:--help|1:-h) usage; exit 0 ;;
+    *) usage >&2; exit 1 ;;
+esac
+
+if [ "$(uname -s)" != Darwin ] || [ "$(sysctl -n hw.optional.arm64)" != 1 ]; then
+    printf '%s\n' 'This release requires macOS on Apple silicon.' >&2
+    exit 1
+fi
+if [ "$(id -u)" = 0 ]; then
+    printf '%s\n' 'Run this installer as your logged-in user, without sudo.' >&2
+    exit 1
+fi
+
+for command in curl shasum tar awk mktemp; do
+    if ! command -v "$command" >/dev/null 2>&1; then
+        printf 'Missing required command: %s\n' "$command" >&2
+        exit 1
+    fi
+done
+
+case "$version:$repository" in
+    *@*) printf '%s\n' 'This installer has not been prepared for a release.' >&2; exit 1 ;;
+esac
+
+download_url="https://github.com/$repository/releases/download/$version"
+temporary_directory=$(mktemp -d "${TMPDIR:-/tmp}/custom-xcode-build-service.XXXXXX")
+cleanup() {
+    rm -rf "$temporary_directory"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+printf 'Downloading custom Xcode build service %s from %s\n' "$version" "$repository"
+curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+    --output "$temporary_directory/$archive" "$download_url/$archive"
+curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+    --output "$temporary_directory/SHA256SUMS.txt" "$download_url/SHA256SUMS.txt"
+
+(
+    cd "$temporary_directory"
+    awk -v archive="$archive" '
+        NF == 2 && $2 == archive && length($1) == 64 && $1 ~ /^[0-9a-f]+$/ {
+            print $1 "  " $2
+            matches++
+        }
+        END { if (matches != 1) exit 1 }
+    ' SHA256SUMS.txt > selected-checksum.txt || {
+        printf '%s\n' 'The release must contain exactly one SHA256 checksum for its archive.' >&2
+        exit 1
+    }
+    shasum -a 256 --check selected-checksum.txt
+
+    tar -tzf "$archive" > archive-paths.txt
+    awk '
+        {
+            path = $0
+            sub(/^\.\//, "", path)
+            if (path == "." || path == "") next
+            if (path ~ /^\// || path ~ /(^|\/)\.\.(\/|$)/ || path ~ /[\\\r]/) exit 1
+            if (path != "manifest.json" && path !~ /^(bin|libexec|licenses)(\/|$)/) exit 1
+        }
+    ' archive-paths.txt || {
+        printf '%s\n' 'The release archive contains an unsupported or unsafe path.' >&2
+        exit 1
+    }
+    tar -tvzf "$archive" > archive-entries.txt
+    awk 'substr($1, 1, 1) != "-" && substr($1, 1, 1) != "d" { exit 1 }' archive-entries.txt || {
+        printf '%s\n' 'The release archive must contain only regular files and directories.' >&2
+        exit 1
+    }
+    mkdir package
+    tar -xzf "$archive" --no-same-owner --no-same-permissions -C package
+)
+
+"$temporary_directory/package/bin/custom-xcode-build-service" install \
+    --package "$temporary_directory/package"
