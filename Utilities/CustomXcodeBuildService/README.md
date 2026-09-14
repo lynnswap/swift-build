@@ -46,13 +46,7 @@ Start terminal-based agents from the restarted terminal. Then open a workspace
 or run `make` / `xcodebuild` as usual.
 
 <details>
-<summary>Other install options</summary>
-
-Install a specific version using its release tag:
-
-```sh
-curl -fsSL https://github.com/lynnswap/swift-build/releases/download/custom-v0.1.1/install.sh | sh
-```
+<summary>Install a downloaded archive</summary>
 
 For a downloaded and verified archive, extract it and run from its root:
 
@@ -134,6 +128,31 @@ runs, restart Xcode after checking `status`.
 
 ## Development
 
+### Build and install locally
+
+From the repository root, build and install the committed `HEAD`:
+
+```sh
+custom_build_dir="$(mktemp -d /tmp/custom-swift-build.XXXXXX)"
+custom_version="custom-v0.0.0-local.$(date +%Y%m%d%H%M%S)"
+
+python3 Utilities/CustomXcodeBuildService/Distribution/release.py build \
+    --version "$custom_version" --output-dir "$custom_build_dir" &&
+"$custom_build_dir/payload/bin/custom-xcode-build-service" install &&
+"$HOME/.local/bin/custom-xcode-build-service" use custom
+```
+
+The local version is generated automatically for each build. Commit source
+changes before running this command; uncommitted changes are not included.
+The build isolates inherited service overrides, so it can run while an older
+custom service is selected. Installation copies the payload into the managed
+installation directory; no GitHub release is needed.
+
+Quit and reopen **Xcode, your terminal application, and AI agent applications**
+after installation. Existing processes keep their previous service selection.
+
+### Checks
+
 Run checks from the repository root:
 
 ```sh
@@ -144,16 +163,20 @@ python3 -m unittest discover -s Utilities/CustomXcodeBuildService/Distribution/t
 <details>
 <summary>Build and publish a release</summary>
 
-From the repository root, use new or empty output directories:
+With the intended `custom-v*` release tag checked out, run from the repository
+root. The version comes from that tag:
 
 ```sh
-cd Utilities/CustomXcodeBuildService
-python3 Distribution/release.py build \
-    --version custom-v0.1.1 --output-dir /tmp/custom-service-build
-python3 Distribution/release.py package \
-    --build-dir /tmp/custom-service-build --output-dir /tmp/custom-service-release
-python3 Distribution/release.py verify \
-    --release-dir /tmp/custom-service-release
+custom_release_version="$(git describe --tags --exact-match HEAD)"
+custom_build_dir="$(mktemp -d /tmp/custom-service-build.XXXXXX)"
+custom_release_dir="$(mktemp -d /tmp/custom-service-release.XXXXXX)"
+
+python3 Utilities/CustomXcodeBuildService/Distribution/release.py build \
+    --version "$custom_release_version" --output-dir "$custom_build_dir" &&
+python3 Utilities/CustomXcodeBuildService/Distribution/release.py package \
+    --build-dir "$custom_build_dir" --output-dir "$custom_release_dir" &&
+python3 Utilities/CustomXcodeBuildService/Distribution/release.py verify \
+    --release-dir "$custom_release_dir"
 ```
 
 Builds use committed source and pinned dependencies in an isolated directory.
