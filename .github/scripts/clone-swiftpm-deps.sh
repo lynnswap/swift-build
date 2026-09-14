@@ -11,9 +11,10 @@
 ##
 ##===----------------------------------------------------------------------===##
 
-SCHEME="${1:-}"
+set -euo pipefail
+
+SCHEME="${1:?usage: clone-swiftpm-deps.sh <branch-scheme>}"
 git clone --branch "$SCHEME" https://github.com/swiftlang/swift.git ../swift
-ln -s "$GITHUB_WORKSPACE" ../swift-build
 ../swift/utils/update-checkout --clone --scheme "$SCHEME" \
   --skip-repository swift-build \
   --skip-repository llvm-project \
@@ -53,4 +54,3 @@ ln -s "$GITHUB_WORKSPACE" ../swift-build
   --skip-repository brotli \
   --skip-repository mimalloc \
   --skip-repository boringssl
-exit 0
