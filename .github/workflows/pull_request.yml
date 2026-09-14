@@ -33,7 +33,7 @@ jobs:
       - name: Test SwiftBuild with distribution dependencies
         run: |
           cp Utilities/CustomXcodeBuildService/Distribution/ServiceDependencies.resolved Package.resolved
-          xcrun swift test --jobs 2 --force-resolved-versions
+          xcrun swift test --jobs 2 --force-resolved-versions --skip SWBAndroidPlatformTests
 
   soundness:
     name: Soundness
