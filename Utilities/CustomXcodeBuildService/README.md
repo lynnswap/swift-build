@@ -21,7 +21,7 @@ Use `custom-xcode-build-service <command>`:
 ## Requirements
 
 - Apple silicon and macOS 26+.
-- Xcode 27 selected in **Settings > Locations > Command Line Tools**.
+- Xcode selected in **Settings > Locations > Command Line Tools** for builds.
 - A terminal in your logged-in macOS desktop session. Run without `sudo`.
 
 ## Install or Update
@@ -46,13 +46,7 @@ Start terminal-based agents from the restarted terminal. Then open a workspace
 or run `make` / `xcodebuild` as usual.
 
 <details>
-<summary>Other install options</summary>
-
-Install a specific version using its release tag:
-
-```sh
-curl -fsSL https://github.com/lynnswap/swift-build/releases/download/custom-v0.1.1/install.sh | sh
-```
+<summary>Install a downloaded archive</summary>
 
 For a downloaded and verified archive, extract it and run from its root:
 
@@ -61,7 +55,7 @@ For a downloaded and verified archive, extract it and run from its root:
 ```
 
 Without `--package`, `install` uses the package containing that executable.
-Keep its resource bundles beside the service binary.
+Keep the extracted directory structure intact.
 
 </details>
 
@@ -82,6 +76,11 @@ custom-xcode-build-service use custom
 Your choice applies to all projects for your macOS user account and persists
 across logins and updates. Repeating either command succeeds. Selecting custom
 requires an installed release. Xcode updates do not change your selection.
+
+SwiftPM's Swift Build backend continues to use its in-process engine while custom
+is selected. The service bundle loads platform plugins from that engine's own
+Xcode installation, so changing `DEVELOPER_DIR` or `xcode-select` does not require
+reinstalling the custom service. Xcode and `xcodebuild` use the custom executable.
 
 After switching, quit and reopen **Xcode, your terminal application, and AI agent
 applications**. Start terminal-based agents from the restarted terminal.
@@ -129,6 +128,26 @@ runs, restart Xcode after checking `status`.
 
 ## Development
 
+### Build and install locally
+
+From the repository root, build and install the committed `HEAD`:
+
+```sh
+python3 Utilities/CustomXcodeBuildService/Distribution/release.py install
+```
+
+The command generates a local version, builds in a temporary directory, installs
+the result, and selects custom. It removes the temporary directory afterward.
+Commit source changes before running it; uncommitted changes are not included.
+The build isolates inherited service overrides, so it can run while an older
+custom service is selected. Installation copies the payload into the managed
+installation directory; no GitHub release is needed.
+
+Quit and reopen **Xcode, your terminal application, and AI agent applications**
+after installation. Existing processes keep their previous service selection.
+
+### Checks
+
 Run checks from the repository root:
 
 ```sh
@@ -139,20 +158,27 @@ python3 -m unittest discover -s Utilities/CustomXcodeBuildService/Distribution/t
 <details>
 <summary>Build and publish a release</summary>
 
-From the repository root, use new or empty output directories:
+With the intended `custom-v*` release tag checked out, run from the repository
+root. The version comes from that tag:
 
 ```sh
-cd Utilities/CustomXcodeBuildService
-python3 Distribution/release.py build \
-    --version custom-v0.1.1 --output-dir /tmp/custom-service-build
-python3 Distribution/release.py package \
-    --build-dir /tmp/custom-service-build --output-dir /tmp/custom-service-release
-python3 Distribution/release.py verify \
-    --release-dir /tmp/custom-service-release
+custom_release_version="$(git describe --tags --exact-match HEAD)"
+custom_build_dir="$(mktemp -d /tmp/custom-service-build.XXXXXX)"
+custom_release_dir="$(mktemp -d /tmp/custom-service-release.XXXXXX)"
+
+python3 Utilities/CustomXcodeBuildService/Distribution/release.py build \
+    --version "$custom_release_version" --output-dir "$custom_build_dir" &&
+python3 Utilities/CustomXcodeBuildService/Distribution/release.py package \
+    --build-dir "$custom_build_dir" --output-dir "$custom_release_dir" &&
+python3 Utilities/CustomXcodeBuildService/Distribution/release.py verify \
+    --release-dir "$custom_release_dir"
 ```
 
 Builds use committed source and pinned dependencies in an isolated directory.
 The output contains the archive, checksums, and a version-specific installer.
+Verification builds an Xcode project and runs `swift build`, `swift run`, and
+`swift test` with the extracted custom service selected. It uses the currently
+selected Xcode without requiring its build number to match the release metadata.
 
 Create a draft GitHub Release for the `custom-v*` tag and write its title and
 release notes there. Then push that tag to run the

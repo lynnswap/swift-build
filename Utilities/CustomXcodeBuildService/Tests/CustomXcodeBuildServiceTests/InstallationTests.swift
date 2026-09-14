@@ -14,28 +14,35 @@ import Foundation
 import Testing
 @testable import CustomXcodeBuildService
 
-@Test func installsRelocatesUpdatesAndUninstalls() throws {
+@Test(arguments: [1, 2])
+func installsRelocatesUpdatesAndUninstalls(schemaVersion: Int) throws {
     let fixture = try Fixture()
-    let first = try fixture.package("custom-v1.0.0")
+    let first = try fixture.package("custom-v1.0.0", schemaVersion: schemaVersion)
     _ = try fixture.manager.install(from: first)
     let selected = try #require(try fixture.store.selectedPackage())
     #expect(selected.manifest.version == "custom-v1.0.0")
     #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == selected.service.path)
+    #expect(fixture.store.ownsService(at: selected.service.path))
     #expect(fixture.runner.settings["DisableConcurrentDependencyResolution"] == "0")
     #expect(fixture.runner.loaded)
     #expect(FileManager.default.isExecutableFile(atPath: fixture.store.command.path))
     let plist = try #require(PropertyListSerialization.propertyList(from: Data(contentsOf: fixture.store.agent), format: nil) as? [String: Any])
     #expect(plist["ProgramArguments"] as? [String] == [fixture.store.persistentExecutable.path, "activate"])
     try FileManager.default.removeItem(at: first)
-    #expect(try String(contentsOf: selected.service.deletingLastPathComponent().appendingPathComponent("SwiftBuild_SWBCore.bundle/spec.txt"), encoding: .utf8) == "specification")
+    #expect(try String(contentsOf: selected.resources.appendingPathComponent("SwiftBuild_SWBCore.bundle/spec.txt"), encoding: .utf8) == "specification")
     fixture.runner.settings = [:]
     _ = try fixture.manager.activate()
+    #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == selected.service.path)
+    _ = try fixture.manager.use(.bundled)
+    #expect(fixture.runner.settings.isEmpty)
+    _ = try fixture.manager.use(.custom)
     #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == selected.service.path)
 
     let second = try fixture.package("custom-v1.0.1")
     _ = try fixture.manager.install(from: second)
     let updated = try #require(try fixture.store.selectedPackage())
     #expect(updated.manifest.version == "custom-v1.0.1")
+    #expect(updated.manifest.schemaVersion == 2)
     #expect(try fixture.store.exists(selected.directory))
     #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == updated.service.path)
     _ = try fixture.manager.install(from: second)
@@ -52,9 +59,10 @@ import Testing
     _ = try fixture.manager.uninstall()
 }
 
-@Test func installationFailureRestoresPreviousSelectionAndEnvironment() throws {
+@Test(arguments: [1, 2])
+func installationFailureRestoresPreviousSelectionAndEnvironment(schemaVersion: Int) throws {
     let fixture = try Fixture()
-    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0", schemaVersion: schemaVersion))
     let oldSettings = fixture.runner.settings
     fixture.runner.failOnce = ["setenv", "DisableConcurrentDependencyResolution", "0"]
     #expect(throws: ServiceError.self) {
@@ -74,7 +82,7 @@ func installedReleaseRemainsUsableAfterBuilds(command: String) throws {
     let previous = try #require(try fixture.store.selectedPackage())
     for path in [
         "libexec/swift-build/WidgetPreviewExtension.dependency-scan.dia",
-        "libexec/swift-build/SwiftBuild_SWBCore.bundle/.DS_Store",
+        "libexec/swift-build/SWBBuildService.bundle/SwiftBuild_SWBCore.bundle/.DS_Store",
     ] {
         try fixture.write("generated", to: previous.directory.appendingPathComponent(path))
     }
@@ -103,8 +111,8 @@ func installedReleaseRemainsUsableAfterBuilds(command: String) throws {
 
 @Test(arguments: [
     "generated-file", "malformed-manifest", "", "manifest.json",
-    "bin/custom-xcode-build-service", "libexec/swift-build/SWBBuildServiceBundle",
-    "libexec/swift-build/SwiftBuild_SWBCore.bundle",
+    "bin/custom-xcode-build-service", "libexec/swift-build/SWBBuildService.bundle/SWBBuildServiceBundle",
+    "libexec/swift-build/SWBBuildService.bundle/SwiftBuild_SWBCore.bundle",
 ], [false, true])
 func updateCanReplaceOrRestoreChangedPreviousRelease(change: String, failUpdate: Bool) throws {
     let fixture = try Fixture()
@@ -197,11 +205,11 @@ func refusesForeignEnvironment(key: String) throws {
     let fixture = try Fixture()
     let package = try fixture.package("custom-v1.0.0")
     _ = try fixture.manager.install(from: package)
-    try fixture.write("changed", to: package.appendingPathComponent("libexec/swift-build/SwiftBuild_SWBCore.bundle/spec.txt"))
+    try fixture.write("changed", to: ReleasePackage(directory: package).resources.appendingPathComponent("SwiftBuild_SWBCore.bundle/spec.txt"))
     #expect(throws: ServiceError.self) { try fixture.manager.install(from: package) }
     #expect(fixture.runner.loaded)
     let selected = try #require(try fixture.store.selectedPackage())
-    #expect(try String(contentsOf: selected.service.deletingLastPathComponent().appendingPathComponent("SwiftBuild_SWBCore.bundle/spec.txt"), encoding: .utf8) == "specification")
+    #expect(try String(contentsOf: selected.resources.appendingPathComponent("SwiftBuild_SWBCore.bundle/spec.txt"), encoding: .utf8) == "specification")
 }
 
 @Test func installsWithDifferentXcodeBuild() throws {
@@ -258,9 +266,9 @@ func refusesForeignEnvironment(key: String) throws {
 
 @Test(arguments: [
     "/someone/elses/service",
-    "Library/Developer/CustomXcodeBuildService/versions-other/custom-v1.0.0/libexec/swift-build/SWBBuildServiceBundle",
+    "Library/Developer/CustomXcodeBuildService/versions-other/custom-v1.0.0/libexec/swift-build/SWBBuildService.bundle/SWBBuildServiceBundle",
     "Library/Developer/CustomXcodeBuildService/versions/custom-v1.0.0/libexec/swift-build/another-service",
-    "Library/Developer/CustomXcodeBuildService/versions/custom-v1.0.0/extra/libexec/swift-build/SWBBuildServiceBundle",
+    "Library/Developer/CustomXcodeBuildService/versions/custom-v1.0.0/extra/libexec/swift-build/SWBBuildService.bundle/SWBBuildServiceBundle",
 ])
 func uninstallPreservesExternallyChangedSettings(path: String) throws {
     let fixture = try Fixture()
@@ -320,8 +328,8 @@ func uninstallRemovesReleasesWithGeneratedFiles(version: String) throws {
     "versions/custom-v1.0.0",
     "versions/custom-v1.0.0/manifest.json",
     "versions/custom-v1.0.0/bin/custom-xcode-build-service",
-    "versions/custom-v1.0.0/libexec/swift-build/SWBBuildServiceBundle",
-    "versions/custom-v1.0.0/libexec/swift-build/SwiftBuild_SWBCore.bundle",
+    "versions/custom-v1.0.0/libexec/swift-build/SWBBuildService.bundle/SWBBuildServiceBundle",
+    "versions/custom-v1.0.0/libexec/swift-build/SWBBuildService.bundle/SwiftBuild_SWBCore.bundle",
 ])
 func uninstallRemovesIncompleteInstallation(missingPath: String) throws {
     let fixture = try Fixture()
@@ -529,7 +537,7 @@ func installingPreservesBundledSelection(version: String) throws {
     #expect(!fixture.runner.loaded)
 }
 
-@Test(arguments: ["manifest.json", "libexec/swift-build/SWBBuildServiceBundle", "bin/custom-xcode-build-service"])
+@Test(arguments: ["manifest.json", "libexec/swift-build/SWBBuildService.bundle/SWBBuildServiceBundle", "bin/custom-xcode-build-service"])
 func selectingBundledWorksAfterXcodeUpdateAndPayloadDamage(missingPath: String) throws {
     let fixture = try Fixture()
     _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
@@ -647,10 +655,10 @@ final class Fixture {
     }
     deinit { try? FileManager.default.removeItem(at: directory) }
 
-    func package(_ version: String, manifestChanges: [String: Any] = [:]) throws -> URL {
+    func package(_ version: String, schemaVersion: Int = 2, manifestChanges: [String: Any] = [:]) throws -> URL {
         let package = directory.appendingPathComponent(UUID().uuidString)
         var manifest: [String: Any] = [
-            "schemaVersion": 1, "version": version, "sourceRevision": String(repeating: "a", count: 40),
+            "schemaVersion": schemaVersion, "version": version, "sourceRevision": String(repeating: "a", count: 40),
             "xcodeVersion": "27.0", "xcodeBuildVersion": "27A5252f", "architecture": "arm64", "minimumMacOSVersion": "26.0",
             "resourceBundles": ["SwiftBuild_SWBCore.bundle"],
             "dependencies": [["identity": "swift-tools-support-core", "revision": String(repeating: "b", count: 40)]],
@@ -658,12 +666,25 @@ final class Fixture {
         manifest.merge(manifestChanges, uniquingKeysWith: { _, new in new })
         try write("placeholder", to: package.appendingPathComponent("manifest.json"))
         try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys]).write(to: package.appendingPathComponent("manifest.json"))
-        for path in ["bin/custom-xcode-build-service", "libexec/swift-build/SWBBuildServiceBundle"] {
+        let resources = schemaVersion == 1 ? "libexec/swift-build" : "libexec/swift-build/SWBBuildService.bundle"
+        var executables = ["bin/custom-xcode-build-service", ReleasePackage.servicePath(schemaVersion: schemaVersion)]
+        if schemaVersion == 2 {
+            executables.append("\(resources)/PlugIns/HostPlatformPlugins.bundle/Contents/MacOS/HostPlatformPlugins")
+            for (contents, executable) in [(resources, "SWBBuildServiceBundle"), ("\(resources)/PlugIns/HostPlatformPlugins.bundle/Contents", "HostPlatformPlugins")] {
+                let plist = package.appendingPathComponent("\(contents)/Info.plist")
+                try write("", to: plist)
+                try PropertyListSerialization.data(fromPropertyList: ["CFBundleExecutable": executable, "CFBundlePackageType": "BNDL"], format: .xml, options: 0).write(to: plist)
+            }
+        }
+        if schemaVersion == 2 {
+            try write("signature", to: package.appendingPathComponent("\(resources)/_CodeSignature/CodeResources"))
+        }
+        for path in executables {
             let executable = package.appendingPathComponent(path)
             try write("#!/bin/sh\nexit 0\n", to: executable)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
         }
-        try write("specification", to: package.appendingPathComponent("libexec/swift-build/SwiftBuild_SWBCore.bundle/spec.txt"))
+        try write("specification", to: package.appendingPathComponent("\(resources)/SwiftBuild_SWBCore.bundle/spec.txt"))
         try write("Apache", to: package.appendingPathComponent("licenses/LICENSE.txt"))
         return package
     }

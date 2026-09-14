@@ -11,7 +11,7 @@
 ##
 ##===----------------------------------------------------------------------===##
 
-"""Producer-side builds, packaging, and relocation checks (Python standard library)."""
+"""Local installation, release builds, packaging, and relocation checks."""
 
 import argparse
 import gzip
@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import platform
+import plistlib
 import re
 import shutil
 import stat
@@ -33,6 +34,10 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 DISTRIBUTION_PATH = Path("Utilities/CustomXcodeBuildService/Distribution")
 ARCHIVE = "custom-xcode-build-service-darwin-arm64.tar.gz"
 ASSETS = (ARCHIVE, "install.sh")
+SERVICE_BUNDLE = Path("libexec/swift-build/SWBBuildService.bundle")
+SERVICE_BINARY = SERVICE_BUNDLE / "SWBBuildServiceBundle"
+HOST_PLUGIN = SERVICE_BUNDLE / "PlugIns/HostPlatformPlugins.bundle"
+HOST_PLUGIN_BINARY = HOST_PLUGIN / "Contents/MacOS/HostPlatformPlugins"
 BUNDLES = tuple(
     sorted(
         f"SwiftBuild_{name}.bundle"
@@ -68,8 +73,8 @@ def xcode_version(environment=None):
         ["/usr/bin/xcrun", "xcodebuild", "-version"], env=environment
     ).splitlines()
     require(
-        len(lines) == 2 and re.fullmatch(r"Xcode 27(?:\.[0-9]+)+", lines[0]),
-        "Select Xcode 27 before building or verifying a distribution.",
+        len(lines) == 2 and re.fullmatch(r"Xcode [0-9]+(?:\.[0-9]+)+", lines[0]),
+        "Could not read the selected Xcode version.",
     )
     require(
         re.fullmatch(r"Build version [0-9A-Za-z]+", lines[1]),
@@ -94,6 +99,13 @@ def regular_tree(root):
         )
 
 
+def service_path(payload, manifest):
+    return payload / (
+        "libexec/swift-build/SWBBuildServiceBundle"
+        if manifest["schemaVersion"] == 1 else SERVICE_BINARY
+    )
+
+
 def validate_payload(payload):
     regular_tree(payload)
     require(
@@ -102,7 +114,7 @@ def validate_payload(payload):
         "Unexpected payload root layout.",
     )
     manifest = json.loads((payload / "manifest.json").read_text())
-    require(manifest["schemaVersion"] == 1, "Unsupported manifest schema.")
+    require(manifest["schemaVersion"] in (1, 2), "Unsupported manifest schema.")
     require(
         re.fullmatch(VERSION_PATTERN, manifest["version"]), "Invalid release version."
     )
@@ -111,7 +123,7 @@ def validate_payload(payload):
         "Invalid source revision.",
     )
     require(
-        re.fullmatch(r"27(?:\.[0-9]+)+", manifest["xcodeVersion"]), "Expected Xcode 27."
+        re.fullmatch(r"[0-9]+(?:\.[0-9]+)+", manifest["xcodeVersion"]), "Invalid Xcode version."
     )
     require(
         re.fullmatch(r"[0-9A-Za-z]+", manifest["xcodeBuildVersion"]),
@@ -134,8 +146,24 @@ def validate_payload(payload):
         "Unexpected service directory layout.",
     )
     service_dir = payload / "libexec/swift-build"
+    binaries = [payload / "bin/custom-xcode-build-service", service_path(payload, manifest)]
+    if manifest["schemaVersion"] == 2:
+        require(
+            {p.name for p in service_dir.iterdir()} == {"SWBBuildService.bundle"},
+            "Unexpected service bundle layout.",
+        )
+        service_dir = payload / SERVICE_BUNDLE
+        require(
+            {p.name for p in (service_dir / "PlugIns").iterdir()}
+            == {"HostPlatformPlugins.bundle"},
+            "Unexpected service bundle contents.",
+        )
+        binaries.append(payload / HOST_PLUGIN_BINARY)
+    service_contents = {"SWBBuildServiceBundle", *BUNDLES}
+    if manifest["schemaVersion"] == 2:
+        service_contents.update({"Info.plist", "PlugIns", "_CodeSignature"})
     require(
-        {p.name for p in service_dir.iterdir()} == {"SWBBuildServiceBundle", *BUNDLES},
+        {p.name for p in service_dir.iterdir()} == service_contents,
         "Missing or unexpected service resources.",
     )
     for bundle in BUNDLES:
@@ -144,10 +172,7 @@ def validate_payload(payload):
             resources.is_dir() and any(p.is_file() for p in resources.rglob("*")),
             f"Empty resource bundle: {bundle}",
         )
-    for binary in (
-        payload / "bin/custom-xcode-build-service",
-        service_dir / "SWBBuildServiceBundle",
-    ):
+    for binary in binaries:
         require(
             binary.is_file() and os.access(binary, os.X_OK),
             f"Missing executable: {binary}",
@@ -404,6 +429,17 @@ def build(args):
     print(f"Built payload: {directory / 'payload'}")
 
 
+def install(args):
+    with tempfile.TemporaryDirectory(prefix="custom-service-local-") as directory:
+        build(argparse.Namespace(
+            version=f"custom-v0.0.0-local.{time.time_ns()}",
+            output_dir=Path(directory), revision=args.revision, jobs=args.jobs,
+        ))
+        executable = Path(directory) / "payload/bin/custom-xcode-build-service"
+        subprocess.run([str(executable), "install"], check=True)
+        subprocess.run([str(executable), "use", "custom"], check=True)
+
+
 def stage(args):
     source = args.build_dir / "source"
     payload = args.build_dir / "payload"
@@ -412,17 +448,36 @@ def stage(args):
     revision = (args.build_dir / "source-revision.txt").read_text().strip()
     require(re.fullmatch(REVISION_PATTERN, revision), "Invalid source revision.")
     version, build_version = xcode_version()
-    service_dir = payload / "libexec/swift-build"
-    service_dir.mkdir(parents=True)
+    service_dir = payload / SERVICE_BUNDLE
+    (payload / SERVICE_BINARY).parent.mkdir(parents=True)
+    (payload / HOST_PLUGIN_BINARY).parent.mkdir(parents=True)
     (payload / "bin").mkdir()
     copy_binary(
         args.service_bin / "SWBBuildServiceBundle",
-        service_dir / "SWBBuildServiceBundle",
+        payload / SERVICE_BINARY,
     )
     copy_binary(
         args.cli_bin / "custom-xcode-build-service",
         payload / "bin/custom-xcode-build-service",
     )
+    plugin = args.build_dir / "build/HostPlatformPlugins"
+    subprocess.run(
+        [
+            "/usr/bin/xcrun", "clang", "-bundle", "-fobjc-arc", "-framework", "Foundation",
+            "-arch", "arm64", "-mmacosx-version-min=26.0", "-Wall", "-Wextra", "-Werror",
+            str(source / DISTRIBUTION_PATH / "HostPlatformPlugins.m"), "-o", str(plugin),
+        ],
+        check=True,
+    )
+    copy_binary(plugin, payload / HOST_PLUGIN_BINARY)
+    for contents, identifier, executable in (
+        (SERVICE_BUNDLE, "io.github.lynnswap.SWBBuildService", "SWBBuildServiceBundle"),
+        (HOST_PLUGIN / "Contents", "io.github.lynnswap.HostPlatformPlugins", "HostPlatformPlugins"),
+    ):
+        (payload / contents / "Info.plist").write_bytes(plistlib.dumps(dict(
+            CFBundleIdentifier=identifier, CFBundleExecutable=executable,
+            CFBundlePackageType="BNDL",
+        )))
     require(
         tuple(sorted(p.name for p in args.service_bin.glob("SwiftBuild_*.bundle")))
         == BUNDLES,
@@ -431,6 +486,17 @@ def stage(args):
     for bundle in BUNDLES:
         regular_tree(args.service_bin / bundle)
         shutil.copytree(args.service_bin / bundle, service_dir / bundle)
+    # SwiftPM's Bundle.module accessors resolve resources at Bundle.main.bundleURL.
+    # A shallow bundle keeps those paths valid and can seal them when signed.
+    for bundle in (HOST_PLUGIN, SERVICE_BUNDLE):
+        subprocess.run(
+            ["/usr/bin/codesign", "--force", "--sign", "-", str(payload / bundle)],
+            check=True,
+        )
+        subprocess.run(
+            ["/usr/bin/codesign", "--verify", "--strict", str(payload / bundle)],
+            check=True,
+        )
     pins = json.loads(
         (source / DISTRIBUTION_PATH / "ServiceDependencies.resolved").read_text()
     )["pins"]
@@ -446,7 +512,7 @@ def stage(args):
         copy_licenses(checkout, payload / "licenses" / pin["identity"])
     copy_licenses(source, payload / "licenses/swift-build")
     manifest = dict(
-        schemaVersion=1,
+        schemaVersion=2,
         version=args.version,
         sourceRevision=revision,
         xcodeVersion=version,
@@ -546,10 +612,10 @@ def extract_archive(archive_path, destination):
             target.chmod(member.mode)
 
 
-def smoke_build(payload, temporary):
+def smoke_build(payload, temporary, manifest):
     fixture = REPOSITORY_ROOT / "Tests/SwiftBuildTests/TestData/CommandLineTool"
     shutil.copytree(fixture, temporary / "Smoke")
-    service = payload / "libexec/swift-build/SWBBuildServiceBundle"
+    service = service_path(payload, manifest)
     environment = dict(os.environ)
     environment.pop("SWBBUILDSERVICE_PATH", None)
     environment.update(
@@ -607,6 +673,33 @@ def smoke_build(payload, temporary):
     subprocess.run([str(temporary / "products/Release/CommandLineTool")], check=True)
 
 
+def smoke_swiftpm(payload, temporary, manifest):
+    package = temporary / "SwiftPMSmoke"
+    (package / "Sources/Smoke").mkdir(parents=True)
+    (package / "Tests/SmokeTests").mkdir(parents=True)
+    (package / "Package.swift").write_text('''// swift-tools-version: 6.3
+import PackageDescription
+let package = Package(name: "Smoke", targets: [
+    .executableTarget(name: "Smoke"),
+    .testTarget(name: "SmokeTests", dependencies: ["Smoke"]),
+])
+''')
+    (package / "Sources/Smoke/main.swift").write_text('func message() -> String { "SwiftPM smoke passed" }\nprint(message())\n')
+    (package / "Tests/SmokeTests/SmokeTests.swift").write_text('''import Testing
+@testable import Smoke
+@Test func smoke() { #expect(message() == "SwiftPM smoke passed") }
+''')
+    environment = dict(os.environ)
+    environment.pop("SWBBUILDSERVICE_PATH", None)
+    environment["XCBBUILDSERVICE_PATH"] = str(service_path(payload, manifest))
+    for command in ("build", "run", "test"):
+        subprocess.run(
+            ["/usr/bin/xcrun", "swift", command, "--build-system", "swiftbuild",
+             "--package-path", str(package)],
+            env=environment, check=True, timeout=600,
+        )
+
+
 def verify(args):
     require(
         {p.name for p in args.release_dir.iterdir()} == {*ASSETS, "SHA256SUMS.txt"},
@@ -633,27 +726,37 @@ def verify(args):
             f"({manifest['xcodeBuildVersion']}).",
             flush=True,
         )
-        for binary in (
-            payload / "bin/custom-xcode-build-service",
-            payload / "libexec/swift-build/SWBBuildServiceBundle",
-        ):
+        binaries = [payload / "bin/custom-xcode-build-service", service_path(payload, manifest)]
+        if manifest["schemaVersion"] == 2:
+            binaries.append(payload / HOST_PLUGIN_BINARY)
+        for binary in binaries:
             check_binary(binary)
         subprocess.run(
             [str(payload / "bin/custom-xcode-build-service"), "--help"], check=True
         )
-        smoke_build(payload, temporary)
+        smoke_build(payload, temporary, manifest)
+        smoke_swiftpm(payload, temporary, manifest)
     print(
         "Verified checksums, archive layout, signatures, system libraries, "
-        "and relocated Xcode build."
+        "relocated Xcode build, and SwiftPM build/run/test with the service override."
     )
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    installing = commands.add_parser(
+        "install",
+        help="Build committed source, install it, and select the custom service",
+        description="Build committed source in a temporary directory, install it "
+        "for the current user, and select custom. Generates a local version and "
+        "removes the temporary build directory when finished.",
+    )
+    installing.add_argument("--revision", default="HEAD")
+    installing.add_argument("--jobs", type=int, default=2)
     building = commands.add_parser(
         "build",
-        help="Build committed source with Xcode 27 on Apple Silicon",
+        help="Build committed source with the selected Xcode on Apple Silicon",
         description="Build committed source in an isolated directory. "
         "The output must be "
         "absent or empty; source, builds, and payload remain there. Does not install.",
@@ -680,14 +783,14 @@ def main():
     verification.add_argument("--release-dir", type=Path, required=True)
     args = parser.parse_args()
     try:
-        {"build": build, "stage": stage, "package": package, "verify": verify}[
+        {"install": install, "build": build, "stage": stage, "package": package, "verify": verify}[
             args.command
         ](args)
     except (
         ValueError,
         KeyError,
         OSError,
-        subprocess.CalledProcessError,
+        subprocess.SubprocessError,
         tarfile.TarError,
     ) as error:
         parser.exit(1, f"error: {error}\n")
