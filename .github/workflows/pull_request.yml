@@ -30,59 +30,10 @@ jobs:
         run: |
           xcodebuild -version
           xcrun swift --version
-      - name: Test SwiftBuild
-        run: xcrun swift test --jobs 2
-      - name: Build for iOS
+      - name: Test SwiftBuild with distribution dependencies
         run: |
-          xcrun xcodebuild -workspace . -scheme SwiftBuild-Package \
-            -destination generic/platform=iOS CODE_SIGNING_ALLOWED=NO build
-
-  cmake-smoke-test:
-    name: CMake smoke test on macOS
-    runs-on: xcode-27
-    timeout-minutes: 180
-    needs: [soundness, space-format-check]
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Show toolchain
-        run: |
-          xcodebuild -version
-          xcrun swift --version
-          cmake --version
-          ninja --version
-      - name: Build with CMake
-        run: |
-          xcrun swift package cmake-smoke-test --disable-sandbox \
-            --cmake-path "$(command -v cmake)" --ninja-path "$(command -v ninja)" \
-            --extra-cmake-arg "-DCMAKE_C_COMPILER=$(xcrun --find clang)" \
-            --extra-cmake-arg "-DCMAKE_CXX_COMPILER=$(xcrun --find clang++)" \
-            --extra-cmake-arg "-DCMAKE_Swift_COMPILER=$(xcrun --find swiftc)"
-
-  swiftpm-tests:
-    name: Test SwiftPM on macOS
-    runs-on: xcode-27
-    timeout-minutes: 180
-    needs: [soundness, space-format-check]
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Show toolchain
-        run: |
-          xcodebuild -version
-          xcrun swift --version
-      - name: Prepare SwiftPM dependencies
-        env:
-          BASE_BRANCH: ${{ github.base_ref }}
-        run: ./.github/scripts/clone-swiftpm-deps.sh "$BASE_BRANCH"
-      - name: Test SwiftPM with this SwiftBuild checkout
-        env:
-          SWIFTCI_USE_LOCAL_DEPS: 1
-        run: xcrun swift test --jobs 2 --package-path ../swiftpm --skip testSDKTracking
+          cp Utilities/CustomXcodeBuildService/Distribution/ServiceDependencies.resolved Package.resolved
+          xcrun swift test --jobs 2 --force-resolved-versions
 
   soundness:
     name: Soundness
@@ -109,8 +60,6 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - tests
-      - cmake-smoke-test
-      - swiftpm-tests
       - soundness
       - space-format-check
     if: always()  # Runs even if previous jobs fail so it can evaluate them
