@@ -5,9 +5,11 @@ on:
     paths:
       - 'Package.swift'
       - 'Sources/**'
+      - 'Tests/**'
       - 'Utilities/CustomXcodeBuildService/**'
       - '.github/actionlint.yaml'
       - '.github/workflows/custom-xcode-build-service*.yml'
+      - '.github/workflows/pull_request.yml'
   push:
     tags:
       - 'custom-v*'

@@ -699,9 +699,9 @@ fileprivate struct PackageProductConstructionTests: CoreBasedTests {
     @Test(.requireSDKs(.macOS))
     func packageProductReferences() async throws {
         let core = try await getCore()
-        let allPlatforms = core.platformRegistry.platforms.filter { !$0.isSimulator && core.sdkRegistry.lookup($0.name) != nil && $0.name != "none" }
-        #expect(allPlatforms.count > 0) // ensure we don't just pass this test because we somehow ended up with no platforms
-        let targets = allPlatforms.map { $0.name }.map {
+        let applePlatforms = core.platformRegistry.platforms.filter { $0.isApplePlatform && !$0.isSimulator && core.sdkRegistry.lookup($0.name) != nil }
+        #expect(applePlatforms.count > 0) // ensure we don't just pass this test because we somehow ended up with no platforms
+        let targets = applePlatforms.map { $0.name }.map {
             commandLineDynamicLibraryTarget(name: "\($0)Lib", buildSettings: ["SDKROOT": $0])
         }
         let macCatalystTarget = try ProcessInfo.processInfo.hostOperatingSystem() == .macOS ? commandLineDynamicLibraryTarget(name: "MacCatalystLib", buildSettings: ["SDKROOT": "macosx", "SDK_VARIANT": MacCatalystInfo.sdkVariantName]) : nil
@@ -740,12 +740,11 @@ fileprivate struct PackageProductConstructionTests: CoreBasedTests {
             results.checkNoDiagnostics()
 
             results.checkTasks(.matchRuleType("Ld")) { tasks in
-                let frameworkLinkerTasks = tasks.filter { $0.outputs.first?.path.basename.hasSuffix("Lib.dylib") == true || $0.outputs.first?.path.basename.hasSuffix("Lib.so") == true }
-                #expect(frameworkLinkerTasks.count == allPlatforms.count + (macCatalystTarget != nil ? 1 : 0))
+                let frameworkLinkerTasks = tasks.filter { $0.outputs.first?.path.basename.hasSuffix("Lib.dylib") == true }
+                #expect(frameworkLinkerTasks.count == applePlatforms.count + (macCatalystTarget != nil ? 1 : 0))
 
-                for platform in allPlatforms {
-                    let dylibSuffix = core.sdkRegistry.lookup(platform.name)?.defaultVariant?.llvmTargetTripleVendor == "apple" ? "dylib" : "so"
-                    guard let input = findInput(for: "\(platform.name)Lib.\(dylibSuffix)", in: tasks) else {
+                for platform in applePlatforms {
+                    guard let input = findInput(for: "\(platform.name)Lib.dylib", in: tasks) else {
                         return
                     }
 
