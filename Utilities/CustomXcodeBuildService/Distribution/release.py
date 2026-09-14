@@ -11,7 +11,7 @@
 ##
 ##===----------------------------------------------------------------------===##
 
-"""Producer-side builds, packaging, and relocation checks (Python standard library)."""
+"""Local installation, release builds, packaging, and relocation checks."""
 
 import argparse
 import gzip
@@ -429,6 +429,17 @@ def build(args):
     print(f"Built payload: {directory / 'payload'}")
 
 
+def install(args):
+    with tempfile.TemporaryDirectory(prefix="custom-service-local-") as directory:
+        build(argparse.Namespace(
+            version=f"custom-v0.0.0-local.{time.time_ns()}",
+            output_dir=Path(directory), revision=args.revision, jobs=args.jobs,
+        ))
+        executable = Path(directory) / "payload/bin/custom-xcode-build-service"
+        subprocess.run([str(executable), "install"], check=True)
+        subprocess.run([str(executable), "use", "custom"], check=True)
+
+
 def stage(args):
     source = args.build_dir / "source"
     payload = args.build_dir / "payload"
@@ -734,6 +745,15 @@ def verify(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    installing = commands.add_parser(
+        "install",
+        help="Build committed source, install it, and select the custom service",
+        description="Build committed source in a temporary directory, install it "
+        "for the current user, and select custom. Generates a local version and "
+        "removes the temporary build directory when finished.",
+    )
+    installing.add_argument("--revision", default="HEAD")
+    installing.add_argument("--jobs", type=int, default=2)
     building = commands.add_parser(
         "build",
         help="Build committed source with the selected Xcode on Apple Silicon",
@@ -763,7 +783,7 @@ def main():
     verification.add_argument("--release-dir", type=Path, required=True)
     args = parser.parse_args()
     try:
-        {"build": build, "stage": stage, "package": package, "verify": verify}[
+        {"install": install, "build": build, "stage": stage, "package": package, "verify": verify}[
             args.command
         ](args)
     except (

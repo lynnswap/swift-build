@@ -133,17 +133,12 @@ runs, restart Xcode after checking `status`.
 From the repository root, build and install the committed `HEAD`:
 
 ```sh
-custom_build_dir="$(mktemp -d /tmp/custom-swift-build.XXXXXX)"
-custom_version="custom-v0.0.0-local.$(date +%Y%m%d%H%M%S)"
-
-python3 Utilities/CustomXcodeBuildService/Distribution/release.py build \
-    --version "$custom_version" --output-dir "$custom_build_dir" &&
-"$custom_build_dir/payload/bin/custom-xcode-build-service" install &&
-"$HOME/.local/bin/custom-xcode-build-service" use custom
+python3 Utilities/CustomXcodeBuildService/Distribution/release.py install
 ```
 
-The local version is generated automatically for each build. Commit source
-changes before running this command; uncommitted changes are not included.
+The command generates a local version, builds in a temporary directory, installs
+the result, and selects custom. It removes the temporary directory afterward.
+Commit source changes before running it; uncommitted changes are not included.
 The build isolates inherited service overrides, so it can run while an older
 custom service is selected. Installation copies the payload into the managed
 installation directory; no GitHub release is needed.

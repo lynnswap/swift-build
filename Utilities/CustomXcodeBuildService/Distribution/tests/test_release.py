@@ -249,6 +249,80 @@ class BuildTests(unittest.TestCase):
         )
 
 
+class LocalInstallTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="local install tests ")
+        self.addCleanup(self.temporary.cleanup)
+        self.state = Path(self.temporary.name)
+        self.build_directories = []
+        self.versions = []
+        self.failure = ""
+
+    def build_fixture(self, args):
+        self.build_directories.append(args.output_dir)
+        self.versions.append(args.version)
+        self.assertEqual(args.revision, "HEAD")
+        self.assertEqual(args.jobs, 2)
+        self.assertRegex(args.version, f"^{release.VERSION_PATTERN}$")
+        if self.failure == "build":
+            raise subprocess.CalledProcessError(1, ["swift", "build"])
+        binary = args.output_dir / "payload/bin/custom-xcode-build-service"
+        binary.parent.mkdir(parents=True)
+        (binary.parent / "version").write_text(args.version)
+        binary.write_text('''#!/bin/sh
+set -eu
+case "$*" in
+  install)
+    if [ "$CUSTOM_SERVICE_TEST_FAILURE" = install ]; then exit 17; fi
+    cp "$(dirname "$0")/version" "$CUSTOM_SERVICE_TEST_STATE/installed"
+    ;;
+  "use custom")
+    if [ "$CUSTOM_SERVICE_TEST_FAILURE" = selection ]; then exit 18; fi
+    test -f "$CUSTOM_SERVICE_TEST_STATE/installed"
+    printf custom > "$CUSTOM_SERVICE_TEST_STATE/selection"
+    ;;
+  *) exit 19 ;;
+esac
+''')
+        binary.chmod(0o755)
+
+    def install(self):
+        with patch.object(release, "build", side_effect=self.build_fixture), patch.dict(
+            os.environ, {
+                "CUSTOM_SERVICE_TEST_STATE": str(self.state),
+                "CUSTOM_SERVICE_TEST_FAILURE": self.failure,
+            }
+        ), patch.object(sys, "argv", ["release.py", "install"]):
+            release.main()
+
+    def test_repeated_installations_select_custom_and_remove_temporary_builds(self):
+        (self.state / "selection").write_text("bundled")
+        for _ in range(2):
+            self.install()
+            self.assertEqual((self.state / "installed").read_text(), self.versions[-1])
+            self.assertEqual((self.state / "selection").read_text(), "custom")
+            self.assertFalse(self.build_directories[-1].exists())
+        self.assertEqual(len(set(self.versions)), 2)
+
+    def test_failures_preserve_completed_state_and_remove_temporary_builds(self):
+        for failure in ("build", "install", "selection"):
+            with self.subTest(failure=failure):
+                self.failure = failure
+                (self.state / "installed").write_text("previous version")
+                (self.state / "selection").write_text("bundled")
+                with patch.object(sys, "stderr", io.StringIO()) as errors:
+                    with self.assertRaises(SystemExit) as raised:
+                        self.install()
+                self.assertEqual(raised.exception.code, 1)
+                self.assertIn("error:", errors.getvalue())
+                self.assertEqual((self.state / "selection").read_text(), "bundled")
+                self.assertEqual(
+                    (self.state / "installed").read_text(),
+                    self.versions[-1] if failure == "selection" else "previous version",
+                )
+                self.assertFalse(self.build_directories[-1].exists())
+
+
 class DistributionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="release tests ")
