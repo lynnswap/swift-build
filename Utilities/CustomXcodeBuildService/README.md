@@ -21,8 +21,7 @@ Use `custom-xcode-build-service <command>`:
 ## Requirements
 
 - Apple silicon and macOS 26+.
-- Xcode 27 selected in **Settings > Locations > Command Line Tools**, matching
-  the exact build listed in the [release notes](https://github.com/lynnswap/swift-build/releases).
+- Xcode 27 selected in **Settings > Locations > Command Line Tools**.
 - A terminal in your logged-in macOS desktop session. Run without `sudo`.
 
 ## Install or Update
@@ -82,8 +81,7 @@ custom-xcode-build-service use custom
 
 Your choice applies to all projects for your macOS user account and persists
 across logins and updates. Repeating either command succeeds. Selecting custom
-requires an installed release and its exact Xcode build; selecting bundled also
-works after Xcode has been updated or removed.
+requires an installed release. Xcode updates do not change your selection.
 
 After switching, quit and reopen **Xcode, your terminal application, and AI agent
 applications**. Start terminal-based agents from the restarted terminal.
@@ -98,7 +96,8 @@ custom-xcode-build-service status
 
 Status shows the installed release, the selected service (`custom` or `bundled`),
 the launchd settings for future processes, and the build services actually
-running. Running services can still reflect the previous choice until
+running. The displayed Xcode version records which Xcode built the release.
+Running services can still reflect the previous choice until
 applications are restarted. If the launchd settings differ from the saved
 selection, status reports the mismatch and the command to reapply your choice.
 

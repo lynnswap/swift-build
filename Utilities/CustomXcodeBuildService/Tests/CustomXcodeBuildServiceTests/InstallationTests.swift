@@ -204,21 +204,41 @@ func refusesForeignEnvironment(key: String) throws {
     #expect(try String(contentsOf: selected.service.deletingLastPathComponent().appendingPathComponent("SwiftBuild_SWBCore.bundle/spec.txt"), encoding: .utf8) == "specification")
 }
 
-@Test func validatesExactXcodeBeforeChangingSelection() throws {
+@Test func installsWithDifferentXcodeBuild() throws {
     let fixture = try Fixture()
-    fixture.runner.xcodeVersion = "Xcode 27.0\nBuild version 27A9999\n"
-    #expect(throws: ServiceError.self) { try fixture.manager.install(from: fixture.package("custom-v1.0.0")) }
-    #expect(try !fixture.store.exists(fixture.store.root))
-    #expect(fixture.runner.settings.isEmpty)
+    fixture.runner.xcodeVersion = "Xcode 27.0\nBuild version 27A266a\n"
+    let result = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    let installed = try #require(try fixture.store.selectedPackage())
+    #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == installed.service.path)
+    #expect(try fixture.store.selectedService() == .custom)
+    #expect(fixture.runner.loaded)
+    #expect(result.contains("Built with Xcode: 27.0 (27A5252f)"))
+    #expect(try fixture.manager.status().contains("Built with Xcode: 27.0 (27A5252f)"))
 }
 
-@Test func activateRejectsXcodeUpdateWithoutChangingSettings() throws {
+@Test func activateRestoresCustomSelectionAfterXcodeUpdate() throws {
     let fixture = try Fixture()
     _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
     fixture.runner.settings = [:]
     fixture.runner.xcodeVersion = "Xcode 28.0\nBuild version 28A100\n"
-    #expect(throws: ServiceError.self) { try fixture.manager.activate() }
-    #expect(fixture.runner.settings.isEmpty)
+    _ = try fixture.manager.activate()
+    #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == (try fixture.store.selectedPackage()?.service.path))
+    #expect(fixture.runner.settings["DisableConcurrentDependencyResolution"] == "0")
+}
+
+@Test func installationAndSelectionWorkWithoutSelectedXcode() throws {
+    let fixture = try Fixture()
+    fixture.runner.xcodeStatus = 1
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    _ = try fixture.manager.use(.bundled)
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.1"))
+    #expect(try fixture.store.selectedService() == .bundled)
+    _ = try fixture.manager.use(.custom)
+    fixture.runner.settings = [:]
+    _ = try fixture.manager.activate()
+    #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == (try fixture.store.selectedPackage()?.service.path))
+    #expect(try fixture.store.selectedService() == .custom)
+    #expect(fixture.runner.loaded)
 }
 
 @Test func statusDistinguishesSelectedAndRunningServices() throws {
@@ -524,7 +544,7 @@ func selectingBundledWorksAfterXcodeUpdateAndPayloadDamage(missingPath: String) 
     #expect(try fixture.store.exists(fixture.store.current))
 }
 
-@Test func selectingCustomRequiresAnInstalledCompatibleRelease() throws {
+@Test func selectingCustomRequiresAnInstalledReleaseAndWorksAfterXcodeUpdate() throws {
     let fixture = try Fixture()
     #expect(throws: ServiceError.self) { try fixture.manager.use(.custom) }
     #expect(try !fixture.store.exists(fixture.store.root))
@@ -534,10 +554,10 @@ func selectingBundledWorksAfterXcodeUpdateAndPayloadDamage(missingPath: String) 
     _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
     _ = try fixture.manager.use(.bundled)
     fixture.runner.xcodeVersion = "Xcode 28.0\nBuild version 28A100\n"
-    #expect(throws: ServiceError.self) { try fixture.manager.use(.custom) }
-    #expect(try fixture.store.selectedService() == .bundled)
-    #expect(fixture.runner.settings.isEmpty)
-    #expect(!fixture.runner.loaded)
+    _ = try fixture.manager.use(.custom)
+    #expect(try fixture.store.selectedService() == .custom)
+    #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == (try fixture.store.selectedPackage()?.service.path))
+    #expect(fixture.runner.loaded)
     _ = try fixture.manager.uninstall()
     _ = try fixture.manager.use(.bundled)
     #expect(throws: ServiceError.self) { try fixture.manager.use(.custom) }

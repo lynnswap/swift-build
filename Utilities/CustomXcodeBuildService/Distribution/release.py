@@ -626,10 +626,12 @@ def verify(args):
         payload.mkdir()
         extract_archive(args.release_dir / ARCHIVE, payload)
         manifest = validate_payload(payload)
-        require(
-            xcode_version()
-            == (manifest["xcodeVersion"], manifest["xcodeBuildVersion"]),
-            "Verify with the exact Xcode build used to produce the distribution.",
+        version, build_version = xcode_version()
+        print(
+            f"Verifying with Xcode {version} ({build_version}); "
+            f"built with Xcode {manifest['xcodeVersion']} "
+            f"({manifest['xcodeBuildVersion']}).",
+            flush=True,
         )
         for binary in (
             payload / "bin/custom-xcode-build-service",
@@ -673,7 +675,7 @@ def main():
     packaging.add_argument("--build-dir", type=Path, required=True)
     packaging.add_argument("--output-dir", type=Path, required=True)
     verification = commands.add_parser(
-        "verify", help="Verify a release with the same Xcode build; does not install"
+        "verify", help="Verify a release with the selected Xcode; does not install"
     )
     verification.add_argument("--release-dir", type=Path, required=True)
     args = parser.parse_args()

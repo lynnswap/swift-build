@@ -386,6 +386,27 @@ class DistributionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "checksums"):
             release.verify(argparse.Namespace(release_dir=directory))
 
+    def test_verify_runs_smoke_build_with_different_xcode_build(self):
+        directory = self.package()
+        with patch.object(
+            release, "xcode_version", return_value=("27.0", "27A266a")
+        ), patch.object(release, "check_binary") as check_binary, patch.object(
+            release, "smoke_build"
+        ) as smoke_build:
+            release.verify(argparse.Namespace(release_dir=directory))
+        self.assertEqual(check_binary.call_count, 2)
+        smoke_build.assert_called_once()
+
+    def test_verify_propagates_smoke_build_failure(self):
+        directory = self.package()
+        with patch.object(
+            release, "xcode_version", return_value=("27.0", "27A266a")
+        ), patch.object(release, "check_binary"), patch.object(
+            release, "smoke_build", side_effect=ValueError("Xcode build failed")
+        ):
+            with self.assertRaisesRegex(ValueError, "Xcode build failed"):
+                release.verify(argparse.Namespace(release_dir=directory))
+
     def test_dependency_requires_license_and_unique_revision_entry(self):
         self.manifest["dependencies"].append(
             dict(identity="swift-system", revision="c" * 40)

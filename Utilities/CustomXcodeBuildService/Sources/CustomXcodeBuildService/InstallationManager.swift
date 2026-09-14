@@ -20,7 +20,7 @@ struct InstallationManager {
         try requireUser()
         let package = try ReleasePackage(directory: directory)
         try package.validateForInstallation()
-        try package.requireCompatibleHost(using: environment.runner)
+        try package.requireSupportedArchitecture(using: environment.runner)
         try environment.requireGUI()
         return try store.withInstallationLock {
             let previous = try store.selectedDirectory()
@@ -45,7 +45,7 @@ struct InstallationManager {
             }
             return """
             Installed \(installed.manifest.version) (\(installed.manifest.sourceRevision)).
-            Xcode: \(installed.manifest.xcodeVersion) (\(installed.manifest.xcodeBuildVersion))
+            Built with Xcode: \(installed.manifest.xcodeVersion) (\(installed.manifest.xcodeBuildVersion))
             Service: \(installed.service.path)
             Command: \(store.command.path)
             Selected service: \(service.rawValue)
@@ -65,7 +65,7 @@ struct InstallationManager {
                 guard let installed = try store.selectedPackage() else {
                     throw ServiceError("No custom build service is installed. Run install first.")
                 }
-                try installed.requireCompatibleHost(using: environment.runner)
+                try installed.requireSupportedArchitecture(using: environment.runner)
                 customPackage = installed
             case .bundled:
                 customPackage = nil
@@ -93,7 +93,7 @@ struct InstallationManager {
                 return "Xcode's bundled service is selected; no custom activation is needed."
             }
             guard let selected = try store.selectedPackage() else { throw ServiceError("No custom build service is installed.") }
-            try selected.requireCompatibleHost(using: environment.runner)
+            try selected.requireSupportedArchitecture(using: environment.runner)
             let settings = try environment.settings()
             try settings.requireOwnership(in: store)
             try Transaction.perform { transaction in try apply(selected, previous: settings, transaction: transaction) }
@@ -147,7 +147,7 @@ struct InstallationManager {
         var lines = ["Installed: \(installed?.manifest.version ?? "none")", "Selected service: \(selection.rawValue)"]
         if let installed {
             lines.append("Source: \(installed.manifest.sourceRevision)")
-            lines.append("Required Xcode: \(installed.manifest.xcodeVersion) (\(installed.manifest.xcodeBuildVersion))")
+            lines.append("Built with Xcode: \(installed.manifest.xcodeVersion) (\(installed.manifest.xcodeBuildVersion))")
             lines.append("Installed custom service: \(installed.service.path)")
         }
         let active = installed != nil && settings.service == installed?.service.path && settings.concurrentResolution == "0" && settings.legacyService == nil

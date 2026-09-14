@@ -105,14 +105,9 @@ struct ReleasePackage {
         return true
     }
 
-    func requireCompatibleHost(using runner: any ProcessRunning) throws {
+    func requireSupportedArchitecture(using runner: any ProcessRunning) throws {
         let architecture = try runner.run("/usr/bin/uname", ["-m"]).requireSuccess("uname").trimmingCharacters(in: .whitespacesAndNewlines)
         guard architecture == manifest.architecture else { throw ServiceError("This release requires Apple Silicon (arm64).") }
-        let version = try runner.run("/usr/bin/xcodebuild", ["-version"]).requireSuccess("xcodebuild -version")
-        let lines = version.split(whereSeparator: \.isNewline).map(String.init)
-        guard lines == ["Xcode \(manifest.xcodeVersion)", "Build version \(manifest.xcodeBuildVersion)"] else {
-            throw ServiceError("This release requires Xcode \(manifest.xcodeVersion) (\(manifest.xcodeBuildVersion)). Selected Xcode: \(version.trimmingCharacters(in: .whitespacesAndNewlines)). Select the matching Xcode or install a compatible release.")
-        }
     }
 
     private static func matches(_ value: String, _ pattern: String) -> Bool {
