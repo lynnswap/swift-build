@@ -26,8 +26,8 @@ func rejectsInvalidReleaseVersions(version: String) throws {
     try fixture.write("{", to: package.appendingPathComponent("manifest.json"))
     #expect(throws: (any Error).self) { try ReleasePackage(directory: package) }
     for changes in [
-        ["schemaVersion": 2], ["sourceRevision": "main"], ["architecture": "x86_64"],
-        ["xcodeVersion": "26.0"], ["xcodeBuildVersion": "../27A5252f"], ["minimumMacOSVersion": "15.0"],
+        ["schemaVersion": 3], ["sourceRevision": "main"], ["architecture": "x86_64"],
+        ["xcodeVersion": "unknown"], ["xcodeBuildVersion": "../27A5252f"], ["minimumMacOSVersion": "15.0"],
         ["resourceBundles": []], ["resourceBundles": ["../escape.bundle"]],
         ["resourceBundles": ["SwiftBuild_SWBCore.bundle", "SwiftBuild_SWBCore.bundle"]],
         ["dependencies": [["identity": "swift-tools-support-core", "revision": "main"]]],
@@ -41,12 +41,32 @@ func rejectsInvalidReleaseVersions(version: String) throws {
 @Test func rejectsMissingResourcesAndAdditionalFiles() throws {
     let fixture = try Fixture()
     let package = try fixture.package("custom-v1.0.0")
-    try FileManager.default.removeItem(at: package.appendingPathComponent("libexec/swift-build/SwiftBuild_SWBCore.bundle"))
+    try FileManager.default.removeItem(at: package.appendingPathComponent("libexec/swift-build/SWBBuildService.bundle/SwiftBuild_SWBCore.bundle"))
     #expect(throws: (any Error).self) { try fixture.manager.install(from: package) }
     let additional = try fixture.package("custom-v1.0.1")
     try fixture.write("unexpected", to: additional.appendingPathComponent("extra"))
     #expect(throws: ServiceError.self) { try fixture.manager.install(from: additional) }
     #expect(try !fixture.store.exists(fixture.store.root))
+}
+
+@Test func missingHostPluginStopsInstallationBeforeChangingSelection() throws {
+    let fixture = try Fixture()
+    let package = try ReleasePackage(directory: fixture.package("custom-v1.0.0"))
+    try FileManager.default.removeItem(at: package.hostPlugin)
+    #expect(throws: (any Error).self) { try fixture.manager.install(from: package.directory) }
+    #expect(fixture.runner.settings.isEmpty)
+    #expect(try !fixture.store.exists(fixture.store.root))
+}
+
+@Test func buildMetadataDoesNotRestrictInstallationToAnXcodeVersion() throws {
+    let fixture = try Fixture()
+    fixture.runner.xcodeStatus = 1
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0", manifestChanges: [
+        "xcodeVersion": "26.6", "xcodeBuildVersion": "17F113",
+    ]))
+    #expect(try fixture.manager.status().contains("Built with Xcode: 26.6 (17F113)"))
+    _ = try fixture.manager.use(.bundled)
+    #expect(fixture.runner.settings.isEmpty)
 }
 
 @Test func rejectsSymlinksEvenWithinPackage() throws {
@@ -66,7 +86,7 @@ func rejectsInvalidReleaseVersions(version: String) throws {
     try fixture.write("archive", to: archive)
     #expect(throws: ServiceError.self) { try ReleasePackage(directory: archive) }
     let package = try fixture.package("custom-v1.0.0")
-    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: package.appendingPathComponent("libexec/swift-build/SWBBuildServiceBundle").path)
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: package.appendingPathComponent("libexec/swift-build/SWBBuildService.bundle/Contents/MacOS/SWBBuildServiceBundle").path)
     #expect(throws: ServiceError.self) { try ReleasePackage(directory: package) }
 }
 

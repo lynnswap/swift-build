@@ -21,7 +21,7 @@ Use `custom-xcode-build-service <command>`:
 ## Requirements
 
 - Apple silicon and macOS 26+.
-- Xcode 27 selected in **Settings > Locations > Command Line Tools**.
+- Xcode selected in **Settings > Locations > Command Line Tools** for builds.
 - A terminal in your logged-in macOS desktop session. Run without `sudo`.
 
 ## Install or Update
@@ -61,7 +61,7 @@ For a downloaded and verified archive, extract it and run from its root:
 ```
 
 Without `--package`, `install` uses the package containing that executable.
-Keep its resource bundles beside the service binary.
+Keep the extracted directory structure intact.
 
 </details>
 
@@ -82,6 +82,11 @@ custom-xcode-build-service use custom
 Your choice applies to all projects for your macOS user account and persists
 across logins and updates. Repeating either command succeeds. Selecting custom
 requires an installed release. Xcode updates do not change your selection.
+
+SwiftPM's Swift Build backend continues to use its in-process engine while custom
+is selected. The service bundle loads platform plugins from that engine's own
+Xcode installation, so changing `DEVELOPER_DIR` or `xcode-select` does not require
+reinstalling the custom service. Xcode and `xcodebuild` use the custom executable.
 
 After switching, quit and reopen **Xcode, your terminal application, and AI agent
 applications**. Start terminal-based agents from the restarted terminal.
@@ -153,6 +158,9 @@ python3 Distribution/release.py verify \
 
 Builds use committed source and pinned dependencies in an isolated directory.
 The output contains the archive, checksums, and a version-specific installer.
+Verification builds an Xcode project and runs `swift build`, `swift run`, and
+`swift test` with the extracted custom service selected. It uses the currently
+selected Xcode without requiring its build number to match the release metadata.
 
 Create a draft GitHub Release for the `custom-v*` tag and write its title and
 release notes there. Then push that tag to run the

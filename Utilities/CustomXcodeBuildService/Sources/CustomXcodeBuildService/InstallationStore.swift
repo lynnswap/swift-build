@@ -206,9 +206,13 @@ struct InstallationStore {
 
     func ownsService(at path: String) -> Bool {
         let service = URL(fileURLWithPath: path).standardizedFileURL
-        let version = service.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        return version.deletingLastPathComponent().path == versions.path
-            && path == version.appendingPathComponent("libexec/swift-build/SWBBuildServiceBundle").path
+        return [1, 2].contains { schemaVersion in
+            let relativePath = ReleasePackage.servicePath(schemaVersion: schemaVersion)
+            var version = service
+            for _ in relativePath.split(separator: "/") { version.deleteLastPathComponent() }
+            return version.deletingLastPathComponent().path == versions.path
+                && path == version.appendingPathComponent(relativePath).path
+        }
     }
 
     func removePayloads() throws {

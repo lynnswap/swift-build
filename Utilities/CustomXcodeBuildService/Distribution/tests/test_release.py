@@ -18,6 +18,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -256,14 +257,18 @@ class DistributionTests(unittest.TestCase):
         self.build = self.root / "build"
         self.payload = self.build / "payload"
         (self.payload / "bin").mkdir(parents=True)
-        service = self.payload / "libexec/swift-build"
+        service = self.payload / release.SERVICE_BUNDLE
         service.mkdir(parents=True)
         for path in (
             self.payload / "bin/custom-xcode-build-service",
-            service / "SWBBuildServiceBundle",
+            self.payload / release.SERVICE_BINARY,
+            self.payload / release.HOST_PLUGIN_BINARY,
         ):
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("#!/bin/sh\nexit 0\n")
             path.chmod(0o755)
+        for bundle, executable in ((release.SERVICE_BUNDLE, "SWBBuildServiceBundle"), (release.HOST_PLUGIN, "HostPlatformPlugins")):
+            (self.payload / bundle / "Contents/Info.plist").write_bytes(release.plistlib.dumps(dict(CFBundleExecutable=executable, CFBundlePackageType="BNDL")))
         for name in release.BUNDLES:
             resources = service / name / "Contents/Resources"
             resources.mkdir(parents=True)
@@ -273,7 +278,7 @@ class DistributionTests(unittest.TestCase):
             directory.mkdir(parents=True)
             (directory / "LICENSE.txt").write_text(f"License for {name}\n")
         self.manifest = dict(
-            schemaVersion=1,
+            schemaVersion=2,
             version="custom-v1.2.3-beta.1",
             sourceRevision="a" * 40,
             xcodeVersion="27.0",
@@ -321,6 +326,25 @@ class DistributionTests(unittest.TestCase):
             'repository="lynnswap/swift-build"', (directory / "install.sh").read_text()
         )
 
+    def test_legacy_archive_remains_readable(self):
+        service = self.payload / "libexec/swift-build"
+        (self.payload / release.SERVICE_BINARY).rename(service / "SWBBuildServiceBundle")
+        for bundle in release.BUNDLES:
+            (self.payload / release.SERVICE_BUNDLE / bundle).rename(service / bundle)
+        shutil.rmtree(self.payload / release.SERVICE_BUNDLE)
+        self.manifest["schemaVersion"] = 1
+        (self.payload / "manifest.json").write_text(json.dumps(self.manifest))
+        extracted = self.root / "legacy"
+        extracted.mkdir()
+        release.extract_archive(self.package() / release.ARCHIVE, extracted)
+        self.assertEqual(release.validate_payload(extracted), self.manifest)
+
+    def test_missing_host_plugin_stops_packaging(self):
+        (self.payload / release.HOST_PLUGIN_BINARY).unlink()
+        with self.assertRaisesRegex(ValueError, "Missing executable"):
+            self.package()
+        self.assertFalse((self.root / "release").exists())
+
     def test_repackaging_is_stable_and_refuses_existing_output(self):
         first = self.package("first")
         second = self.package("second")
@@ -338,7 +362,7 @@ class DistributionTests(unittest.TestCase):
     def test_missing_bundle_is_rejected_before_archive_is_created(self):
         import shutil
 
-        shutil.rmtree(self.payload / "libexec/swift-build" / release.BUNDLES[0])
+        shutil.rmtree(self.payload / release.SERVICE_BUNDLE / release.BUNDLES[0])
         with self.assertRaisesRegex(ValueError, "resources"):
             self.package()
         self.assertFalse((self.root / "release").exists())
@@ -392,10 +416,11 @@ class DistributionTests(unittest.TestCase):
             release, "xcode_version", return_value=("27.0", "27A266a")
         ), patch.object(release, "check_binary") as check_binary, patch.object(
             release, "smoke_build"
-        ) as smoke_build:
+        ) as smoke_build, patch.object(release, "smoke_swiftpm") as smoke_swiftpm:
             release.verify(argparse.Namespace(release_dir=directory))
-        self.assertEqual(check_binary.call_count, 2)
+        self.assertEqual(check_binary.call_count, 3)
         smoke_build.assert_called_once()
+        smoke_swiftpm.assert_called_once()
 
     def test_verify_propagates_smoke_build_failure(self):
         directory = self.package()
@@ -405,6 +430,18 @@ class DistributionTests(unittest.TestCase):
             release, "smoke_build", side_effect=ValueError("Xcode build failed")
         ):
             with self.assertRaisesRegex(ValueError, "Xcode build failed"):
+                release.verify(argparse.Namespace(release_dir=directory))
+
+    def test_verify_propagates_swiftpm_failure(self):
+        directory = self.package()
+        with patch.object(
+            release, "xcode_version", return_value=("26.6", "17F113")
+        ), patch.object(release, "check_binary"), patch.object(
+            release, "smoke_build"
+        ), patch.object(
+            release, "smoke_swiftpm", side_effect=subprocess.CalledProcessError(1, "swift build")
+        ):
+            with self.assertRaises(subprocess.CalledProcessError):
                 release.verify(argparse.Namespace(release_dir=directory))
 
     def test_dependency_requires_license_and_unique_revision_entry(self):
