@@ -64,8 +64,7 @@ enum Command: Equatable {
     uninstall  Remove owned settings and installed releases. Quit Xcode first.
     activate   Reapply custom at login if selected (used by the LaunchAgent).
 
-    Installing or selecting custom requires Apple Silicon, macOS 26, and the exact
-    Xcode 27 build in the manifest. Selecting bundled does not require a compatible Xcode.
+    Installing or selecting custom requires Apple Silicon and macOS 26 or later.
     Do not use sudo. Selection affects future processes for this macOS user account.
     After installing, updating, switching, or uninstalling, quit and reopen Xcode,
     terminal applications, and AI agent applications. Start terminal-based agents
