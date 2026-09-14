@@ -267,8 +267,10 @@ class DistributionTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("#!/bin/sh\nexit 0\n")
             path.chmod(0o755)
-        for bundle, executable in ((release.SERVICE_BUNDLE, "SWBBuildServiceBundle"), (release.HOST_PLUGIN, "HostPlatformPlugins")):
-            (self.payload / bundle / "Contents/Info.plist").write_bytes(release.plistlib.dumps(dict(CFBundleExecutable=executable, CFBundlePackageType="BNDL")))
+        for contents, executable in ((release.SERVICE_BUNDLE, "SWBBuildServiceBundle"), (release.HOST_PLUGIN / "Contents", "HostPlatformPlugins")):
+            (self.payload / contents / "Info.plist").write_bytes(release.plistlib.dumps(dict(CFBundleExecutable=executable, CFBundlePackageType="BNDL")))
+        (service / "_CodeSignature").mkdir()
+        (service / "_CodeSignature/CodeResources").write_text("signature")
         for name in release.BUNDLES:
             resources = service / name / "Contents/Resources"
             resources.mkdir(parents=True)

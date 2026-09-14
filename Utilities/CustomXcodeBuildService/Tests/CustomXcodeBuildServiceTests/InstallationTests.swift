@@ -111,7 +111,7 @@ func installedReleaseRemainsUsableAfterBuilds(command: String) throws {
 
 @Test(arguments: [
     "generated-file", "malformed-manifest", "", "manifest.json",
-    "bin/custom-xcode-build-service", "libexec/swift-build/SWBBuildService.bundle/Contents/MacOS/SWBBuildServiceBundle",
+    "bin/custom-xcode-build-service", "libexec/swift-build/SWBBuildService.bundle/SWBBuildServiceBundle",
     "libexec/swift-build/SWBBuildService.bundle/SwiftBuild_SWBCore.bundle",
 ], [false, true])
 func updateCanReplaceOrRestoreChangedPreviousRelease(change: String, failUpdate: Bool) throws {
@@ -266,9 +266,9 @@ func refusesForeignEnvironment(key: String) throws {
 
 @Test(arguments: [
     "/someone/elses/service",
-    "Library/Developer/CustomXcodeBuildService/versions-other/custom-v1.0.0/libexec/swift-build/SWBBuildService.bundle/Contents/MacOS/SWBBuildServiceBundle",
+    "Library/Developer/CustomXcodeBuildService/versions-other/custom-v1.0.0/libexec/swift-build/SWBBuildService.bundle/SWBBuildServiceBundle",
     "Library/Developer/CustomXcodeBuildService/versions/custom-v1.0.0/libexec/swift-build/another-service",
-    "Library/Developer/CustomXcodeBuildService/versions/custom-v1.0.0/extra/libexec/swift-build/SWBBuildService.bundle/Contents/MacOS/SWBBuildServiceBundle",
+    "Library/Developer/CustomXcodeBuildService/versions/custom-v1.0.0/extra/libexec/swift-build/SWBBuildService.bundle/SWBBuildServiceBundle",
 ])
 func uninstallPreservesExternallyChangedSettings(path: String) throws {
     let fixture = try Fixture()
@@ -328,7 +328,7 @@ func uninstallRemovesReleasesWithGeneratedFiles(version: String) throws {
     "versions/custom-v1.0.0",
     "versions/custom-v1.0.0/manifest.json",
     "versions/custom-v1.0.0/bin/custom-xcode-build-service",
-    "versions/custom-v1.0.0/libexec/swift-build/SWBBuildService.bundle/Contents/MacOS/SWBBuildServiceBundle",
+    "versions/custom-v1.0.0/libexec/swift-build/SWBBuildService.bundle/SWBBuildServiceBundle",
     "versions/custom-v1.0.0/libexec/swift-build/SWBBuildService.bundle/SwiftBuild_SWBCore.bundle",
 ])
 func uninstallRemovesIncompleteInstallation(missingPath: String) throws {
@@ -537,7 +537,7 @@ func installingPreservesBundledSelection(version: String) throws {
     #expect(!fixture.runner.loaded)
 }
 
-@Test(arguments: ["manifest.json", "libexec/swift-build/SWBBuildService.bundle/Contents/MacOS/SWBBuildServiceBundle", "bin/custom-xcode-build-service"])
+@Test(arguments: ["manifest.json", "libexec/swift-build/SWBBuildService.bundle/SWBBuildServiceBundle", "bin/custom-xcode-build-service"])
 func selectingBundledWorksAfterXcodeUpdateAndPayloadDamage(missingPath: String) throws {
     let fixture = try Fixture()
     _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
@@ -669,12 +669,15 @@ final class Fixture {
         let resources = schemaVersion == 1 ? "libexec/swift-build" : "libexec/swift-build/SWBBuildService.bundle"
         var executables = ["bin/custom-xcode-build-service", ReleasePackage.servicePath(schemaVersion: schemaVersion)]
         if schemaVersion == 2 {
-            executables.append("\(resources)/Contents/PlugIns/HostPlatformPlugins.bundle/Contents/MacOS/HostPlatformPlugins")
-            for (bundle, executable) in [(resources, "SWBBuildServiceBundle"), ("\(resources)/Contents/PlugIns/HostPlatformPlugins.bundle", "HostPlatformPlugins")] {
-                let plist = package.appendingPathComponent("\(bundle)/Contents/Info.plist")
+            executables.append("\(resources)/PlugIns/HostPlatformPlugins.bundle/Contents/MacOS/HostPlatformPlugins")
+            for (contents, executable) in [(resources, "SWBBuildServiceBundle"), ("\(resources)/PlugIns/HostPlatformPlugins.bundle/Contents", "HostPlatformPlugins")] {
+                let plist = package.appendingPathComponent("\(contents)/Info.plist")
                 try write("", to: plist)
                 try PropertyListSerialization.data(fromPropertyList: ["CFBundleExecutable": executable, "CFBundlePackageType": "BNDL"], format: .xml, options: 0).write(to: plist)
             }
+        }
+        if schemaVersion == 2 {
+            try write("signature", to: package.appendingPathComponent("\(resources)/_CodeSignature/CodeResources"))
         }
         for path in executables {
             let executable = package.appendingPathComponent(path)

@@ -35,8 +35,8 @@ DISTRIBUTION_PATH = Path("Utilities/CustomXcodeBuildService/Distribution")
 ARCHIVE = "custom-xcode-build-service-darwin-arm64.tar.gz"
 ASSETS = (ARCHIVE, "install.sh")
 SERVICE_BUNDLE = Path("libexec/swift-build/SWBBuildService.bundle")
-SERVICE_BINARY = SERVICE_BUNDLE / "Contents/MacOS/SWBBuildServiceBundle"
-HOST_PLUGIN = SERVICE_BUNDLE / "Contents/PlugIns/HostPlatformPlugins.bundle"
+SERVICE_BINARY = SERVICE_BUNDLE / "SWBBuildServiceBundle"
+HOST_PLUGIN = SERVICE_BUNDLE / "PlugIns/HostPlatformPlugins.bundle"
 HOST_PLUGIN_BINARY = HOST_PLUGIN / "Contents/MacOS/HostPlatformPlugins"
 BUNDLES = tuple(
     sorted(
@@ -154,18 +154,16 @@ def validate_payload(payload):
         )
         service_dir = payload / SERVICE_BUNDLE
         require(
-            {p.name for p in (service_dir / "Contents").iterdir()}
-            == {"Info.plist", "MacOS", "PlugIns"}
-            and {p.name for p in (service_dir / "Contents/MacOS").iterdir()}
-            == {"SWBBuildServiceBundle"}
-            and {p.name for p in (service_dir / "Contents/PlugIns").iterdir()}
+            {p.name for p in (service_dir / "PlugIns").iterdir()}
             == {"HostPlatformPlugins.bundle"},
             "Unexpected service bundle contents.",
         )
         binaries.append(payload / HOST_PLUGIN_BINARY)
+    service_contents = {"SWBBuildServiceBundle", *BUNDLES}
+    if manifest["schemaVersion"] == 2:
+        service_contents.update({"Info.plist", "PlugIns", "_CodeSignature"})
     require(
-        {p.name for p in service_dir.iterdir()}
-        == {("SWBBuildServiceBundle" if manifest["schemaVersion"] == 1 else "Contents"), *BUNDLES},
+        {p.name for p in service_dir.iterdir()} == service_contents,
         "Missing or unexpected service resources.",
     )
     for bundle in BUNDLES:
@@ -461,11 +459,11 @@ def stage(args):
         check=True,
     )
     copy_binary(plugin, payload / HOST_PLUGIN_BINARY)
-    for bundle, identifier, executable in (
+    for contents, identifier, executable in (
         (SERVICE_BUNDLE, "io.github.lynnswap.SWBBuildService", "SWBBuildServiceBundle"),
-        (HOST_PLUGIN, "io.github.lynnswap.HostPlatformPlugins", "HostPlatformPlugins"),
+        (HOST_PLUGIN / "Contents", "io.github.lynnswap.HostPlatformPlugins", "HostPlatformPlugins"),
     ):
-        (payload / bundle / "Contents/Info.plist").write_bytes(plistlib.dumps(dict(
+        (payload / contents / "Info.plist").write_bytes(plistlib.dumps(dict(
             CFBundleIdentifier=identifier, CFBundleExecutable=executable,
             CFBundlePackageType="BNDL",
         )))
@@ -477,6 +475,17 @@ def stage(args):
     for bundle in BUNDLES:
         regular_tree(args.service_bin / bundle)
         shutil.copytree(args.service_bin / bundle, service_dir / bundle)
+    # SwiftPM's Bundle.module accessors resolve resources at Bundle.main.bundleURL.
+    # A shallow bundle keeps those paths valid and can seal them when signed.
+    for bundle in (HOST_PLUGIN, SERVICE_BUNDLE):
+        subprocess.run(
+            ["/usr/bin/codesign", "--force", "--sign", "-", str(payload / bundle)],
+            check=True,
+        )
+        subprocess.run(
+            ["/usr/bin/codesign", "--verify", "--strict", str(payload / bundle)],
+            check=True,
+        )
     pins = json.loads(
         (source / DISTRIBUTION_PATH / "ServiceDependencies.resolved").read_text()
     )["pins"]

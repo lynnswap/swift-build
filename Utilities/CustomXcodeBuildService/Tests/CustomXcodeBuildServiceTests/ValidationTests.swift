@@ -86,7 +86,7 @@ func rejectsInvalidReleaseVersions(version: String) throws {
     try fixture.write("archive", to: archive)
     #expect(throws: ServiceError.self) { try ReleasePackage(directory: archive) }
     let package = try fixture.package("custom-v1.0.0")
-    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: package.appendingPathComponent("libexec/swift-build/SWBBuildService.bundle/Contents/MacOS/SWBBuildServiceBundle").path)
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: package.appendingPathComponent("libexec/swift-build/SWBBuildService.bundle/SWBBuildServiceBundle").path)
     #expect(throws: ServiceError.self) { try ReleasePackage(directory: package) }
 }
 

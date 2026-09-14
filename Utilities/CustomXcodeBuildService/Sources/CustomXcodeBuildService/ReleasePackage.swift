@@ -34,7 +34,7 @@ struct ReleasePackage {
     var executable: URL { directory.appendingPathComponent("bin/custom-xcode-build-service") }
     static func servicePath(schemaVersion: Int) -> String {
         schemaVersion == 1 ? "libexec/swift-build/SWBBuildServiceBundle"
-            : "libexec/swift-build/SWBBuildService.bundle/Contents/MacOS/SWBBuildServiceBundle"
+            : "libexec/swift-build/SWBBuildService.bundle/SWBBuildServiceBundle"
     }
     var service: URL { directory.appendingPathComponent(Self.servicePath(schemaVersion: manifest.schemaVersion)) }
     var resources: URL {
@@ -42,7 +42,7 @@ struct ReleasePackage {
             ? "libexec/swift-build" : "libexec/swift-build/SWBBuildService.bundle")
     }
     var hostPlugin: URL {
-        resources.appendingPathComponent("Contents/PlugIns/HostPlatformPlugins.bundle/Contents/MacOS/HostPlatformPlugins")
+        resources.appendingPathComponent("PlugIns/HostPlatformPlugins.bundle/Contents/MacOS/HostPlatformPlugins")
     }
 
     init(directory: URL) throws {
@@ -90,15 +90,13 @@ struct ReleasePackage {
         guard Set(actual) == ["manifest.json", "bin", "libexec", "licenses"],
               try files.contentsOfDirectory(atPath: directory.appendingPathComponent("bin").path) == ["custom-xcode-build-service"],
               try files.contentsOfDirectory(atPath: directory.appendingPathComponent("libexec").path) == ["swift-build"],
-              Set(try files.contentsOfDirectory(atPath: resources.path)) == Set(manifest.resourceBundles + [manifest.schemaVersion == 1 ? "SWBBuildServiceBundle" : "Contents"]),
+              Set(try files.contentsOfDirectory(atPath: resources.path)) == Set(manifest.resourceBundles + (manifest.schemaVersion == 1 ? ["SWBBuildServiceBundle"] : ["SWBBuildServiceBundle", "Info.plist", "PlugIns", "_CodeSignature"])),
               !(try files.contentsOfDirectory(atPath: directory.appendingPathComponent("licenses").path)).isEmpty else {
             throw ServiceError("Release package layout does not match its manifest.")
         }
         if manifest.schemaVersion == 2 {
             guard try files.contentsOfDirectory(atPath: directory.appendingPathComponent("libexec/swift-build").path) == ["SWBBuildService.bundle"],
-                  Set(try files.contentsOfDirectory(atPath: resources.appendingPathComponent("Contents").path)) == ["Info.plist", "MacOS", "PlugIns"],
-                  try files.contentsOfDirectory(atPath: service.deletingLastPathComponent().path) == ["SWBBuildServiceBundle"],
-                  try files.contentsOfDirectory(atPath: resources.appendingPathComponent("Contents/PlugIns").path) == ["HostPlatformPlugins.bundle"] else {
+                  try files.contentsOfDirectory(atPath: resources.appendingPathComponent("PlugIns").path) == ["HostPlatformPlugins.bundle"] else {
                 throw ServiceError("Release service bundle layout does not match its manifest.")
             }
         }
