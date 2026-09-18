@@ -647,10 +647,11 @@ def run_xcodebuild(command, environment, service, cwd=None):
             while True:
                 # Xcode inspects the selected Mach-O;
                 # a shell wrapper cannot prove selection.
-                executable_paths = output(["/bin/ps", "-axo", "comm="]).splitlines()
-                observed_service |= str(service) in (
-                    path.strip() for path in executable_paths
-                )
+                processes = output(["/bin/ps", "-axo", "pid=,ppid=,comm="]).splitlines()
+                for row in processes:
+                    fields = row.split(maxsplit=2)
+                    if len(fields) == 3 and fields[1] == str(process.pid) and fields[2] == str(service):
+                        observed_service = True
                 return_code = process.poll()
                 if return_code is not None:
                     require(

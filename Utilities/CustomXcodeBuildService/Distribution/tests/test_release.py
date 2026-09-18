@@ -334,6 +334,26 @@ esac
                 self.assertFalse(self.build_directories[-1].exists())
 
 
+class XcodeInvocationTests(unittest.TestCase):
+    def test_only_the_current_xcodebuild_child_proves_service_selection(self):
+        service = Path("/tmp/custom service/SWBBuildServiceBundle")
+        for parent in ("1", "100", "200"):
+            with self.subTest(parent=parent), patch.object(
+                release.subprocess, "Popen"
+            ) as launch, patch.object(
+                release, "output",
+                return_value=f"300 {parent} {service}\n400 200 /Xcode/SWBBuildService",
+            ):
+                process = launch.return_value.__enter__.return_value
+                process.pid = 200
+                process.poll.return_value = 0
+                if parent == "200":
+                    release.run_xcodebuild(["xcodebuild", "test"], {}, service)
+                else:
+                    with self.assertRaisesRegex(ValueError, "did not invoke"):
+                        release.run_xcodebuild(["xcodebuild", "test"], {}, service)
+
+
 class DistributionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="release tests ")
