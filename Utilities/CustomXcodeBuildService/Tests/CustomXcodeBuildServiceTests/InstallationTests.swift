@@ -431,7 +431,9 @@ func commandOwnershipUsesThePhysicalContainingDirectory(owned: Bool) throws {
     _ = try fixture.manager.activate()
     _ = try fixture.manager.use(.custom)
     _ = try fixture.manager.install(from: fixture.package("custom-v1.0.1"))
-    #expect(try Data(contentsOf: fixture.store.agent) == data)
+    properties["Program"] = nil
+    let saved = try #require(PropertyListSerialization.propertyList(from: Data(contentsOf: fixture.store.agent), format: nil) as? NSDictionary)
+    #expect(saved == properties as NSDictionary)
     _ = try fixture.manager.use(.bundled)
     #expect(fixture.runner.settings.isEmpty)
     #expect(try !fixture.store.exists(fixture.store.agent))
@@ -442,7 +444,7 @@ func commandOwnershipUsesThePhysicalContainingDirectory(owned: Bool) throws {
     #expect(try String(contentsOf: log, encoding: .utf8) == "preserve log")
 }
 
-@Test(arguments: ["missing-run-at-load", "disabled-run-at-load", "missing-session", "background-session"], ["use", "update", "activate"])
+@Test(arguments: ["missing-run-at-load", "disabled-run-at-load", "missing-session", "background-session", "keep-alive", "interval"], ["use", "update", "activate"])
 func applyingCustomRestoresLoginActivationAndPreservesLogging(change: String, command: String) throws {
     let fixture = try Fixture()
     _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
@@ -453,7 +455,9 @@ func applyingCustomRestoresLoginActivationAndPreservesLogging(change: String, co
     case "missing-run-at-load": properties["RunAtLoad"] = nil
     case "disabled-run-at-load": properties["RunAtLoad"] = false
     case "missing-session": properties["LimitLoadToSessionType"] = nil
-    default: properties["LimitLoadToSessionType"] = "Background"
+    case "background-session": properties["LimitLoadToSessionType"] = "Background"
+    case "keep-alive": properties["KeepAlive"] = true
+    default: properties["StartInterval"] = 10
     }
     try PropertyListSerialization.data(fromPropertyList: properties, format: .xml, options: 0).write(to: fixture.store.agent)
 
@@ -469,6 +473,8 @@ func applyingCustomRestoresLoginActivationAndPreservesLogging(change: String, co
     #expect(saved["RunAtLoad"] as? Bool == true)
     #expect(saved["LimitLoadToSessionType"] as? String == "Aqua")
     #expect(saved["StandardOutPath"] as? String == log)
+    #expect(saved["KeepAlive"] == nil)
+    #expect(saved["StartInterval"] == nil)
     #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == (try fixture.store.selectedPackage()?.service.path))
     _ = try fixture.manager.use(.bundled)
     #expect(fixture.runner.settings.isEmpty)

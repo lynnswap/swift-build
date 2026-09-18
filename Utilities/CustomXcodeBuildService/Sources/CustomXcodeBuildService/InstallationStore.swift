@@ -212,13 +212,13 @@ struct InstallationStore {
             guard let existing = try PropertyListSerialization.propertyList(from: previous, format: nil) as? [String: Any] else {
                 throw ServiceError("Invalid LaunchAgent property list: \(agent.path)")
             }
-            if existing["RunAtLoad"] as? Bool == true, existing["LimitLoadToSessionType"] as? String == "Aqua" {
+            for key in ["StandardOutPath", "StandardErrorPath"] {
+                properties[key] = existing[key] as? String
+            }
+            if existing as NSDictionary == properties as NSDictionary {
                 return false
             }
-            properties = existing
         }
-        properties["RunAtLoad"] = true
-        properties["LimitLoadToSessionType"] = "Aqua"
         try ensureDirectory(agent.deletingLastPathComponent())
         let data = try PropertyListSerialization.data(fromPropertyList: properties, format: .xml, options: 0)
         try data.write(to: agent, options: .atomic)
