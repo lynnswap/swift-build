@@ -38,12 +38,19 @@ jobs:
     # https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md
     runs-on: xcode-27
     timeout-minutes: 180
+    outputs:
+      xcodes: ${{ steps.xcodes.outputs.xcodes }}
     env:
       RELEASE_VERSION: ${{ github.event_name == 'push' && github.ref_name || inputs.version || 'custom-v0.0.0-validation' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+      - name: Discover Xcodes on the preview runner
+        id: xcodes
+        run: |
+          python3 Utilities/CustomXcodeBuildService/Distribution/xcode_matrix.py discover \
+            --runner xcode-27 --github-output "$GITHUB_OUTPUT"
       - name: Check distribution scripts
         run: |
           sh -n Utilities/CustomXcodeBuildService/Distribution/install.sh.in
@@ -64,70 +71,64 @@ jobs:
           compression-level: 0
           retention-days: 14
 
+  discover-xcodes:
+    name: Discover Xcodes on the stable runner
+    runs-on: macos-26
+    timeout-minutes: 10
+    outputs:
+      xcodes: ${{ steps.xcodes.outputs.xcodes }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Discover installed Xcodes
+        id: xcodes
+        run: |
+          python3 Utilities/CustomXcodeBuildService/Distribution/xcode_matrix.py discover \
+            --runner macos-26 --github-output "$GITHUB_OUTPUT"
+
+  compatibility-matrix:
+    name: Select stable Xcodes and the latest beta
+    needs: [build, discover-xcodes]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Select compatibility targets
+        id: select
+        env:
+          STABLE_RUNNER_XCODES: ${{ needs.discover-xcodes.outputs.xcodes }}
+          PREVIEW_RUNNER_XCODES: ${{ needs.build.outputs.xcodes }}
+        run: |
+          python3 Utilities/CustomXcodeBuildService/Distribution/xcode_matrix.py plan \
+            --inventories "$STABLE_RUNNER_XCODES" "$PREVIEW_RUNNER_XCODES" \
+            --github-output "$GITHUB_OUTPUT"
+
   compatibility:
-    name: IPC compatibility (Xcode ${{ matrix.xcode }})
-    needs: build
+    name: IPC compatibility (Xcode ${{ matrix.version }}, ${{ matrix.build }})
+    needs: [build, compatibility-matrix]
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - xcode: '26.6'
-            runner: macos-26
-            optional: false
-          - xcode: '27.0'
-            runner: xcode-27
-            optional: false
-          - xcode: '27.2'
-            runner: xcode-27
-            optional: true
+      matrix: ${{ fromJSON(needs.compatibility-matrix.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: ${{ matrix.developer_dir }}
     steps:
-      - name: Select installed client Xcode
-        id: xcode
-        env:
-          XCODE_VERSION: ${{ matrix.xcode }}
-          XCODE_OPTIONAL: ${{ matrix.optional }}
-        run: |
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-          import plistlib
-
-          requested = os.environ['XCODE_VERSION']
-          for application in sorted(Path('/Applications').glob('Xcode*.app')):
-              version_file = application / 'Contents/version.plist'
-              if not version_file.is_file():
-                  continue
-              with version_file.open('rb') as stream:
-                  version = plistlib.load(stream)['CFBundleShortVersionString']
-              if version == requested or version.startswith(requested + '.'):
-                  developer = application.resolve() / 'Contents/Developer'
-                  with open(os.environ['GITHUB_ENV'], 'a') as stream:
-                      stream.write(f'DEVELOPER_DIR={developer}\n')
-                  with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
-                      stream.write('available=true\n')
-                  break
-          else:
-              message = f'Xcode {requested} is not installed on this runner.'
-              if os.environ['XCODE_OPTIONAL'] != 'true':
-                  raise SystemExit(message)
-              print(f'::notice::{message} Compatibility test skipped.')
-              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as stream:
-                  stream.write(f'{message} Compatibility was not tested.\n')
-          PY
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        if: steps.xcode.outputs.available == 'true'
         with:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        if: steps.xcode.outputs.available == 'true'
         with:
           name: custom-xcode-build-service-release
           path: ${{ runner.temp }}/custom-service-release
       - name: Test Xcode IPC and SwiftPM compatibility
-        if: steps.xcode.outputs.available == 'true'
         run: |
+          sw_vers
           xcrun xcodebuild -version
           python3 Utilities/CustomXcodeBuildService/Distribution/release.py verify \
             --release-dir "$RUNNER_TEMP/custom-service-release"

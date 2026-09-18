@@ -161,9 +161,11 @@ python3 -m unittest discover -s Utilities/CustomXcodeBuildService/Distribution/t
 ```
 
 This fork's CI tests the installer and Xcode compatibility. It builds one service
-artifact and verifies it with Xcode 26.6 and 27.0. Xcode 27.2 is also tested when
-installed on the hosted runner; otherwise that case is explicitly reported as
-untested. These versions define test coverage, not an installation allowlist.
+artifact and discovers installed Xcode 26 and 27 releases on the `macos-26` and
+`xcode-27` hosted runners. It tests every stable release and the latest beta across
+both inventories, once per Xcode build, using the runner where it was found.
+The Xcode and macOS versions are printed for each run. This selection defines
+test coverage, not an installation allowlist.
 
 <details>
 <summary>Build and publish a release</summary>
