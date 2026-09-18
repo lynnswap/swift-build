@@ -503,11 +503,11 @@ class DistributionTests(unittest.TestCase):
             release, "xcode_version", return_value=("27.0", "27A266a")
         ), patch.object(release, "check_binary") as check_binary, patch.object(
             release, "smoke_build"
-        ) as smoke_build, patch.object(release, "smoke_swiftpm") as smoke_swiftpm:
+        ) as smoke_build, patch.object(release, "smoke_swift") as smoke_swift:
             release.verify(argparse.Namespace(release_dir=directory))
         self.assertEqual(check_binary.call_count, 3)
         smoke_build.assert_called_once()
-        smoke_swiftpm.assert_called_once()
+        smoke_swift.assert_called_once()
 
     def test_verify_propagates_smoke_build_failure(self):
         directory = self.package()
@@ -526,7 +526,7 @@ class DistributionTests(unittest.TestCase):
         ), patch.object(release, "check_binary"), patch.object(
             release, "smoke_build"
         ), patch.object(
-            release, "smoke_swiftpm", side_effect=subprocess.CalledProcessError(1, "swift build")
+            release, "smoke_swift", side_effect=subprocess.CalledProcessError(1, "swift build")
         ):
             with self.assertRaises(subprocess.CalledProcessError):
                 release.verify(argparse.Namespace(release_dir=directory))

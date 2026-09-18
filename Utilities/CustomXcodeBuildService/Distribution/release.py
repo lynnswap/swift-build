@@ -635,9 +635,14 @@ def smoke_build(payload, temporary, manifest):
         f"OBJROOT={temporary / 'intermediates'}",
         "build",
     ]
+    run_xcodebuild(command, environment, service)
+    subprocess.run([str(temporary / "products/Release/CommandLineTool")], check=True)
+
+
+def run_xcodebuild(command, environment, service, cwd=None):
     observed_service = False
     deadline = time.monotonic() + 600
-    with subprocess.Popen(command, env=environment) as process:
+    with subprocess.Popen(command, env=environment, cwd=cwd) as process:
         try:
             while True:
                 # Xcode inspects the selected Mach-O;
@@ -666,10 +671,9 @@ def smoke_build(payload, temporary, manifest):
                 except subprocess.TimeoutExpired:
                     process.kill()  # ignore-unacceptable-language: subprocess API
     require(observed_service, "Xcode did not invoke the relocated custom service.")
-    subprocess.run([str(temporary / "products/Release/CommandLineTool")], check=True)
 
 
-def smoke_swiftpm(payload, temporary, manifest):
+def smoke_swift(payload, temporary, manifest):
     package = temporary / "SwiftPMSmoke"
     (package / "Sources/Smoke").mkdir(parents=True)
     (package / "Tests/SmokeTests").mkdir(parents=True)
@@ -687,13 +691,23 @@ let package = Package(name: "Smoke", targets: [
 ''')
     environment = dict(os.environ)
     environment.pop("SWBBUILDSERVICE_PATH", None)
-    environment["XCBBUILDSERVICE_PATH"] = str(service_path(payload, manifest))
+    service = service_path(payload, manifest)
+    environment.update(
+        XCBBUILDSERVICE_PATH=str(service), DisableConcurrentDependencyResolution="0"
+    )
     for command in ("build", "run", "test"):
         subprocess.run(
             ["/usr/bin/xcrun", "swift", command, "--build-system", "swiftbuild",
              "--package-path", str(package)],
             env=environment, check=True, timeout=600,
         )
+    run_xcodebuild(
+        ["/usr/bin/xcrun", "xcodebuild", "-scheme", "Smoke", "-testPlan", "Smoke",
+         "-destination", "platform=macOS,arch=arm64",
+         "-derivedDataPath", str(temporary / "SwiftDerivedData"),
+         "MACOSX_DEPLOYMENT_TARGET=26.0", "test"],
+        environment, service, cwd=package,
+    )
 
 
 def verify(args):
@@ -731,10 +745,11 @@ def verify(args):
             [str(payload / "bin/custom-xcode-build-service"), "--help"], check=True
         )
         smoke_build(payload, temporary, manifest)
-        smoke_swiftpm(payload, temporary, manifest)
+        smoke_swift(payload, temporary, manifest)
     print(
         "Verified checksums, archive layout, signatures, system libraries, "
-        "relocated Xcode build, and SwiftPM build/run/test with the service override."
+        "relocated Xcode C build and Swift tests, and SwiftPM build/run/test "
+        "with the service override."
     )
 
 
