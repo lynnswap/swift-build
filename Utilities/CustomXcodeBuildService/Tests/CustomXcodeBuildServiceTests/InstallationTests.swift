@@ -171,6 +171,27 @@ func updateCanReplaceOrRestoreChangedPreviousRelease(change: String, failUpdate:
     #expect(try fixture.store.exists(fixture.store.root))
 }
 
+@Test func failedCommandRemovalRestoresCustomizedLoginConfiguration() throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    var properties = fixture.store.agentProperties
+    properties["StandardOutPath"] = fixture.directory.appendingPathComponent("custom.log").path
+    let agent = try PropertyListSerialization.data(fromPropertyList: properties, format: .xml, options: 0)
+    try agent.write(to: fixture.store.agent)
+    let settings = fixture.runner.settings
+    let commandDirectory = fixture.store.command.deletingLastPathComponent()
+    try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: commandDirectory.path)
+    defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: commandDirectory.path) }
+
+    #expect(throws: (any Error).self) { try fixture.manager.uninstall() }
+
+    #expect(try Data(contentsOf: fixture.store.agent) == agent)
+    #expect(fixture.runner.settings == settings)
+    #expect(fixture.runner.loaded)
+    #expect(try fixture.manager.status().contains("Selected service: custom"))
+    #expect(try fixture.store.exists(fixture.store.command))
+}
+
 @Test(arguments: ["XCBBUILDSERVICE_PATH", "SWBBUILDSERVICE_PATH", "DisableConcurrentDependencyResolution"])
 func refusesForeignEnvironment(key: String) throws {
     let fixture = try Fixture()

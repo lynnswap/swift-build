@@ -248,8 +248,9 @@ struct InstallationManager {
                 transaction.undo { try environment.set("XCBBUILDSERVICE_PATH", to: previous.settings.service) }
             }
             if previous.selection == .custom {
+                let agent = try Data(contentsOf: store.agent)
                 try store.remove(store.agent)
-                transaction.undo { try store.writeAgent() }
+                transaction.undo { try agent.write(to: store.agent, options: .atomic) }
             }
         }
     }
