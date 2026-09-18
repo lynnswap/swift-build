@@ -119,8 +119,11 @@ struct InstallationStore {
             }
             let destination = try files.destinationOfSymbolicLink(atPath: command.path)
             // Keep current in the target: a link to one release would not follow updates.
-            let target = (destination.hasPrefix("/") ? URL(fileURLWithPath: destination) : command.deletingLastPathComponent().appendingPathComponent(destination)).standardized
-            guard target.path == persistentExecutable.path else {
+            let parent = command.deletingLastPathComponent().resolvingSymlinksInPath()
+            let target = destination.hasPrefix("/") ? URL(fileURLWithPath: destination) : parent.appendingPathComponent(destination)
+            let installation = target.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            guard target.path == installation.appendingPathComponent("current/bin/custom-xcode-build-service").path,
+                  installation.resolvingSymlinksInPath().path == root.resolvingSymlinksInPath().path else {
                 throw ServiceError("Refusing to overwrite an unrelated command: \(command.path)")
             }
         }
@@ -203,11 +206,24 @@ struct InstallationStore {
         try files.createSymbolicLink(atPath: command.path, withDestinationPath: persistentExecutable.path)
     }
 
-    func writeAgent() throws {
+    func writeAgent(preserving previous: Data?) throws -> Bool {
+        var properties = agentProperties
+        if let previous {
+            guard let existing = try PropertyListSerialization.propertyList(from: previous, format: nil) as? [String: Any] else {
+                throw ServiceError("Invalid LaunchAgent property list: \(agent.path)")
+            }
+            if existing["RunAtLoad"] as? Bool == true, existing["LimitLoadToSessionType"] as? String == "Aqua" {
+                return false
+            }
+            properties = existing
+        }
+        properties["RunAtLoad"] = true
+        properties["LimitLoadToSessionType"] = "Aqua"
         try ensureDirectory(agent.deletingLastPathComponent())
-        let data = try PropertyListSerialization.data(fromPropertyList: agentProperties, format: .xml, options: 0)
+        let data = try PropertyListSerialization.data(fromPropertyList: properties, format: .xml, options: 0)
         try data.write(to: agent, options: .atomic)
         try files.setAttributes([.posixPermissions: 0o644], ofItemAtPath: agent.path)
+        return true
     }
 
     func remove(_ url: URL) throws { try files.removeItem(at: url) }
