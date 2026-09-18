@@ -112,13 +112,18 @@ struct InstallationStore {
         return package
     }
 
-    func validateExternalPaths() throws {
+    func validateCommand() throws {
         if try exists(command) {
-            guard try files.destinationOfSymbolicLink(atPath: command.path) == persistentExecutable.path else {
+            guard try files.attributesOfItem(atPath: command.path)[.type] as? FileAttributeType == .typeSymbolicLink else {
+                throw ServiceError("Refusing to replace an unrelated command: \(command.path)")
+            }
+            let destination = try files.destinationOfSymbolicLink(atPath: command.path)
+            // Keep current in the target: a link to one release would not follow updates.
+            let target = (destination.hasPrefix("/") ? URL(fileURLWithPath: destination) : command.deletingLastPathComponent().appendingPathComponent(destination)).standardized
+            guard target.path == persistentExecutable.path else {
                 throw ServiceError("Refusing to overwrite an unrelated command: \(command.path)")
             }
         }
-        try validateAgent()
     }
 
     func selectedService() throws -> BuildService {
@@ -131,8 +136,11 @@ struct InstallationStore {
     private func validateAgent() throws {
         if try exists(agent) {
             guard try files.attributesOfItem(atPath: agent.path)[.type] as? FileAttributeType == .typeRegular,
-                  let actual = try PropertyListSerialization.propertyList(from: Data(contentsOf: agent), format: nil) as? NSDictionary,
-                  actual == agentProperties as NSDictionary else {
+                  let actual = try PropertyListSerialization.propertyList(from: Data(contentsOf: agent), format: nil) as? [String: Any],
+                  actual["Label"] as? String == Self.label,
+                  actual["ProgramArguments"] as? [String] == [persistentExecutable.path, "activate"],
+                  (actual["Program"] == nil || actual["Program"] as? String == persistentExecutable.path),
+                  actual["BundleProgram"] == nil else {
                 throw ServiceError("Refusing to overwrite an unrelated LaunchAgent: \(agent.path)")
             }
         }

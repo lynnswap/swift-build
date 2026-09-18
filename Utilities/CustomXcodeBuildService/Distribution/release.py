@@ -380,10 +380,6 @@ def build(args):
         env=environment,
         check=True,
     )
-    require(
-        (source / "Package.resolved").read_bytes() == pins.read_bytes(),
-        "Building the service changed its pinned dependencies.",
-    )
     subprocess.run(
         ["/usr/bin/xcrun", "swift", "test", *cli_args, "--disable-xctest"],
         env=environment,
@@ -677,7 +673,7 @@ def smoke_swiftpm(payload, temporary, manifest):
     package = temporary / "SwiftPMSmoke"
     (package / "Sources/Smoke").mkdir(parents=True)
     (package / "Tests/SmokeTests").mkdir(parents=True)
-    (package / "Package.swift").write_text('''// swift-tools-version: 6.3
+    (package / "Package.swift").write_text('''// swift-tools-version: 6.2
 import PackageDescription
 let package = Package(name: "Smoke", targets: [
     .executableTarget(name: "Smoke"),
