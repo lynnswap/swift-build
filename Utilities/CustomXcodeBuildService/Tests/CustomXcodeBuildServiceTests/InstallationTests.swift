@@ -444,7 +444,7 @@ func commandOwnershipUsesThePhysicalContainingDirectory(owned: Bool) throws {
     #expect(try String(contentsOf: log, encoding: .utf8) == "preserve log")
 }
 
-@Test(arguments: ["missing-run-at-load", "disabled-run-at-load", "missing-session", "background-session", "keep-alive", "interval"], ["use", "update", "activate"])
+@Test(arguments: ["missing-run-at-load", "disabled-run-at-load", "missing-session", "background-session", "keep-alive", "interval"], ["use", "update"])
 func applyingCustomRestoresLoginActivationAndPreservesLogging(change: String, command: String) throws {
     let fixture = try Fixture()
     _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
@@ -460,13 +460,13 @@ func applyingCustomRestoresLoginActivationAndPreservesLogging(change: String, co
     default: properties["StartInterval"] = 10
     }
     try PropertyListSerialization.data(fromPropertyList: properties, format: .xml, options: 0).write(to: fixture.store.agent)
+    try fixture.manager.environment.bootout()
+    try fixture.manager.environment.bootstrap(fixture.store.agent)
+    #expect(fixture.runner.loadedAgent == properties as NSDictionary)
 
     switch command {
     case "use": _ = try fixture.manager.use(.custom)
-    case "update": _ = try fixture.manager.install(from: fixture.package("custom-v1.0.1"))
-    default:
-        fixture.runner.settings = [:]
-        _ = try fixture.manager.activate()
+    default: _ = try fixture.manager.install(from: fixture.package("custom-v1.0.1"))
     }
 
     let saved = try #require(PropertyListSerialization.propertyList(from: Data(contentsOf: fixture.store.agent), format: nil) as? [String: Any])
@@ -475,6 +475,7 @@ func applyingCustomRestoresLoginActivationAndPreservesLogging(change: String, co
     #expect(saved["StandardOutPath"] as? String == log)
     #expect(saved["KeepAlive"] == nil)
     #expect(saved["StartInterval"] == nil)
+    #expect(fixture.runner.loadedAgent == saved as NSDictionary)
     #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == (try fixture.store.selectedPackage()?.service.path))
     _ = try fixture.manager.use(.bundled)
     #expect(fixture.runner.settings.isEmpty)
@@ -489,6 +490,8 @@ func applyingCustomRestoresLoginActivationAndPreservesLogging(change: String, co
     properties["StandardOutPath"] = fixture.directory.appendingPathComponent("custom.log").path
     let data = try PropertyListSerialization.data(fromPropertyList: properties, format: .xml, options: 0)
     try data.write(to: fixture.store.agent)
+    try fixture.manager.environment.bootout()
+    try fixture.manager.environment.bootstrap(fixture.store.agent)
     let settings = fixture.runner.settings
     fixture.runner.failOnce = ["setenv", "DisableConcurrentDependencyResolution", "0"]
 
@@ -497,9 +500,26 @@ func applyingCustomRestoresLoginActivationAndPreservesLogging(change: String, co
     #expect(try Data(contentsOf: fixture.store.agent) == data)
     #expect(fixture.runner.settings == settings)
     #expect(fixture.runner.loaded)
+    #expect(fixture.runner.loadedAgent == properties as NSDictionary)
     _ = try fixture.manager.use(.bundled)
     #expect(fixture.runner.settings.isEmpty)
     #expect(try !fixture.store.exists(fixture.store.agent))
+}
+
+@Test func loginActivationDoesNotRewriteOrReloadItsOwnAgent() throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    let agent = try Data(contentsOf: fixture.store.agent)
+    let loaded = fixture.runner.loadedAgent
+    let mutations = fixture.runner.launchctlMutations.count
+    fixture.runner.settings = [:]
+
+    _ = try fixture.manager.activate()
+
+    #expect(try Data(contentsOf: fixture.store.agent) == agent)
+    #expect(fixture.runner.loadedAgent == loaded)
+    #expect(fixture.runner.launchctlMutations.dropFirst(mutations).allSatisfy { $0.first == "setenv" })
+    #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == (try fixture.store.selectedPackage()?.service.path))
 }
 
 @Test(arguments: ["Program", "BundleProgram", "ProgramArguments", "Label"])
@@ -959,6 +979,7 @@ final class Fixture {
 final class FakeRunner: ProcessRunning {
     var settings: [String: String] = [:]
     var loaded = false
+    var loadedAgent: NSDictionary?
     var xcodeVersion = "Xcode 27.0\nBuild version 27A5252f\n"
     var xcodeStatus: Int32 = 0
     var processes = ""
@@ -995,11 +1016,13 @@ final class FakeRunner: ProcessRunning {
         case "bootstrap":
             launchctlMutations.append(arguments)
             guard !loaded else { throw ServiceError("Job already loaded") }
+            loadedAgent = try PropertyListSerialization.propertyList(from: Data(contentsOf: URL(fileURLWithPath: arguments[2])), format: nil) as? NSDictionary
             loaded = true
         case "bootout":
             launchctlMutations.append(arguments)
             guard loaded else { throw ServiceError("Job not loaded") }
             loaded = false
+            loadedAgent = nil
         default: throw ServiceError("Unexpected launchctl arguments \(arguments)")
         }
         return .init(status: 0, output: "")

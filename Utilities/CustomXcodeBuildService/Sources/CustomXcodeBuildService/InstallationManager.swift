@@ -224,16 +224,24 @@ struct InstallationManager {
 
     private func configure(customPackage: ReleasePackage?, previous: LaunchState,
                            transaction: Transaction) throws {
-        if previous.loaded && customPackage == nil {
+        if previous.loaded {
             try environment.bootout()
             transaction.undo { try environment.bootstrap(store.agent) }
         }
         if let customPackage {
-            try apply(customPackage, previous: previous.settings, transaction: transaction)
-            if !previous.loaded {
-                try environment.bootstrap(store.agent)
-                transaction.undo { try environment.bootout() }
+            let agent = try store.exists(store.agent) ? Data(contentsOf: store.agent) : nil
+            if try store.writeAgent(preserving: agent) {
+                transaction.undo {
+                    if let agent {
+                        try agent.write(to: store.agent, options: .atomic)
+                    } else {
+                        try store.remove(store.agent)
+                    }
+                }
             }
+            try apply(customPackage, previous: previous.settings, transaction: transaction)
+            try environment.bootstrap(store.agent)
+            transaction.undo { try environment.bootout() }
         } else {
             if previous.settings.concurrentResolution != nil {
                 try environment.set("DisableConcurrentDependencyResolution", to: nil)
@@ -258,16 +266,6 @@ struct InstallationManager {
     """
 
     private func apply(_ selected: ReleasePackage, previous: LaunchEnvironment.Settings, transaction: Transaction) throws {
-        let agent = try store.exists(store.agent) ? Data(contentsOf: store.agent) : nil
-        if try store.writeAgent(preserving: agent) {
-            transaction.undo {
-                if let agent {
-                    try agent.write(to: store.agent, options: .atomic)
-                } else {
-                    try store.remove(store.agent)
-                }
-            }
-        }
         try environment.set("XCBBUILDSERVICE_PATH", to: selected.service.path)
         transaction.undo { try environment.set("XCBBUILDSERVICE_PATH", to: previous.service) }
         try environment.set("DisableConcurrentDependencyResolution", to: "0")
