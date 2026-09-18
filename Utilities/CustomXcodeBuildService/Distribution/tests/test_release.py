@@ -42,9 +42,13 @@ class BuildTests(unittest.TestCase):
         self.repository = self.root / "checkout"
         distribution = self.repository / release.DISTRIBUTION_PATH
         distribution.mkdir(parents=True)
-        (distribution / "ServiceDependencies.resolved").write_text(
-            "committed dependency pins\n"
-        )
+        self.committed_pins = json.dumps(
+            {
+                "pins": [{"identity": "swift-system", "state": {"revision": "a" * 40}}],
+                "version": 3,
+            }
+        ) + "\n"
+        (distribution / "ServiceDependencies.resolved").write_text(self.committed_pins)
         (distribution / "release.py").write_text("committed staging implementation\n")
         (self.repository / "Package.swift").write_text("committed package\n")
         subprocess.run(["git", "init", "--quiet", str(self.repository)], check=True)
@@ -85,7 +89,7 @@ class BuildTests(unittest.TestCase):
         self.run_process = subprocess.run
         self.process_environment = dict(os.environ)
         self.service_failure = False
-        self.change_pins = False
+        self.reformat_pins = False
 
     def run_command(self, command, **kwargs):
         environment = kwargs.get("env")
@@ -104,9 +108,10 @@ class BuildTests(unittest.TestCase):
             if command[-2:] == ["--product", "SWBBuildServiceBundle"]:
                 if self.service_failure:
                     raise subprocess.CalledProcessError(1, command)
-                if self.change_pins:
-                    (self.arguments.output_dir / "source/Package.resolved").write_text(
-                        "changed during build\n"
+                if self.reformat_pins:
+                    resolved = self.arguments.output_dir / "source/Package.resolved"
+                    resolved.write_text(
+                        json.dumps(json.loads(resolved.read_text()), indent=2)
                     )
             stdout = ""
             if command[-1] == "--show-bin-path":
@@ -149,7 +154,7 @@ class BuildTests(unittest.TestCase):
         self.build()
         source = self.arguments.output_dir / "source"
         self.assertEqual(
-            (source / "Package.resolved").read_text(), "committed dependency pins\n"
+            (source / "Package.resolved").read_text(), self.committed_pins
         )
         self.assertEqual(
             (self.repository / "Package.resolved").read_text(),
@@ -221,13 +226,19 @@ class BuildTests(unittest.TestCase):
             "developer dependency pins\n",
         )
 
-    def test_pin_drift_stops_cli_and_staging(self):
-        self.change_pins = True
-        with self.assertRaisesRegex(ValueError, "changed its pinned dependencies"):
-            self.build()
-        self.assertFalse(
-            any("test" in command or "stage" in command for command, _ in self.commands)
-        )
+    def test_resolved_file_formatting_does_not_stop_cli_or_staging(self):
+        self.reformat_pins = True
+        self.build()
+        operations = [
+            command[2] for command, _ in self.commands
+            if command[0] == sys.executable
+            or command[:2] == ["/usr/bin/xcrun", "swift"]
+        ]
+        self.assertIn("test", operations)
+        self.assertIn("stage", operations)
+        resolved = self.arguments.output_dir / "source/Package.resolved"
+        self.assertNotEqual(resolved.read_text(), self.committed_pins)
+        self.assertEqual(json.loads(resolved.read_text()), json.loads(self.committed_pins))
         self.assertEqual(
             (self.repository / "Package.resolved").read_text(),
             "developer dependency pins\n",
@@ -321,6 +332,26 @@ esac
                     self.versions[-1] if failure == "selection" else "previous version",
                 )
                 self.assertFalse(self.build_directories[-1].exists())
+
+
+class XcodeInvocationTests(unittest.TestCase):
+    def test_only_the_current_xcodebuild_child_proves_service_selection(self):
+        service = Path("/tmp/custom service/SWBBuildServiceBundle")
+        for parent in ("1", "100", "200"):
+            with self.subTest(parent=parent), patch.object(
+                release.subprocess, "Popen"
+            ) as launch, patch.object(
+                release, "output",
+                return_value=f"300 {parent} {service}\n400 200 /Xcode/SWBBuildService",
+            ):
+                process = launch.return_value.__enter__.return_value
+                process.pid = 200
+                process.poll.return_value = 0
+                if parent == "200":
+                    release.run_xcodebuild(["xcodebuild", "test"], {}, service)
+                else:
+                    with self.assertRaisesRegex(ValueError, "did not invoke"):
+                        release.run_xcodebuild(["xcodebuild", "test"], {}, service)
 
 
 class DistributionTests(unittest.TestCase):
@@ -492,11 +523,11 @@ class DistributionTests(unittest.TestCase):
             release, "xcode_version", return_value=("27.0", "27A266a")
         ), patch.object(release, "check_binary") as check_binary, patch.object(
             release, "smoke_build"
-        ) as smoke_build, patch.object(release, "smoke_swiftpm") as smoke_swiftpm:
+        ) as smoke_build, patch.object(release, "smoke_swift") as smoke_swift:
             release.verify(argparse.Namespace(release_dir=directory))
         self.assertEqual(check_binary.call_count, 3)
         smoke_build.assert_called_once()
-        smoke_swiftpm.assert_called_once()
+        smoke_swift.assert_called_once()
 
     def test_verify_propagates_smoke_build_failure(self):
         directory = self.package()
@@ -515,7 +546,7 @@ class DistributionTests(unittest.TestCase):
         ), patch.object(release, "check_binary"), patch.object(
             release, "smoke_build"
         ), patch.object(
-            release, "smoke_swiftpm", side_effect=subprocess.CalledProcessError(1, "swift build")
+            release, "smoke_swift", side_effect=subprocess.CalledProcessError(1, "swift build")
         ):
             with self.assertRaises(subprocess.CalledProcessError):
                 release.verify(argparse.Namespace(release_dir=directory))

@@ -76,6 +76,9 @@ custom-xcode-build-service use custom
 Your choice applies to all projects for your macOS user account and persists
 across logins and updates. Repeating either command succeeds. Selecting custom
 requires an installed release. Xcode updates do not change your selection.
+The Xcode version recorded in a release identifies its build toolchain; it does
+not restrict which Xcode can use it. Compatibility depends on the client/service
+protocol and the selected SDK and tools.
 
 SwiftPM's Swift Build backend continues to use its in-process engine while custom
 is selected. The service bundle loads platform plugins from that engine's own
@@ -99,6 +102,8 @@ running. The displayed Xcode version records which Xcode built the release.
 Running services can still reflect the previous choice until
 applications are restarted. If the launchd settings differ from the saved
 selection, status reports the mismatch and the command to reapply your choice.
+If the installed release or login configuration cannot be read, status includes
+the error alongside launchd settings and running services and exits with failure.
 
 ## Uninstall
 
@@ -155,6 +160,13 @@ swift test --package-path Utilities/CustomXcodeBuildService
 python3 -m unittest discover -s Utilities/CustomXcodeBuildService/Distribution/tests -p 'test_*.py'
 ```
 
+This fork's CI tests the installer and Xcode compatibility. It builds one service
+artifact and discovers installed Xcode 26 and 27 releases on the `macos-26` and
+`xcode-27` hosted runners. It tests every stable release and the latest beta across
+both inventories, once per Xcode build, using the runner where it was found.
+The Xcode and macOS versions are printed for each run. This selection defines
+test coverage, not an installation allowlist.
+
 <details>
 <summary>Build and publish a release</summary>
 
@@ -176,9 +188,10 @@ python3 Utilities/CustomXcodeBuildService/Distribution/release.py verify \
 
 Builds use committed source and pinned dependencies in an isolated directory.
 The output contains the archive, checksums, and a version-specific installer.
-Verification builds an Xcode project and runs `swift build`, `swift run`, and
-`swift test` with the extracted custom service selected. It uses the currently
-selected Xcode without requiring its build number to match the release metadata.
+Verification builds a C project, runs Swift tests through `xcodebuild`, and runs
+`swift build`, `swift run`, and `swift test` with the extracted custom service
+selected. It uses the currently selected Xcode without requiring its build number
+to match the release metadata.
 
 Create a draft GitHub Release for the `custom-v*` tag and write its title and
 release notes there. Then push that tag to run the

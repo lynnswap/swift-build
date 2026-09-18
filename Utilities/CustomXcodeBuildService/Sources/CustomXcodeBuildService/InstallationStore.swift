@@ -112,13 +112,21 @@ struct InstallationStore {
         return package
     }
 
-    func validateExternalPaths() throws {
+    func validateCommand() throws {
         if try exists(command) {
-            guard try files.destinationOfSymbolicLink(atPath: command.path) == persistentExecutable.path else {
+            guard try files.attributesOfItem(atPath: command.path)[.type] as? FileAttributeType == .typeSymbolicLink else {
+                throw ServiceError("Refusing to replace an unrelated command: \(command.path)")
+            }
+            let destination = try files.destinationOfSymbolicLink(atPath: command.path)
+            // Keep current in the target: a link to one release would not follow updates.
+            let parent = command.deletingLastPathComponent().resolvingSymlinksInPath()
+            let target = destination.hasPrefix("/") ? URL(fileURLWithPath: destination) : parent.appendingPathComponent(destination)
+            let installation = target.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            guard target.path == installation.appendingPathComponent("current/bin/custom-xcode-build-service").path,
+                  installation.resolvingSymlinksInPath().path == root.resolvingSymlinksInPath().path else {
                 throw ServiceError("Refusing to overwrite an unrelated command: \(command.path)")
             }
         }
-        try validateAgent()
     }
 
     func selectedService() throws -> BuildService {
@@ -131,8 +139,11 @@ struct InstallationStore {
     private func validateAgent() throws {
         if try exists(agent) {
             guard try files.attributesOfItem(atPath: agent.path)[.type] as? FileAttributeType == .typeRegular,
-                  let actual = try PropertyListSerialization.propertyList(from: Data(contentsOf: agent), format: nil) as? NSDictionary,
-                  actual == agentProperties as NSDictionary else {
+                  let actual = try PropertyListSerialization.propertyList(from: Data(contentsOf: agent), format: nil) as? [String: Any],
+                  actual["Label"] as? String == Self.label,
+                  actual["ProgramArguments"] as? [String] == [persistentExecutable.path, "activate"],
+                  (actual["Program"] == nil || actual["Program"] as? String == persistentExecutable.path),
+                  actual["BundleProgram"] == nil else {
                 throw ServiceError("Refusing to overwrite an unrelated LaunchAgent: \(agent.path)")
             }
         }
@@ -195,11 +206,24 @@ struct InstallationStore {
         try files.createSymbolicLink(atPath: command.path, withDestinationPath: persistentExecutable.path)
     }
 
-    func writeAgent() throws {
+    func writeAgent(preserving previous: Data?) throws -> Bool {
+        var properties = agentProperties
+        if let previous {
+            guard let existing = try PropertyListSerialization.propertyList(from: previous, format: nil) as? [String: Any] else {
+                throw ServiceError("Invalid LaunchAgent property list: \(agent.path)")
+            }
+            for key in ["StandardOutPath", "StandardErrorPath"] {
+                properties[key] = existing[key] as? String
+            }
+            if existing as NSDictionary == properties as NSDictionary {
+                return false
+            }
+        }
         try ensureDirectory(agent.deletingLastPathComponent())
-        let data = try PropertyListSerialization.data(fromPropertyList: agentProperties, format: .xml, options: 0)
+        let data = try PropertyListSerialization.data(fromPropertyList: properties, format: .xml, options: 0)
         try data.write(to: agent, options: .atomic)
         try files.setAttributes([.posixPermissions: 0o644], ofItemAtPath: agent.path)
+        return true
     }
 
     func remove(_ url: URL) throws { try files.removeItem(at: url) }

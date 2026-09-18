@@ -171,6 +171,27 @@ func updateCanReplaceOrRestoreChangedPreviousRelease(change: String, failUpdate:
     #expect(try fixture.store.exists(fixture.store.root))
 }
 
+@Test func failedCommandRemovalRestoresCustomizedLoginConfiguration() throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    var properties = fixture.store.agentProperties
+    properties["StandardOutPath"] = fixture.directory.appendingPathComponent("custom.log").path
+    let agent = try PropertyListSerialization.data(fromPropertyList: properties, format: .xml, options: 0)
+    try agent.write(to: fixture.store.agent)
+    let settings = fixture.runner.settings
+    let commandDirectory = fixture.store.command.deletingLastPathComponent()
+    try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: commandDirectory.path)
+    defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: commandDirectory.path) }
+
+    #expect(throws: (any Error).self) { try fixture.manager.uninstall() }
+
+    #expect(try Data(contentsOf: fixture.store.agent) == agent)
+    #expect(fixture.runner.settings == settings)
+    #expect(fixture.runner.loaded)
+    #expect(try fixture.manager.status().contains("Selected service: custom"))
+    #expect(try fixture.store.exists(fixture.store.command))
+}
+
 @Test(arguments: ["XCBBUILDSERVICE_PATH", "SWBBUILDSERVICE_PATH", "DisableConcurrentDependencyResolution"])
 func refusesForeignEnvironment(key: String) throws {
     let fixture = try Fixture()
@@ -262,6 +283,266 @@ func refusesForeignEnvironment(key: String) throws {
     #expect(!status.contains("PID 789"))
     #expect(throws: ServiceError.self) { try fixture.manager.uninstall() }
     #expect(fixture.runner.loaded)
+}
+
+@Test(arguments: ["manifest", "service", "resources", "agent", "manifest-and-agent"])
+func statusReportsLiveSettingsWhenInstalledStateIsDamaged(damage: String) throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    let installed = try #require(try fixture.store.selectedPackage())
+    fixture.runner.processes = "123 \(installed.service.path)\n"
+    let settings = fixture.runner.settings
+    let mutations = fixture.runner.launchctlMutations
+    if damage.contains("manifest") {
+        try fixture.write("{broken", to: installed.directory.appendingPathComponent("manifest.json"))
+    }
+    if damage.contains("agent") {
+        try fixture.write("invalid plist", to: fixture.store.agent)
+    }
+    if damage == "service" { try FileManager.default.removeItem(at: installed.service) }
+    if damage == "resources" {
+        try FileManager.default.removeItem(at: installed.resources.appendingPathComponent("SwiftBuild_SWBCore.bundle"))
+    }
+
+    do {
+        _ = try fixture.manager.status()
+        Issue.record("Incomplete status must retain a failing result.")
+    } catch let error as ServiceError {
+        let report = error.description
+        #expect(report.contains("XCBBUILDSERVICE_PATH: \(installed.service.path)"))
+        #expect(report.contains("DisableConcurrentDependencyResolution: 0"))
+        #expect(report.contains("Login job: loaded"))
+        #expect(report.contains("PID 123: \(installed.service.path)"))
+        #expect(!report.contains("Installed: none"))
+        #expect(!report.contains("Run use custom to reapply it"))
+        if damage != "agent" {
+            #expect(report.contains("Installed: unavailable"))
+            #expect(report.contains("Installation error:"))
+        }
+        if damage.contains("agent") {
+            #expect(report.contains("Selected service: unavailable"))
+            #expect(report.contains("Selection error:"))
+        } else {
+            #expect(report.contains("Selected service: custom"))
+        }
+    }
+    #expect(fixture.runner.settings == settings)
+    #expect(fixture.runner.launchctlMutations == mutations)
+}
+
+@Test(arguments: ["relative-link", "foreign-link", "foreign-file"])
+func selectingServicesDoesNotRequireOrModifyTheCommandLink(command: String) throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    try FileManager.default.removeItem(at: fixture.store.command)
+    let foreign = fixture.directory.appendingPathComponent("another-command")
+    try fixture.write("preserve", to: foreign)
+    let destination = command == "relative-link"
+        ? "../../Library/Developer/CustomXcodeBuildService/current/bin/custom-xcode-build-service"
+        : foreign.path
+    if command == "foreign-file" {
+        try fixture.write("preserve", to: fixture.store.command)
+    } else {
+        try FileManager.default.createSymbolicLink(atPath: fixture.store.command.path, withDestinationPath: destination)
+    }
+
+    _ = try fixture.manager.use(.bundled)
+    #expect(fixture.runner.settings.isEmpty)
+    _ = try fixture.manager.use(.custom)
+    fixture.runner.settings = [:]
+    _ = try fixture.manager.activate()
+    #expect(try fixture.manager.status().contains("Selected service: custom"))
+    #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == (try fixture.store.selectedPackage()?.service.path))
+    if command == "foreign-file" {
+        #expect(try String(contentsOf: fixture.store.command, encoding: .utf8) == "preserve")
+    } else {
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: fixture.store.command.path) == destination)
+    }
+    #expect(try String(contentsOf: foreign, encoding: .utf8) == "preserve")
+}
+
+@Test func relativeCommandLinkSupportsUpdatingAndUninstalling() throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    try FileManager.default.removeItem(at: fixture.store.command)
+    let destination = "../../Library/Developer/CustomXcodeBuildService/current/bin/custom-xcode-build-service"
+    try FileManager.default.createSymbolicLink(atPath: fixture.store.command.path, withDestinationPath: destination)
+
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.1"))
+    #expect(try fixture.store.selectedPackage()?.manifest.version == "custom-v1.0.1")
+    #expect(try FileManager.default.destinationOfSymbolicLink(atPath: fixture.store.command.path) == destination)
+    _ = try fixture.manager.uninstall()
+    #expect(try !fixture.store.exists(fixture.store.command))
+    #expect(fixture.runner.settings.isEmpty)
+}
+
+@Test(arguments: [false, true])
+func commandOwnershipUsesThePhysicalContainingDirectory(owned: Bool) throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    let physical = fixture.directory.appendingPathComponent("redirected/bin")
+    try FileManager.default.createDirectory(at: physical.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let logical = fixture.store.command.deletingLastPathComponent()
+    try FileManager.default.moveItem(at: logical, to: physical)
+    try FileManager.default.createSymbolicLink(at: logical, withDestinationURL: physical)
+    try FileManager.default.removeItem(at: fixture.store.command)
+    let destination = (owned ? "../../home/" : "../../")
+        + "Library/Developer/CustomXcodeBuildService/current/bin/custom-xcode-build-service"
+    try FileManager.default.createSymbolicLink(atPath: fixture.store.command.path, withDestinationPath: destination)
+    let foreign = fixture.directory.appendingPathComponent("Library/Developer/CustomXcodeBuildService/current/bin/custom-xcode-build-service")
+    try fixture.write("preserve foreign command", to: foreign)
+    let update = try fixture.package("custom-v1.0.1")
+
+    if owned {
+        _ = try fixture.manager.install(from: update)
+        #expect(try fixture.store.selectedPackage()?.manifest.version == "custom-v1.0.1")
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: fixture.store.command.path) == destination)
+        _ = try fixture.manager.uninstall()
+        #expect(try !fixture.store.exists(fixture.store.command))
+    } else {
+        #expect(try String(contentsOf: fixture.store.command, encoding: .utf8) == "preserve foreign command")
+        let settings = fixture.runner.settings
+        let mutations = fixture.runner.launchctlMutations
+        #expect(throws: ServiceError.self) { try fixture.manager.install(from: update) }
+        #expect(throws: ServiceError.self) { try fixture.manager.uninstall() }
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: fixture.store.command.path) == destination)
+        #expect(fixture.runner.settings == settings)
+        #expect(fixture.runner.launchctlMutations == mutations)
+        _ = try fixture.manager.use(.bundled)
+        #expect(fixture.runner.settings.isEmpty)
+    }
+    #expect(try String(contentsOf: foreign, encoding: .utf8) == "preserve foreign command")
+}
+
+@Test func customizedLoginLoggingDoesNotBlockServiceManagement() throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    var properties = fixture.store.agentProperties
+    let log = fixture.directory.appendingPathComponent("custom-activation.log")
+    properties["StandardOutPath"] = log.path
+    properties["StandardErrorPath"] = log.path
+    properties["Program"] = fixture.store.persistentExecutable.path
+    let data = try PropertyListSerialization.data(fromPropertyList: properties, format: .xml, options: 0)
+    try data.write(to: fixture.store.agent)
+    try fixture.write("preserve log", to: log)
+
+    #expect(try fixture.manager.status().contains("Selected service: custom"))
+    fixture.runner.settings = [:]
+    _ = try fixture.manager.activate()
+    _ = try fixture.manager.use(.custom)
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.1"))
+    properties["Program"] = nil
+    let saved = try #require(PropertyListSerialization.propertyList(from: Data(contentsOf: fixture.store.agent), format: nil) as? NSDictionary)
+    #expect(saved == properties as NSDictionary)
+    _ = try fixture.manager.use(.bundled)
+    #expect(fixture.runner.settings.isEmpty)
+    #expect(try !fixture.store.exists(fixture.store.agent))
+    _ = try fixture.manager.use(.custom)
+    try data.write(to: fixture.store.agent)
+    _ = try fixture.manager.uninstall()
+    #expect(try !fixture.store.exists(fixture.store.agent))
+    #expect(try String(contentsOf: log, encoding: .utf8) == "preserve log")
+}
+
+@Test(arguments: ["missing-run-at-load", "disabled-run-at-load", "missing-session", "background-session", "keep-alive", "interval"], ["use", "update"])
+func applyingCustomRestoresLoginActivationAndPreservesLogging(change: String, command: String) throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    var properties = fixture.store.agentProperties
+    let log = fixture.directory.appendingPathComponent("custom.log").path
+    properties["StandardOutPath"] = log
+    switch change {
+    case "missing-run-at-load": properties["RunAtLoad"] = nil
+    case "disabled-run-at-load": properties["RunAtLoad"] = false
+    case "missing-session": properties["LimitLoadToSessionType"] = nil
+    case "background-session": properties["LimitLoadToSessionType"] = "Background"
+    case "keep-alive": properties["KeepAlive"] = true
+    default: properties["StartInterval"] = 10
+    }
+    try PropertyListSerialization.data(fromPropertyList: properties, format: .xml, options: 0).write(to: fixture.store.agent)
+    try fixture.manager.environment.bootout()
+    try fixture.manager.environment.bootstrap(fixture.store.agent)
+    #expect(fixture.runner.loadedAgent == properties as NSDictionary)
+
+    switch command {
+    case "use": _ = try fixture.manager.use(.custom)
+    default: _ = try fixture.manager.install(from: fixture.package("custom-v1.0.1"))
+    }
+
+    let saved = try #require(PropertyListSerialization.propertyList(from: Data(contentsOf: fixture.store.agent), format: nil) as? [String: Any])
+    #expect(saved["RunAtLoad"] as? Bool == true)
+    #expect(saved["LimitLoadToSessionType"] as? String == "Aqua")
+    #expect(saved["StandardOutPath"] as? String == log)
+    #expect(saved["KeepAlive"] == nil)
+    #expect(saved["StartInterval"] == nil)
+    #expect(fixture.runner.loadedAgent == saved as NSDictionary)
+    #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == (try fixture.store.selectedPackage()?.service.path))
+    _ = try fixture.manager.use(.bundled)
+    #expect(fixture.runner.settings.isEmpty)
+}
+
+@Test func failedCustomSelectionRestoresLoginConfigurationBeforeRepair() throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    var properties = fixture.store.agentProperties
+    properties["RunAtLoad"] = false
+    properties["LimitLoadToSessionType"] = "Background"
+    properties["StandardOutPath"] = fixture.directory.appendingPathComponent("custom.log").path
+    let data = try PropertyListSerialization.data(fromPropertyList: properties, format: .xml, options: 0)
+    try data.write(to: fixture.store.agent)
+    try fixture.manager.environment.bootout()
+    try fixture.manager.environment.bootstrap(fixture.store.agent)
+    let settings = fixture.runner.settings
+    fixture.runner.failOnce = ["setenv", "DisableConcurrentDependencyResolution", "0"]
+
+    #expect(throws: ServiceError.self) { try fixture.manager.use(.custom) }
+
+    #expect(try Data(contentsOf: fixture.store.agent) == data)
+    #expect(fixture.runner.settings == settings)
+    #expect(fixture.runner.loaded)
+    #expect(fixture.runner.loadedAgent == properties as NSDictionary)
+    _ = try fixture.manager.use(.bundled)
+    #expect(fixture.runner.settings.isEmpty)
+    #expect(try !fixture.store.exists(fixture.store.agent))
+}
+
+@Test func loginActivationDoesNotRewriteOrReloadItsOwnAgent() throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    let agent = try Data(contentsOf: fixture.store.agent)
+    let loaded = fixture.runner.loadedAgent
+    let mutations = fixture.runner.launchctlMutations.count
+    fixture.runner.settings = [:]
+
+    _ = try fixture.manager.activate()
+
+    #expect(try Data(contentsOf: fixture.store.agent) == agent)
+    #expect(fixture.runner.loadedAgent == loaded)
+    #expect(fixture.runner.launchctlMutations.dropFirst(mutations).allSatisfy { $0.first == "setenv" })
+    #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == (try fixture.store.selectedPackage()?.service.path))
+}
+
+@Test(arguments: ["Program", "BundleProgram", "ProgramArguments", "Label"])
+func unrelatedLoginProgramIsPreservedWhenItsOtherSettingsMatch(key: String) throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    var properties = fixture.store.agentProperties
+    if key == "ProgramArguments" {
+        properties[key] = [fixture.store.persistentExecutable.path, "uninstall"]
+    } else {
+        properties[key] = "/another/program"
+    }
+    let data = try PropertyListSerialization.data(fromPropertyList: properties, format: .xml, options: 0)
+    try data.write(to: fixture.store.agent)
+    let settings = fixture.runner.settings
+    let mutations = fixture.runner.launchctlMutations
+
+    #expect(throws: ServiceError.self) { try fixture.manager.use(.bundled) }
+    #expect(throws: ServiceError.self) { try fixture.manager.use(.custom) }
+    #expect(throws: ServiceError.self) { try fixture.manager.uninstall() }
+    #expect(try Data(contentsOf: fixture.store.agent) == data)
+    #expect(fixture.runner.settings == settings)
+    #expect(fixture.runner.launchctlMutations == mutations)
 }
 
 @Test(arguments: [
@@ -698,6 +979,7 @@ final class Fixture {
 final class FakeRunner: ProcessRunning {
     var settings: [String: String] = [:]
     var loaded = false
+    var loadedAgent: NSDictionary?
     var xcodeVersion = "Xcode 27.0\nBuild version 27A5252f\n"
     var xcodeStatus: Int32 = 0
     var processes = ""
@@ -734,11 +1016,13 @@ final class FakeRunner: ProcessRunning {
         case "bootstrap":
             launchctlMutations.append(arguments)
             guard !loaded else { throw ServiceError("Job already loaded") }
+            loadedAgent = try PropertyListSerialization.propertyList(from: Data(contentsOf: URL(fileURLWithPath: arguments[2])), format: nil) as? NSDictionary
             loaded = true
         case "bootout":
             launchctlMutations.append(arguments)
             guard loaded else { throw ServiceError("Job not loaded") }
             loaded = false
+            loadedAgent = nil
         default: throw ServiceError("Unexpected launchctl arguments \(arguments)")
         }
         return .init(status: 0, output: "")
