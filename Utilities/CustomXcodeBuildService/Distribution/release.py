@@ -709,6 +709,98 @@ let package = Package(name: "Smoke", targets: [
          "MACOSX_DEPLOYMENT_TARGET=26.0", "test"],
         environment, service, cwd=package,
     )
+    smoke_system_library(payload, temporary, manifest)
+
+
+def smoke_system_library(payload, temporary, manifest):
+    package = temporary / "SystemLibrarySmoke"
+    (package / "Sources/Smoke").mkdir(parents=True)
+    (package / "Tests/SmokeTests").mkdir(parents=True)
+
+    # Both the executable and a dynamic library use the same system-library
+    # consumer, exercising Xcode's promotion of shared package targets.
+    sqlite = package / "SQLiteConsumer"
+    (sqlite / "Sources/SystemSQLite").mkdir(parents=True)
+    (sqlite / "Sources/SQLiteConsumer").mkdir(parents=True)
+    (sqlite / "Package.swift").write_text('''// swift-tools-version: 6.2
+import PackageDescription
+let package = Package(
+    name: "SQLiteConsumer",
+    platforms: [.macOS(.v15)],
+    products: [.library(name: "SQLiteConsumer", targets: ["SQLiteConsumer"])],
+    targets: [
+        .systemLibrary(name: "SystemSQLite"),
+        .target(name: "SQLiteConsumer", dependencies: ["SystemSQLite"]),
+    ]
+)
+''')
+    (sqlite / "Sources/SystemSQLite/module.modulemap").write_text('''module SystemSQLite [system] {
+    header "shim.h"
+    link "sqlite3"
+    export *
+}
+''')
+    (sqlite / "Sources/SystemSQLite/shim.h").write_text('#include <sqlite3.h>\n')
+    (sqlite / "Sources/SQLiteConsumer/SQLiteConsumer.swift").write_text('''import SystemSQLite
+public func sqliteVersion() -> String { String(cString: sqlite3_libversion()) }
+''')
+    wrapper = package / "Wrapper"
+    (wrapper / "Sources/Wrapper").mkdir(parents=True)
+    (wrapper / "Package.swift").write_text('''// swift-tools-version: 6.2
+import PackageDescription
+let package = Package(
+    name: "Wrapper",
+    platforms: [.macOS(.v15)],
+    products: [.library(name: "Wrapper", type: .dynamic, targets: ["Wrapper"])],
+    dependencies: [.package(path: "../SQLiteConsumer")],
+    targets: [.target(name: "Wrapper", dependencies: [
+        .product(name: "SQLiteConsumer", package: "SQLiteConsumer"),
+    ])]
+)
+''')
+    (wrapper / "Sources/Wrapper/Wrapper.swift").write_text('''import SQLiteConsumer
+public func wrappedVersion() -> String { sqliteVersion() }
+''')
+    (package / "Package.swift").write_text('''// swift-tools-version: 6.2
+import PackageDescription
+let package = Package(
+    name: "Smoke",
+    platforms: [.macOS(.v15)],
+    dependencies: [.package(path: "SQLiteConsumer"), .package(path: "Wrapper")],
+    targets: [
+        .executableTarget(name: "Smoke", dependencies: [
+            .product(name: "SQLiteConsumer", package: "SQLiteConsumer"),
+            .product(name: "Wrapper", package: "Wrapper"),
+        ]),
+        .testTarget(name: "SmokeTests", dependencies: ["Smoke"]),
+    ]
+)
+''')
+    (package / "Sources/Smoke/main.swift").write_text('''import SQLiteConsumer
+import Wrapper
+func sqliteVersionsMatch() -> Bool {
+    let version = sqliteVersion()
+    return !version.isEmpty && version == wrappedVersion()
+}
+print(sqliteVersionsMatch())
+''')
+    (package / "Tests/SmokeTests/SmokeTests.swift").write_text('''import Testing
+@testable import Smoke
+@Test func sqliteLinkage() { #expect(sqliteVersionsMatch()) }
+''')
+    environment = dict(os.environ)
+    environment.pop("SWBBUILDSERVICE_PATH", None)
+    service = service_path(payload, manifest)
+    environment.update(
+        XCBBUILDSERVICE_PATH=str(service), DisableConcurrentDependencyResolution="0"
+    )
+    run_xcodebuild(
+        ["/usr/bin/xcrun", "xcodebuild", "-scheme", "Smoke", "-testPlan", "Smoke",
+         "-destination", "platform=macOS,arch=arm64",
+         "-derivedDataPath", str(temporary / "SystemLibraryDerivedData"),
+         "MACOSX_DEPLOYMENT_TARGET=26.0", "test"],
+        environment, service, cwd=package,
+    )
 
 
 def verify(args):

@@ -1554,6 +1554,13 @@ extension TaskProducerContext {
             // Add entries for each item, if it is either unique or it is the top-level phase.
             let isTopLevel = phase === frameworksPhase
             for buildFile in phase.buildFiles {
+                // Package system libraries impart build settings but have no binary to link.
+                if case .targetProduct(let guid) = buildFile.buildableItem,
+                   let target = workspaceContext.workspace.target(for: guid) as? AggregateTarget,
+                   workspaceContext.workspace.project(for: target).isPackage {
+                    continue
+                }
+
                 // If this is a package producer reference, visit it recursively.
                 if case .targetProduct(let guid) = buildFile.buildableItem,
                    case let target as PackageProductTarget = workspaceContext.workspace.target(for: guid),
