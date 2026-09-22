@@ -29,7 +29,7 @@ fileprivate struct PackageProductConstructionTests: CoreBasedTests {
             buildConfigurations: [
                 TestBuildConfiguration("Debug", impartedBuildProperties: TestImpartedBuildProperties(buildSettings: [
                     "OTHER_SWIFT_FLAGS": "$(inherited) -Xcc -fmodule-map-file=/tmp/SystemSQLite/module.modulemap",
-                    "OTHER_LDFLAGS": "$(inherited) -lsqlite3",
+                    "OTHER_LDFLAGS": "$(inherited) -lsqlite3 /tmp/SystemSQLite/libAdditionalSymbols.a",
                 ])),
             ])
         let dependency = throughPackageProduct ? "SQLiteProduct" : "SystemSQLite"
@@ -41,7 +41,10 @@ fileprivate struct PackageProductConstructionTests: CoreBasedTests {
                     "CODE_SIGNING_ALLOWED": "NO",
                     "PRODUCT_NAME": "$(TARGET_NAME)",
                     "SWIFT_EXEC": swiftCompilerPath.str,
+                    "TAPI_EXEC": tapiToolPath.str,
                     "SWIFT_VERSION": "6.0",
+                    "SWIFT_USE_INTEGRATED_DRIVER": "YES",
+                    "EAGER_LINKING": "YES",
                 ]),
             ],
             targets: [
@@ -66,8 +69,12 @@ fileprivate struct PackageProductConstructionTests: CoreBasedTests {
                 results.checkTask(.matchTarget(target), .matchRuleType("SwiftDriver Compilation")) { task in
                     task.checkCommandLineContains(["-Xcc", "-fmodule-map-file=/tmp/SystemSQLite/module.modulemap"])
                 }
+                results.checkTask(.matchTarget(target), .matchRuleType("SwiftDriver Compilation Requirements")) { task in
+                    task.checkCommandLineDoesNotContain("-emit-tbd")
+                    task.checkCommandLineDoesNotContain("-emit-tbd-path")
+                }
                 results.checkTask(.matchTarget(target), .matchRuleType("Ld")) { task in
-                    task.checkCommandLineContains(["-lsqlite3"])
+                    task.checkCommandLineContains(["-lsqlite3", "/tmp/SystemSQLite/libAdditionalSymbols.a"])
                     task.checkCommandLineDoesNotContain("-lSystemSQLite")
                 }
             }
