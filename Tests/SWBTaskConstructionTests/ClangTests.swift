@@ -448,6 +448,54 @@ fileprivate struct ClangTests: CoreBasedTests {
         }
     }
 
+    @Test(.requireSDKs(.host))
+    func indexOptionsRequireClangSupport() async throws {
+        let clangInfo = try await self.clangInfo
+        let supportsIndexWhileBuilding = clangInfo.isAppleClang || clangInfo.toolFeatures.has(.indexUnitOutputPath)
+
+        try await withTemporaryDirectory { tmpDir in
+            let testProject = TestProject(
+                "ProjectName",
+                sourceRoot: tmpDir,
+                groupTree: TestGroup(
+                    "SomeFiles",
+                    children: [
+                        TestFile("File1.c")
+                    ]),
+                targets: [
+                    TestStandardTarget(
+                        "Test",
+                        type: .dynamicLibrary,
+                        buildConfigurations: [
+                            TestBuildConfiguration(
+                                "Debug",
+                                buildSettings: [
+                                    "COMPILER_INDEX_STORE_ENABLE": "YES",
+                                    "INDEX_DATA_STORE_DIR": tmpDir.join("index").str,
+                                    "CC": clangInfo.toolPath.str,
+                                ]
+                            ),
+                        ],
+                        buildPhases: [
+                            TestSourcesBuildPhase(["File1.c"]),
+                        ]
+                    )
+                ])
+
+            let core = try await getCore()
+            let tester = try TaskConstructionTester(core, testProject)
+            await tester.checkBuild(BuildParameters(configuration: "Debug", commandLineOverrides: ["INDEX_ENABLE_DATA_STORE": "YES"]), runDestination: .host) { results in
+                results.checkTask(.matchRuleType("CompileC")) { compileTask in
+                    if supportsIndexWhileBuilding {
+                        compileTask.checkCommandLineContainsUninterrupted(["-index-store-path", tmpDir.join("index").str])
+                    } else {
+                        compileTask.checkCommandLineDoesNotContain("-index-store-path")
+                    }
+                }
+            }
+        }
+    }
+
     @Test(.requireSDKs(.host), .requireClangFeatures(.invokeSsaf))
     func invokeSsafOptions() async throws {
         func getTestProject(invokeSSAF: String, extractSummaries: String = "", stopAtLUSummaryGeneration: String = "", sourceTransformation: String = "") -> TestProject {

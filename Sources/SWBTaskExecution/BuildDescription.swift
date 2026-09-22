@@ -301,7 +301,7 @@ package final class BuildDescription: Serializable, Sendable, Encodable, Cacheab
                     guard !task.isGate, task.preparesForIndexing else { continue }
                     guard let ruleName = task.ruleInfo.first, ruleName == ProductPlan.preparedForIndexPreCompilationRuleName else { continue }
                     guard let output = (task.action as? AuxiliaryFileTaskAction)?.context.output else { continue }
-                    nodesToBuild.append(BuildNodeToPrepareForIndex(target: selectedTarget, nodeName: output.str))
+                    nodesToBuild.append(BuildNodeToPrepareForIndex(target: selectedTarget, nodeName: output.strWithPosixSlashes))
                     break
                 }
             }

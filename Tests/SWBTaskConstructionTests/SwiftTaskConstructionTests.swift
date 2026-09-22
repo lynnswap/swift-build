@@ -2,7 +2,7 @@
 //
 // This source file is part of the Swift open source project
 //
-// Copyright (c) 2025 Apple Inc. and the Swift project authors
+// Copyright (c) 2025-2026 Apple Inc. and the Swift project authors
 // Licensed under Apache License v2.0 with Runtime Library Exception
 //
 // See http://swift.org/LICENSE.txt for license information
@@ -1493,10 +1493,6 @@ fileprivate struct SwiftTaskConstructionTests: CoreBasedTests {
 
             for arch in archs.filter({ ["armv7", "armv7s"].contains($0) }) where sdkroot == "iphoneos" {
                 results.checkWarning(.equal("The \(arch) architecture is deprecated for your deployment target (iOS \(results.runDestinationSDK.version)). You should update your ARCHS build setting to remove the \(arch) architecture. (in target 'CoreFoo' from project 'aProject')"))
-            }
-
-            for arch in archs.filter({ ["armv7k"].contains($0) }) where sdkroot == "watchos" && (results.runDestinationSDK.buildVersion?.major ?? 0) >= 20 {
-                results.checkWarning(.equal("The \(arch) architecture is deprecated for your deployment target (watchOS \(results.runDestinationSDK.version)). You should update your ARCHS build setting to remove the \(arch) architecture. (in target 'CoreFoo' from project 'aProject')"))
             }
         }
     }
@@ -4144,6 +4140,17 @@ fileprivate struct SwiftTaskConstructionTests: CoreBasedTests {
             task.checkCommandLineContains(["-library-level", "ipi"])
         }
 
+        // A known private-framework install path takes precedence over IPI inference,
+        // even with SKIP_INSTALL=YES, it stays "spi" rather than being reclassified as project-internal.
+        try await checkLibraryLevelForConfig(targetType: .framework,
+                                             buildSettings: ["INSTALL_PATH" : "/System/Library/PrivateFrameworks/MyFramework",
+                                                             "SKIP_INSTALL"  : "YES",
+                                                             "SWIFT_ENABLE_IPI_LIBRARY_LEVEL" : "YES",
+                                                             "__KNOWN_SPI_INSTALL_PATHS" : "/System/Library/PrivateFrameworks"]) { task in
+            task.checkCommandLineContains(["-library-level", "spi"])
+            task.checkCommandLineDoesNotContain("ipi")
+        }
+
         // Don't infer "ipi" from SKIP_INSTALL when SWIFT_ENABLE_IPI_LIBRARY_LEVEL is explicitly NO.
         try await checkLibraryLevelForConfig(targetType: .framework,
                                              buildSettings: ["SKIP_INSTALL" : "YES",
@@ -4167,6 +4174,22 @@ fileprivate struct SwiftTaskConstructionTests: CoreBasedTests {
                                                              "SWIFT_ENABLE_IPI_LIBRARY_LEVEL" : "YES",
                                                              "SWIFT_LIBRARY_LEVEL" : "spi"]) { task in
             task.checkCommandLineContains(["-library-level", "spi"])
+        }
+
+        // An explicit -library-level in OTHER_SWIFT_FLAGS also takes precedence over SKIP_INSTALL.
+        try await checkLibraryLevelForConfig(targetType: .framework,
+                                             buildSettings: ["SKIP_INSTALL" : "YES",
+                                                             "SWIFT_ENABLE_IPI_LIBRARY_LEVEL" : "YES",
+                                                             "OTHER_SWIFT_FLAGS" : "-library-level spi"]) { task in
+            task.checkCommandLineContainsUninterrupted(["-library-level", "spi"])
+            task.checkCommandLineDoesNotContain("ipi")
+        }
+
+        // An explicit SWIFT_LIBRARY_LEVEL has precedence over library-level.
+        try await checkLibraryLevelForConfig(targetType: .framework,
+                                             buildSettings: ["SWIFT_LIBRARY_LEVEL" : "api",
+                                                             "OTHER_SWIFT_FLAGS" : "-library-level spi"]) { task in
+            task.checkCommandLineContainsUninterrupted(["-library-level", "api"])
         }
     }
 

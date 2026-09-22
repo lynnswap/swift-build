@@ -768,6 +768,92 @@ fileprivate struct IndexBuildOperationTests: CoreBasedTests {
         }
     }
 
+    @Test(.requireSDKs(.host))
+    func crossPlatformIndexPreparation() async throws {
+        try await withTemporaryDirectory { tmpDirPath in
+            let libTarget = try await TestStandardTarget(
+                "Lib",
+                type: .objectFile,
+                buildConfigurations: [
+                    TestBuildConfiguration("Debug", buildSettings: [
+                        "PRODUCT_NAME": "Lib",
+                        "SWIFT_VERSION": swiftVersion,
+                    ])
+                ],
+                buildPhases: [TestSourcesBuildPhase(["lib.swift"])]
+            )
+
+            let libProductTarget = try await TestPackageProductTarget(
+                "LibProduct",
+                frameworksBuildPhase: TestFrameworksBuildPhase([
+                    TestBuildFile(.target("Lib"))
+                ]),
+                buildConfigurations: [
+                    TestBuildConfiguration("Debug", buildSettings: [
+                        "SWIFT_VERSION": swiftVersion,
+                    ])
+                ],
+                dependencies: ["Lib"]
+            )
+
+            let clientTarget = try await TestStandardTarget(
+                "Client",
+                type: .objectFile,
+                buildConfigurations: [
+                    TestBuildConfiguration("Debug", buildSettings: [
+                        "PRODUCT_NAME": "Client",
+                        "SWIFT_VERSION": swiftVersion,
+                    ])
+                ],
+                buildPhases: [
+                    TestSourcesBuildPhase(["client.swift"]),
+                    TestFrameworksBuildPhase([
+                        TestBuildFile(.target("LibProduct"))
+                    ]),
+                ],
+                dependencies: ["LibProduct"]
+            )
+
+            let package = TestPackageProject(
+                "aPackage",
+                groupTree: TestGroup("Package", children: [
+                    TestFile("lib.swift"),
+                    TestFile("client.swift"),
+                ]),
+                targets: [libProductTarget, clientTarget, libTarget]
+            )
+            let testWorkspace = TestWorkspace("Test", sourceRoot: tmpDirPath.join("Test"), projects: [package])
+            let SRCROOT = testWorkspace.sourceRoot.join("aPackage")
+
+            let tester = try await BuildOperationTester(getCore(), testWorkspace, simulated: false)
+
+            try await tester.fs.writeFileContents(SRCROOT.join("lib.swift")) { stream in
+                stream <<< "public func libFn() {}\n"
+            }
+            try await tester.fs.writeFileContents(SRCROOT.join("client.swift")) { stream in
+                stream <<< "import Lib\npublic func clientFn() { libFn() }\n"
+            }
+
+            try await tester.checkIndexBuild(
+                prepareTargets: [clientTarget.guid],
+                buildTargets: [libProductTarget, clientTarget, libTarget],
+                runDestination: .host,
+                persistent: true
+            ) { results in
+                results.checkNoErrors()
+                results.checkTaskExists(.matchRuleType("SwiftDriver GenerateModule"), .matchTargetName("Lib"))
+
+                try results.checkTask(.matchRuleType(ProductPlan.preparedForIndexPreCompilationRuleName), .matchTargetName("Client")) { task in
+                    let marker = try #require(task.outputPaths.only)
+                    #expect(tester.fs.exists(marker))
+                }
+
+                let preparedTargets = results.getPreparedForIndexResultInfo().map { $0.0.guid }
+                #expect(preparedTargets == [clientTarget.guid])
+            }
+        }
+    }
+
     @Test(.requireSDKs(.macOS))
     func preparingWithBuildRuleOrPhaseScript() async throws {
         try await withTemporaryDirectory { tmpDirPath async throws -> Void in

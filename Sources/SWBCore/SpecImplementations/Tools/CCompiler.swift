@@ -681,7 +681,9 @@ public class ClangCompilerSpec : CompilerSpec, SpecIdentifierType, GCCCompatible
         commandLine += self.commandLineFromOptions(producer, scope: scope, inputFileType: inputFileType, optionContext: optionContext, buildOptionsFilter: .specOnly, lookup: { declaration in
             if declaration.name == "CLANG_INDEX_STORE_ENABLE" && optionContext is DiscoveredClangToolSpecInfo {
                 let clangToolInfo = optionContext as! DiscoveredClangToolSpecInfo
-                if !clangToolInfo.isAppleClang {
+                // Only the Swift fork of Clang supports index while building. Disable it if this isn't an
+                // Apple Clang and it doesn't have the --index-unit-output-path feature.
+                if !clangToolInfo.isAppleClang && !clangToolInfo.toolFeatures.has(.indexUnitOutputPath) {
                     return BuiltinMacros.namespace.parseString("NO")
                 }
             }

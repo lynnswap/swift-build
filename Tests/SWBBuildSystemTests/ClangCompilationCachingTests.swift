@@ -19,6 +19,7 @@ import struct SWBProtocol.BuildOperationTaskCacheKeyEmitted
 import SWBTaskExecution
 import SWBTestSupport
 import SWBUtil
+import SWBMockCASPluginSupport
 
 @Suite(.skipHostOS(.windows, "Windows platform has no CAS support yet"),
        .requireDependencyScannerPlusCaching, .requireXcode26())
@@ -176,6 +177,171 @@ fileprivate struct ClangCompilationCachingTests: CoreBasedTests {
         try await testCachingBasic(usePlugin: true, runDestination: .iOS)
     }
 
+    @Test(.requireSDKs(.host))
+    func clangCachingImposedOnPackageDependencies() async throws {
+        try await withTemporaryDirectory { tmpDirPath in
+            let commonBuildSettings: [String: String] = [
+                "SDKROOT": "auto",
+                "SDK_VARIANT": "auto",
+                "SUPPORTED_PLATFORMS": "$(AVAILABLE_PLATFORMS)",
+                "PRODUCT_NAME": "$(TARGET_NAME)",
+                "CODE_SIGNING_ALLOWED": "NO",
+            ]
+
+            let package = TestPackageProject(
+                "aPackage",
+                groupTree: TestGroup("Sources", children: [TestFile("foo.c")]),
+                buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: commonBuildSettings)],
+                targets: [
+                    TestPackageProductTarget(
+                        "FooProduct",
+                        frameworksBuildPhase: TestFrameworksBuildPhase([TestBuildFile(.target("Foo"))]),
+                        dependencies: ["Foo"]),
+                    TestStandardTarget(
+                        "Foo",
+                        type: .staticLibrary,
+                        buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: ["PRODUCT_NAME": "Foo"])],
+                        buildPhases: [TestSourcesBuildPhase(["foo.c"])])])
+
+            let project = TestProject(
+                "aProject",
+                groupTree: TestGroup("Sources", children: [TestFile("lib.c")]),
+                buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: commonBuildSettings.addingContents(of: [
+                    "CLANG_ENABLE_COMPILE_CACHE": "YES",
+                    "COMPILATION_CACHE_ENABLE_DIAGNOSTIC_REMARKS": "YES",
+                    "COMPILATION_CACHE_CAS_PATH": tmpDirPath.join("CompilationCache").str]))],
+                targets: [
+                    TestStandardTarget(
+                        "Lib",
+                        type: .dynamicLibrary,
+                        buildPhases: [
+                            TestSourcesBuildPhase(["lib.c"]),
+                            TestFrameworksBuildPhase([TestBuildFile(.target("FooProduct"))])],
+                        dependencies: ["FooProduct"])])
+
+            let workspace = TestWorkspace("aWorkspace", sourceRoot: tmpDirPath.join("Test"), projects: [project, package])
+
+            let tester = try await BuildOperationTester(getCore(), workspace, simulated: false)
+            tester.enableTaskCacheKeyReporting = true
+
+            try await tester.fs.writeFileContents(workspace.sourceRoot.join("aPackage/foo.c")) { stream in
+                stream <<<
+                """
+                int foo(void) { return 1; }
+                """
+            }
+
+            try await tester.fs.writeFileContents(workspace.sourceRoot.join("aProject/lib.c")) { stream in
+                stream <<<
+                """
+                extern int foo(void);
+                int lib(void) { return foo(); }
+                """
+            }
+
+            let expectedCASPath = tmpDirPath.join("CompilationCache").join("builtin")
+            try await tester.checkBuild(runDestination: .host, persistent: true) { results in
+                results.checkTask(.matchRuleType("CompileC"), .matchRuleItemPattern(.suffix("foo.c"))) { task in
+                    results.checkCompileCacheMiss(task)
+                    results.checkReportedCacheKey(task, source: .clang, casPath: expectedCASPath)
+                }
+                results.checkTask(.matchRuleType("CompileC"), .matchRuleItemPattern(.suffix("lib.c"))) { task in
+                    results.checkCompileCacheMiss(task)
+                    results.checkReportedCacheKey(task, source: .clang, casPath: expectedCASPath)
+                }
+                results.checkNoDiagnostics()
+            }
+        }
+    }
+
+    @Test(.requireSDKs(.host))
+    func clangCachingConflictingSettingsImposedOnPackageDependencies() async throws {
+        try await withTemporaryDirectory { tmpDirPath in
+            let commonBuildSettings: [String: String] = [
+                "SDKROOT": "auto",
+                "SDK_VARIANT": "auto",
+                "SUPPORTED_PLATFORMS": "$(AVAILABLE_PLATFORMS)",
+                "PRODUCT_NAME": "$(TARGET_NAME)",
+                "CODE_SIGNING_ALLOWED": "NO",
+                "CLANG_ENABLE_COMPILE_CACHE": "YES",
+            ]
+
+            let package = TestPackageProject(
+                "aPackage",
+                groupTree: TestGroup("Sources", children: [TestFile("foo.c")]),
+                buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: commonBuildSettings)],
+                targets: [
+                    TestPackageProductTarget(
+                        "FooProduct",
+                        frameworksBuildPhase: TestFrameworksBuildPhase([TestBuildFile(.target("Foo"))]),
+                        dependencies: ["Foo"]),
+                    TestStandardTarget(
+                        "Foo",
+                        type: .staticLibrary,
+                        buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: ["PRODUCT_NAME": "Foo"])],
+                        buildPhases: [TestSourcesBuildPhase(["foo.c"])])])
+
+            let project = TestProject(
+                "aProject",
+                groupTree: TestGroup("Sources", children: [TestFile("lib1.c"), TestFile("lib2.c")]),
+                buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: commonBuildSettings)],
+                targets: [
+                    TestStandardTarget(
+                        "Lib1",
+                        type: .dynamicLibrary,
+                        buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: [
+                            // Only this target enables remarks, which is enough to enable them for the package.
+                            "COMPILATION_CACHE_ENABLE_DIAGNOSTIC_REMARKS": "YES",
+                            "COMPILATION_CACHE_CAS_PATH": tmpDirPath.join("CompilationCache1").str])],
+                        buildPhases: [
+                            TestSourcesBuildPhase(["lib1.c"]),
+                            TestFrameworksBuildPhase([TestBuildFile(.target("FooProduct"))])],
+                        dependencies: ["FooProduct"]),
+                    TestStandardTarget(
+                        "Lib2",
+                        type: .dynamicLibrary,
+                        buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: [
+                            "COMPILATION_CACHE_CAS_PATH": tmpDirPath.join("CompilationCache2").str])],
+                        buildPhases: [
+                            TestSourcesBuildPhase(["lib2.c"]),
+                            TestFrameworksBuildPhase([TestBuildFile(.target("FooProduct"))])],
+                        dependencies: ["FooProduct"])])
+
+            let workspace = TestWorkspace("aWorkspace", sourceRoot: tmpDirPath.join("Test"), projects: [project, package])
+
+            let tester = try await BuildOperationTester(getCore(), workspace, simulated: false)
+
+            try await tester.fs.writeFileContents(workspace.sourceRoot.join("aPackage/foo.c")) { stream in
+                stream <<<
+                """
+                int foo(void) { return 1; }
+                """
+            }
+
+            for name in ["lib1", "lib2"] {
+                try await tester.fs.writeFileContents(workspace.sourceRoot.join("aProject/\(name).c")) { stream in
+                    stream <<<
+                    """
+                    extern int foo(void);
+                    int \(name)(void) { return foo(); }
+                    """
+                }
+            }
+
+            let parameters = BuildParameters(configuration: "Debug")
+            let buildRequest = BuildRequest(parameters: parameters, buildTargets: tester.workspace.projects[0].targets.map { BuildRequest.BuildTargetInfo(parameters: parameters, target: $0) }, continueBuildingAfterErrors: false, useParallelTargets: false, useImplicitDependencies: false, useDryRun: false)
+
+            try await tester.checkBuild(runDestination: .host, buildRequest: buildRequest, persistent: true) { results in
+                results.checkWarning(.contains("dependent targets impose conflicting values for 'COMPILATION_CACHE_CAS_PATH'"))
+
+                results.checkTask(.matchRuleType("CompileC"), .matchRuleItemPattern(.suffix("foo.c"))) { task in
+                    results.checkCompileCacheMiss(task)
+                }
+                results.checkNoDiagnostics()
+            }
+        }
+    }
+
     func testCachingBasic(usePlugin: Bool, runDestination: RunDestinationInfo) async throws {
         try await withTemporaryDirectory { tmpDirPath in
             var buildSettings: [String: String] = [
@@ -327,6 +493,132 @@ fileprivate struct ClangCompilationCachingTests: CoreBasedTests {
 
             // The cache should normally persist after the build.
             #expect(tester.fs.exists(tmpDirPath.join("CompilationCache")))
+        }
+    }
+
+    // Uses `MockToolchainCASPlugin` to exercise the `globally: true` remote-caching code paths
+    // end-to-end: one "machine" populates the remote cache on upload, and a second "machine" with
+    // an empty local CAS but the same remote service path gets a cache hit by downloading
+    // from the simulated remote tier.
+    //
+    // Both "machines" share a single workspace/tester (only the local CAS path differs between
+    // builds, via `BuildParameters` overrides), since the compile action's cache key is derived
+    // from the exact command line (including absolute source/output paths); two independently
+    // rooted workspaces would produce different keys and could never hit, regardless of the
+    // plugin's remote-caching behavior.
+    @Test(.requireSDKs(.macOS))
+    func remoteCaching() async throws {
+        try await withTemporaryDirectory { tmpDirPath in
+            let remoteServicePath = tmpDirPath.join("RemoteCache")
+            let pluginPath = try MockCASPluginLocator.locate()
+
+            let buildSettings: [String: String] = [
+                "SDKROOT": "macosx",
+                "PRODUCT_NAME": "$(TARGET_NAME)",
+                "CLANG_ENABLE_COMPILE_CACHE": "YES",
+                "COMPILATION_CACHE_ENABLE_DIAGNOSTIC_REMARKS": "YES",
+                "COMPILATION_CACHE_ENABLE_PLUGIN": "YES",
+                "COMPILATION_CACHE_PLUGIN_PATH": pluginPath.str,
+                "COMPILATION_CACHE_REMOTE_SERVICE_PATH": remoteServicePath.str,
+                "CLANG_ENABLE_MODULES": "NO",
+                "CLANG_ENABLE_EXPLICIT_MODULES": "NO",
+            ]
+
+            let testWorkspace = TestWorkspace(
+                "Test",
+                sourceRoot: tmpDirPath.join("Test"),
+                projects: [
+                    TestProject(
+                        "aProject",
+                        groupTree: TestGroup(
+                            "Sources",
+                            children: [
+                                TestFile("file.c"),
+                            ]),
+                        buildConfigurations: [TestBuildConfiguration(
+                            "Debug",
+                            buildSettings: buildSettings)],
+                        targets: [
+                            TestStandardTarget(
+                                "Library",
+                                type: .staticLibrary,
+                                buildPhases: [
+                                    TestSourcesBuildPhase(["file.c"]),
+                                ]),
+                        ])])
+
+            let tester = try await BuildOperationTester(getCore(), testWorkspace, simulated: false)
+            try await tester.fs.writeFileContents(testWorkspace.sourceRoot.join("aProject/file.c")) { stream in
+                stream <<<
+                """
+                #include <stdio.h>
+                int something = 1;
+                """
+            }
+
+            // "Machine" 1: builds from scratch, populating the remote cache on upload.
+            let parameters1 = BuildParameters(configuration: "Debug", overrides: [
+                "COMPILATION_CACHE_CAS_PATH": tmpDirPath.join("CompilationCache1").str,
+            ])
+            try await tester.checkBuild(parameters: parameters1, runDestination: .macOS, persistent: true) { results in
+                let compileTask: Task = try results.checkTask(.matchRuleType("CompileC")) { $0 }
+                results.checkCompileCacheMiss(compileTask)
+                results.checkNoDiagnostics()
+            }
+
+            let localCASPath1 = tmpDirPath.join("CompilationCache1").join("plugin")
+            let uploadEntries = try readCallLog(at: localCASPath1)
+            #expect(uploadEntries.contains { $0.function.hasPrefix("llcas_actioncache_put_for_digest") && $0.globally == true && $0.outcome == "success" })
+
+            // "Machine" 2: fresh local CAS, but the same remote service path -> should hit remotely.
+            // Clean the build folder first so the task actually re-runs rather than being skipped
+            // as up-to-date.
+            try await tester.checkBuild(runDestination: .macOS, buildCommand: .cleanBuildFolder(style: .regular), body: { _ in })
+
+            let parameters2 = BuildParameters(configuration: "Debug", overrides: [
+                "COMPILATION_CACHE_CAS_PATH": tmpDirPath.join("CompilationCache2").str,
+            ])
+            try await tester.checkBuild(parameters: parameters2, runDestination: .macOS, persistent: true) { results in
+                let compileTask: Task = try results.checkTask(.matchRuleType("CompileC")) { $0 }
+                results.checkCompileCacheHit(compileTask)
+                results.checkNoDiagnostics()
+            }
+
+            let localCASPath2 = tmpDirPath.join("CompilationCache2").join("plugin")
+            let downloadEntries = try readCallLog(at: localCASPath2)
+            guard let remoteHitIndex = downloadEntries.firstIndex(where: { $0.function.hasPrefix("llcas_actioncache_get_for_digest") && $0.globally == true && $0.outcome == "success" && $0.source == "remote" }) else {
+                Issue.record("no successful remote action-cache hit found")
+                return
+            }
+
+            // Rule out a false positive: no successful local-only action-cache hit should have
+            // preceded the remote one, since CAS path 2 started out with an empty local store.
+            // (Local-only hits *after* the remote one are expected: once the remote hit pulls the
+            // association into the local store, later task actions querying the same key in the
+            // same build correctly find it locally.)
+            let precedingLocalOnlyHits = downloadEntries[..<remoteHitIndex].filter { $0.function.hasPrefix("llcas_actioncache_get_for_digest") && $0.globally != true && $0.outcome == "success" }
+            #expect(precedingLocalOnlyHits.isEmpty)
+
+            // Simulate losing the local CAS and touch the source file without changing its content,
+            // so the compile action's cache key stays the same for an incremental build.
+            #expect(tester.fs.exists(localCASPath2))
+            try tester.fs.removeDirectory(localCASPath2)
+            try await tester.fs.updateTimestamp(testWorkspace.sourceRoot.join("aProject/file.c"))
+
+            // Rebuild: the compile task reruns because the file's timestamp changed, but since
+            // the cache key is unchanged it should be served as a cache hit from the remote
+            // cache, and show up as a cache hit.
+            try await tester.checkBuild(parameters: parameters2, runDestination: .macOS, persistent: true) { results in
+                let compileTask: Task = try results.checkTask(.matchRuleType("CompileC")) { $0 }
+                results.checkCompileCacheHit(compileTask)
+                results.checkNoDiagnostics()
+            }
+
+            do {
+                let downloadEntries = try readCallLog(at: localCASPath2)
+                let hadRemoteQuery = downloadEntries.contains(where: { $0.function.hasPrefix("llcas_actioncache_get_for_digest") && $0.globally == true && $0.outcome == "success" && $0.source == "remote" })
+                #expect(hadRemoteQuery, "no successful remote action-cache hit found")
+            }
         }
     }
 

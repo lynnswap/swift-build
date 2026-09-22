@@ -831,12 +831,12 @@ public final class Settings: PlatformBuildContext, TripleLookup, Sendable {
     /// The information about the project model components from which these settings were constructed.
     public let constructionComponents: ConstructionComponents
 
-    package convenience init(workspaceContext: WorkspaceContext, buildRequestContext: BuildRequestContext, parameters: BuildParameters, project: Project, target: Target? = nil, purpose: SettingsPurpose = .build, provisioningTaskInputs: ProvisioningTaskInputs? = nil, impartedBuildProperties: [ImpartedBuildProperties]? = nil, artifactBundleInfo: [ArtifactBundleInfo]? = nil, includeExports: Bool = true, sdkRegistry: (any SDKRegistryLookup)? = nil) {
-        self.init(workspaceContext: workspaceContext, buildRequestContext: buildRequestContext, parameters: parameters, settingsContext: SettingsContext(purpose, project: project, target: target), purpose: purpose, provisioningTaskInputs: provisioningTaskInputs, impartedBuildProperties: impartedBuildProperties, artifactBundleInfo: artifactBundleInfo, includeExports: includeExports, sdkRegistry: sdkRegistry)
+    package convenience init(workspaceContext: WorkspaceContext, buildRequestContext: BuildRequestContext, parameters: BuildParameters, project: Project, target: Target? = nil, purpose: SettingsPurpose = .build, provisioningTaskInputs: ProvisioningTaskInputs? = nil, impartedBuildProperties: [ImpartedBuildProperties]? = nil, artifactBundleInfo: [ArtifactBundleInfo]? = nil, compilationCachingInfo: CompilationCachingInfo? = nil, includeExports: Bool = true, sdkRegistry: (any SDKRegistryLookup)? = nil) {
+        self.init(workspaceContext: workspaceContext, buildRequestContext: buildRequestContext, parameters: parameters, settingsContext: SettingsContext(purpose, project: project, target: target), purpose: purpose, provisioningTaskInputs: provisioningTaskInputs, impartedBuildProperties: impartedBuildProperties, artifactBundleInfo: artifactBundleInfo, compilationCachingInfo: compilationCachingInfo, includeExports: includeExports, sdkRegistry: sdkRegistry)
     }
 
     /// Construct the settings for a project and optionally a target.
-    package init(workspaceContext: WorkspaceContext, buildRequestContext: BuildRequestContext, parameters: BuildParameters, settingsContext: SettingsContext, purpose: SettingsPurpose = .build, provisioningTaskInputs: ProvisioningTaskInputs? = nil, impartedBuildProperties: [ImpartedBuildProperties]? = nil, artifactBundleInfo: [ArtifactBundleInfo]? = nil, includeExports: Bool = true, sdkRegistry: (any SDKRegistryLookup)? = nil) {
+    package init(workspaceContext: WorkspaceContext, buildRequestContext: BuildRequestContext, parameters: BuildParameters, settingsContext: SettingsContext, purpose: SettingsPurpose = .build, provisioningTaskInputs: ProvisioningTaskInputs? = nil, impartedBuildProperties: [ImpartedBuildProperties]? = nil, artifactBundleInfo: [ArtifactBundleInfo]? = nil, compilationCachingInfo: CompilationCachingInfo? = nil, includeExports: Bool = true, sdkRegistry: (any SDKRegistryLookup)? = nil) {
         if let target = settingsContext.target {
             precondition(workspaceContext.workspace.project(for: target) === settingsContext.project)
         }
@@ -845,7 +845,7 @@ public final class Settings: PlatformBuildContext, TripleLookup, Sendable {
         self.settingsContext = settingsContext
 
         // Construct the settings table.
-        let builder = SettingsBuilder(workspaceContext, buildRequestContext, parameters, settingsContext, provisioningTaskInputs, impartedBuildProperties, artifactBundleInfo, includeExports: includeExports, sdkRegistry)
+        let builder = SettingsBuilder(workspaceContext, buildRequestContext, parameters, settingsContext, provisioningTaskInputs, impartedBuildProperties, artifactBundleInfo, compilationCachingInfo, includeExports: includeExports, sdkRegistry)
         let (boundProperties, boundDeploymentTarget) = MacroNamespace.withExpressionInterningEnabled{ builder.construct() }
 
         // Extract the constructed data.
@@ -1315,6 +1315,7 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
     let provisioningTaskInputs: ProvisioningTaskInputs?
     let impartedBuildProperties: [ImpartedBuildProperties]?
     let artifactBundleInfo: [ArtifactBundleInfo]?
+    let compilationCachingInfo: CompilationCachingInfo?
 
     /// Whether this builder was constructed specifically for binding properties (versus for general table construction).
     let forBindingProperties: Bool
@@ -1436,7 +1437,7 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
         )
     }
 
-    init(_ workspaceContext: WorkspaceContext, _ buildRequestContext: BuildRequestContext, _ parameters: BuildParameters, _ settingsContext: SettingsContext, _ provisioningTaskInputs: ProvisioningTaskInputs? = nil, _ impartedBuildProperties: [ImpartedBuildProperties]? = nil, _ artifactBundleInfo: [ArtifactBundleInfo]? = nil, includeExports: Bool = true, forBindingProperties: Bool = false, _ sdkRegistry: (any SDKRegistryLookup)?) {
+    init(_ workspaceContext: WorkspaceContext, _ buildRequestContext: BuildRequestContext, _ parameters: BuildParameters, _ settingsContext: SettingsContext, _ provisioningTaskInputs: ProvisioningTaskInputs? = nil, _ impartedBuildProperties: [ImpartedBuildProperties]? = nil, _ artifactBundleInfo: [ArtifactBundleInfo]? = nil, _ compilationCachingInfo: CompilationCachingInfo? = nil, includeExports: Bool = true, forBindingProperties: Bool = false, _ sdkRegistry: (any SDKRegistryLookup)?) {
         self.workspaceContext = workspaceContext
         self.buildRequestContext = buildRequestContext
         self.sdkRegistry = sdkRegistry ?? workspaceContext.sdkRegistry
@@ -1445,6 +1446,7 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
         self.provisioningTaskInputs = provisioningTaskInputs
         self.impartedBuildProperties = impartedBuildProperties
         self.artifactBundleInfo = artifactBundleInfo
+        self.compilationCachingInfo = compilationCachingInfo
         // FIXME: We should almost certainly not be creating a namespace here, but instead should use an already bound one.
         self.userNamespace = MacroNamespace(parent: workspaceContext.workspace.userNamespace, debugDescription: "settings")
         self._table = MacroValueAssignmentTable(namespace: userNamespace)
@@ -1684,6 +1686,10 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
                 // Imparted build properties are always from packages, so force allow platform filter conditionals.
                 bindConditionParameters(property.buildSettings, sdk, forceAllowPlatformFilterCondition: true)
             }
+        }
+
+        if let compilationCachingInfo, !compilationCachingInfo.isEmpty {
+            push(createTableFromUserSettings(compilationCachingInfo.settings), .exported)
         }
 
         for artifactBundle in artifactBundleInfo ?? [] {
@@ -2241,9 +2247,13 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
         // FIXME: Arguably we should emit a warning if the optimization settings are out of sync, as the user may be getting weird results.  It's not clear if there are lots of old projects which might spuriously get such a warning, and this isn't a new state of affairs.
         table.push(BuiltinMacros.IS_UNOPTIMIZED_BUILD, literal: (scope.evaluate(BuiltinMacros.GCC_OPTIMIZATION_LEVEL) == "0" || scope.evaluate(BuiltinMacros.SWIFT_OPTIMIZATION_LEVEL) == "-Onone"))
 
-        // If unset, infer the default SWIFT_LIBRARY_LEVEL from the INSTALL_PATH.
+        // If unset, infer the default SWIFT_LIBRARY_LEVEL from the INSTALL_PATH.  An explicit
+        // -library-level in OTHER_SWIFT_FLAGS counts as set; it is emitted first, and last wins.
         if scope.evaluateAsString(BuiltinMacros.SWIFT_LIBRARY_LEVEL).isEmpty &&
-           scope.evaluate(BuiltinMacros.MACH_O_TYPE) == "mh_dylib" {
+           scope.evaluate(BuiltinMacros.MACH_O_TYPE) == "mh_dylib" &&
+           !scope.evaluate(BuiltinMacros.OTHER_SWIFT_FLAGS).contains(where: {
+               $0 == "-library-level"
+           }) {
             let privateInstallPaths = scope.evaluate(BuiltinMacros.__KNOWN_SPI_INSTALL_PATHS).map { Path($0) }
             // Public frameworks and libraries can be installed directly at these base
             // locations, or relocated under one of the known prefixes.
@@ -2264,16 +2274,19 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
             }
             let installPath = scope.evaluate(BuiltinMacros.INSTALL_PATH)
 
-            if scope.evaluate(BuiltinMacros.SWIFT_ENABLE_IPI_LIBRARY_LEVEL)
-                && scope.evaluate(BuiltinMacros.SKIP_INSTALL) {
-                // Build-time / IPI module.
-                table.push(BuiltinMacros.SWIFT_LIBRARY_LEVEL, literal: "ipi")
-            } else if privateInstallPaths.contains(where: { $0.isAncestorOrEqual(of: installPath) }) {
+            // A known framework install path takes precedence over the IPI inference,
+            // e.g. the module having install path a private location must not be reclassified
+            // as project-internal (IPI) merely because SKIP_INSTALL happens to be YES.
+            if privateInstallPaths.contains(where: { $0.isAncestorOrEqual(of: installPath) }) {
                 // SPI module.
                 table.push(BuiltinMacros.SWIFT_LIBRARY_LEVEL, literal: "spi")
             } else if publicInstallPaths.contains(where: { $0.isAncestorOrEqual(of: installPath) }) {
                 // Public module.
                 table.push(BuiltinMacros.SWIFT_LIBRARY_LEVEL, literal: "api")
+            } else if scope.evaluate(BuiltinMacros.SWIFT_ENABLE_IPI_LIBRARY_LEVEL)
+                && scope.evaluate(BuiltinMacros.SKIP_INSTALL) {
+                // Build-time / IPI module: not installed to any known framework location.
+                table.push(BuiltinMacros.SWIFT_LIBRARY_LEVEL, literal: "ipi")
             }
             // Else, leave it to the compiler's default.
         }
@@ -3433,6 +3446,20 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
         push(table)
     }
 
+    /// Applies an xcconfig override and tracks paths in `inputPathsAffectingSettings`
+    private func addXCConfigOverride(path: Path?, overrides: [String: String], context: MacroConfigLoadContext) {
+        guard let path else {
+            push(createTableFromUserSettings(overrides), .exported)
+            return
+        }
+        let info = buildRequestContext.getCachedMacroConfigFile(path, project: project, context: context)
+        push(info.table, .exported)
+        diagnostics.append(contentsOf: info.diagnostics)
+        for path in info.dependencyPaths {
+            inputPathsAffectingSettings.append(path)
+        }
+    }
+
     /// Add the various overriding settings.
     func addOverrides(sdk: SDK?) {
         push(getWorkspacePathOverrides(), .none)
@@ -3465,23 +3492,9 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
             push(buildRequestContext.loadSettingsFromConfig(data: settingsExtension.xcconfigOverrideData(fromParameters: self.parameters), path: nil, namespace: workspaceContext.workspace.userNamespace, searchPaths: project.map { [$0.sourceRoot] } ?? []).table, .exported)
         }
 
-        // Add the command line xcconfig-based build settings.
-        if let path = parameters.commandLineConfigOverridesPath {
-            let info = buildRequestContext.getCachedMacroConfigFile(path, project: project, context: .commandLineConfiguration)
-            push(info.table, .exported)
-            self.diagnostics.append(contentsOf: info.diagnostics)
-        } else {
-            push(createTableFromUserSettings(parameters.commandLineConfigOverrides), .exported)
-        }
-
-        // Add the environment xcconfig-based build settings.
-        if let path = parameters.environmentConfigOverridesPath {
-            let info = buildRequestContext.getCachedMacroConfigFile(path, project: project, context: .environmentConfiguration)
-            push(info.table, .exported)
-            self.diagnostics.append(contentsOf: info.diagnostics)
-        } else {
-            push(createTableFromUserSettings(parameters.environmentConfigOverrides), .exported)
-        }
+        // Command-line and environment xcconfig overrides.
+        addXCConfigOverride(path: parameters.commandLineConfigOverridesPath, overrides: parameters.commandLineConfigOverrides, context: .commandLineConfiguration)
+        addXCConfigOverride(path: parameters.environmentConfigOverridesPath, overrides: parameters.environmentConfigOverrides, context: .environmentConfiguration)
 
         // Toolchain override
         if let toolchain = self.parameters.toolchainOverride {
@@ -4433,7 +4446,7 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
         if let tripleStrings = scope.evaluate(BuiltinMacros.TARGET_TRIPLES).nilIfEmpty {
             table.push(BuiltinMacros.TARGET_TRIPLES_USED_COMPONENT_INPUTS, literal: false)
 
-            var computedTriples = tripleStrings.compactMap {
+            var originalTriples = tripleStrings.compactMap {
                 do {
                     var triple = try LLVMTriple($0)
                     // clang expects a deployment target in the triple, so if there isn't one, or if it is 0.0, then set it to the SDK's default deployment target.
@@ -4466,14 +4479,15 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
                     return nil
                 }
             }
+            originalTripleStrings = originalTriples.map({ $0.description })
+            self.stringsToTriples.addContents(of: originalTriples.reduce(into: [String : LLVMTriple](), { $0[$1.description] = $1 }))
 
             // Compute the effective triples.
             // Note that we don't apply VALID_ARCHS when TARGET_TRIPLES is the input. We may wish to do so for user space builds in the future, but probably not for SDKs which define target triples.
-            computedTriples = computedTriples.filter({
+            originalTriples = originalTriples.filter({
                 !excludedArchs.contains($0.arch)
             })
-            effectiveTriples = computedTriples
-            originalTripleStrings = effectiveTriples.map({ $0.description })
+            effectiveTriples = originalTriples
 
             // If the SDK doesn't support triple-indexed slices, then validate that all triples are identical other than the architecture.  I.e., if not using triple-indexed slices, then all triples must have the same vendor, system and environment or else it's invalid for them to be joined as individual slices in the same binary.
             if !useTripleIndexedSlices {
@@ -4496,7 +4510,10 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
         else {
             table.push(BuiltinMacros.TARGET_TRIPLES_USED_COMPONENT_INPUTS, literal: true)
 
-            originalTripleStrings = archsToTriples(originalArchs, archMacro: BuiltinMacros.ARCHS, scope: scope).compactMap({ $0.description })
+            // originalTripleStrings is based on requestedArchs, so it will be $(RC_ARCHS) (if defined), and otherwise $(ARCHS).
+            let originalTriples = archsToTriples(requestedArchs, archMacro: BuiltinMacros.ARCHS, scope: scope)
+            originalTripleStrings = originalTriples.compactMap({ $0.description })
+            self.stringsToTriples.addContents(of: originalTriples.reduce(into: [String : LLVMTriple](), { $0[$1.description] = $1 }))
 
             // Compute the effective archs, by removing archs *not* in VALID_ARCHS, and removing archs in EXCLUDED_ARCHS.
             // This, with some further processing below, will be used to set ARCHS.
@@ -4845,8 +4862,9 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
             }
         }
         let originalModuleOnlyTriples = archsToTriples(originalModuleOnlyArchs, archMacro: BuiltinMacros.SWIFT_MODULE_ONLY_ARCHS, scope: scope, lookup: moduleOnlyTripleLookup)
-        let moduleOnlyTriples = archsToTriples(moduleOnlyArchs, archMacro: BuiltinMacros.SWIFT_MODULE_ONLY_ARCHS, scope: scope, lookup: moduleOnlyTripleLookup)
+        self.stringsToTriples.addContents(of: originalModuleOnlyTriples.reduce(into: [String : LLVMTriple](), { $0[$1.description] = $1 }))
 
+        let moduleOnlyTriples = archsToTriples(moduleOnlyArchs, archMacro: BuiltinMacros.SWIFT_MODULE_ONLY_ARCHS, scope: scope, lookup: moduleOnlyTripleLookup)
         self.stringsToTriples.addContents(of: moduleOnlyTriples.reduce(into: [String : LLVMTriple](), { $0[$1.description] = $1 }))
 
         table.push(BuiltinMacros.SWIFT_MODULE_ONLY_TARGET_TRIPLES_ORIGINAL, literal: originalModuleOnlyTriples.map({ $0.description }))
@@ -5138,16 +5156,18 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
                 let variantCondition = MacroConditionSet(conditions: [MacroCondition(parameter: BuiltinMacros.variantCondition, valuePattern: variant)])
                 var tableCopy = MacroValueAssignmentTable(copying: scope.table)
                 tableCopy.push(BuiltinMacros.variant, literal: variant, conditions: variantCondition)
-                let scope = MacroEvaluationScope(table: tableCopy).subscope(binding: BuiltinMacros.variantCondition, to: variant)
-                let variantTripleVersion = scope.evaluate(BuiltinMacros.LLVM_TARGET_TRIPLE_OS_VERSION)
+                let variantScope = MacroEvaluationScope(table: tableCopy).subscope(binding: BuiltinMacros.variantCondition, to: variant)
+                let variantTripleVersion = variantScope.evaluate(BuiltinMacros.LLVM_TARGET_TRIPLE_OS_VERSION)
                 if variantTripleVersion != normalTripleVersion {
                     for macro in [
                         BuiltinMacros.TARGET_TRIPLES,
                         BuiltinMacros.TARGET_TRIPLES_BASE,
                         BuiltinMacros.TARGET_TRIPLES_ORIGINAL,
                     ] {
-                        let triples = triplesForStrings(scope.evaluate(macro)) {
-                            self.errors.append("\($0) when computing triples for build variant '\(variant)'.")
+                        // We still look up the triples using the non-variant scope.  We don't want projects to override the triples for the variant directly because that increases the complexity of this considerably.
+                        let tripleStrings = scope.evaluate(macro)
+                        let triples = triplesForStrings(tripleStrings) {
+                            self.errors.append("Internal error: \($0) when modifying triples for \(macro.name) [\(tripleStrings.joined(separator: ", "))] for variant '\(variant)'.")
                         }
                         let newTriples = triples.map {
                             var triple = $0

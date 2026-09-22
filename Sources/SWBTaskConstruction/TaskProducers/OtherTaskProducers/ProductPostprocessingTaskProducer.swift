@@ -429,13 +429,10 @@ package final class ProductPostprocessingTaskProducer: PhasedTaskProducer, TaskP
                 paths.append((subscope.evaluate(BuiltinMacros.TARGET_BUILD_DIR).join(Path(previewBlankInjectionDylibPath)).normalize(), subscope, false, false, true))
             }
 
-            // If we are creating a TBD for this product, then also sign the .tbd file.
-            //
-            // FIXME: This is not strictly correct, because there are situations where these methods return true but we don't actually enable InstallAPI. We should resolve this eventually.
-            //
-            // TAPI will only be run when the output is a dylib.
-            // Swift static library may schedule installAPI phase to generate a swiftmodule.
-            if let productType = settings.productType, productType.supportsInstallAPI && (shouldUseInstallAPI(subscope, settings) || stubAPIDestination(subscope, settings) == .builtProduct) {
+            // Only sign the .tbd when installapi will actually produce it
+            let buildComponents = subscope.evaluate(BuiltinMacros.BUILD_COMPONENTS)
+            let willGenerateInstallAPI = buildComponents.contains("api") || (buildComponents.contains("build") && subscope.evaluate(BuiltinMacros.TAPI_ENABLE_VERIFICATION_MODE))
+            if let productType = settings.productType, productType.supportsInstallAPI && ((shouldUseInstallAPI(subscope, settings) && willGenerateInstallAPI) || stubAPIDestination(subscope, settings) == .builtProduct) {
                 let tapiOutputPath = Path(subscope.evaluate(BuiltinMacros.TAPI_OUTPUT_PATH))
                 paths.append((tapiOutputPath, subscope, false, false, false))
             }
@@ -806,6 +803,17 @@ func addCommonInstallAPITasks(_ producer: PhasedTaskProducer, _ scope: MacroEval
                               tapiOutputNode: PlannedPathNode, tapiOrderingNode: PlannedVirtualNode, phaseStartNodes: [any PlannedNode],
                               phaseEndTask: any PlannedTask, jsonPath: Path?, destination: InstallAPIDestination) async -> [any PlannedTask] {
     let buildComponents = scope.evaluate(BuiltinMacros.BUILD_COMPONENTS)
+
+    // Drop installapi dependencies on public/private destinations that aren't produced.
+    let producedHeaders = producer.context.producedHeaderPaths()
+    let publicHeaderDir = TargetHeaderInfo.destDirPath(for: .public, scope: scope).normalize()
+    let privateHeaderDir = TargetHeaderInfo.destDirPath(for: .private, scope: scope).normalize()
+    let headerDependencyInputs = headerDependencyInputs.filter { node in
+        let path = node.path
+        guard publicHeaderDir.isAncestorOrEqual(of: path) || privateHeaderDir.isAncestorOrEqual(of: path) else { return true }
+        return producedHeaders.contains(path)
+    }
+
     var dependencyInputs = headerDependencyInputs
     // Only add dSYM dependency iff this the task is installAPI verification.
     let tapiReadDSYM = scope.evaluate(BuiltinMacros.TAPI_READ_DSYM) && scope.evaluate(BuiltinMacros.DEBUG_INFORMATION_FORMAT) == "dwarf-with-dsym"

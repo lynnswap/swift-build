@@ -226,18 +226,26 @@ open class SwiftDriverJobSchedulingTaskAction: TaskAction {
                 outputDelegate.emitOutput(ByteString(encodingAsUTF8: "Discovered dependency nodes:\n" + planningDependencies.joined(separator: "\n") + "\n"))
             }
 
+            let dependencyFilteringRootPathString = driverPayload.dependencyFilteringRootPath?.str
+
             if driverPayload.verifyScannerDependencies {
                 if case .makefileIgnoringSubsequentOutputs(let makefilePath) = task.dependencyData {
                     let makeStyleInputs = try Self.parseMakefileDependencies(executionDelegate.fs.read(makefilePath).asString)
                     let scannerInputs = Set(planningDependencies)
-                    let inputsMissedByScanner = makeStyleInputs.subtracting(scannerInputs)
+                    let explicitInputs = Set(task.inputPaths.map { $0.str })
+                    let inputsMissedByScanner = makeStyleInputs
+                        .subtracting(scannerInputs)
+                        .subtracting(explicitInputs)
+                        .filter { missedInput in
+                            guard let dependencyFilteringRootPathString else { return true }
+                            return !missedInput.hasPrefix(dependencyFilteringRootPathString)
+                        }
                     for missedInput in inputsMissedByScanner.sorted() {
                         outputDelegate.emitError("Dependency scanner failed to report input '\(missedInput)' present in '\(makefilePath.str)'")
                     }
                 }
             }
 
-            let dependencyFilteringRootPathString = driverPayload.dependencyFilteringRootPath?.str
             for dep in planningDependencies {
                 if let dependencyFilteringRootPathString {
                     // We intentionally do a prefix check instead of an ancestor check here, for performance reasons. The filtering path (SDK path) and paths returned by the compiler are guaranteed to be normalized, which makes this safe.

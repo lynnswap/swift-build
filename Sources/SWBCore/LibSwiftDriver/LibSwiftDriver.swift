@@ -234,6 +234,15 @@ public final class SwiftModuleDependencyGraph: SwiftGlobalExplicitDependencyGrap
                 break
             }
         }
+        // Track the headers pulled in through the bridging headers. These transitive includes
+        // are discovered by scanning the header rather than declared as task inputs.
+        if case .swift(let mainDetails) = graph.mainModule.details {
+            for bridgingSourceFile in mainDetails.bridgingSourceFiles ?? [] {
+                if let path = VirtualPath.lookup(bridgingSourceFile.path).absolutePath {
+                    fileDependencies.append(path.pathString)
+                }
+            }
+        }
         return fileDependencies
     }
 

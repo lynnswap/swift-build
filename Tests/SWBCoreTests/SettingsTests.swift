@@ -6337,4 +6337,32 @@ import SWBTestSupport
             }
         }
     }
+
+    @Test
+    func commandLineXCConfigContentChangeInvalidatesCachedSettings() async throws {
+        try await withTemporaryDirectory { tmpDirPath in
+            let core = try await getCore()
+            let xcconfigPath = tmpDirPath.join("overrides.xcconfig")
+            try localFS.write(xcconfigPath, contents: "OTHER_CFLAGS = -DFIRST")
+
+            let workspace = try TestWorkspace(
+                "Workspace",
+                sourceRoot: tmpDirPath,
+                projects: [TestProject("aProject",
+                                       groupTree: TestGroup("SomeFiles"),
+                                       targets: [TestStandardTarget("anApp", type: .application)])]
+            ).load(core)
+            let workspaceContext = WorkspaceContext(core: core, workspace: workspace, fs: localFS, processExecutionCache: .sharedForTesting)
+            let parameters = BuildParameters(configuration: "Debug", commandLineConfigOverridesPath: xcconfigPath)
+            let project = workspace.projects[0]
+
+            let settings1 = BuildRequestContext(workspaceContext: workspaceContext).getCachedSettings(parameters, project: project)
+            #expect(settings1.globalScope.evaluate(BuiltinMacros.OTHER_CFLAGS) == ["-DFIRST"])
+
+            try localFS.write(xcconfigPath, contents: "OTHER_CFLAGS = -DSECOND")
+
+            let settings2 = BuildRequestContext(workspaceContext: workspaceContext).getCachedSettings(parameters, project: project)
+            #expect(settings2.globalScope.evaluate(BuiltinMacros.OTHER_CFLAGS) == ["-DSECOND"], "stale command-line xcconfig settings were served from the cache after the file's contents changed")
+        }
+    }
 }
