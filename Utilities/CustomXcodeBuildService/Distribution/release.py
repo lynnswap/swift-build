@@ -798,7 +798,7 @@ print(sqliteVersionsMatch())
         ["/usr/bin/xcrun", "xcodebuild", "-scheme", "Smoke", "-testPlan", "Smoke",
          "-destination", "platform=macOS,arch=arm64",
          "-derivedDataPath", str(temporary / "SystemLibraryDerivedData"),
-         "MACOSX_DEPLOYMENT_TARGET=26.0", "test"],
+         "MACOSX_DEPLOYMENT_TARGET=26.0", "EAGER_LINKING=YES", "test"],
         environment, service, cwd=package,
     )
 
