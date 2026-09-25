@@ -10,6 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+import Darwin
 import Foundation
 
 struct ProcessResult {
@@ -29,16 +30,22 @@ protocol ProcessRunning {
 
 struct ProcessRunner: ProcessRunning {
     func runAttached(_ executable: String, _ arguments: [String]) throws -> Int32 {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        // Preserve the command's input, output, and diagnostics across the session switch.
-        process.standardInput = FileHandle.standardInput
-        process.standardOutput = FileHandle.standardOutput
-        process.standardError = FileHandle.standardError
-        try process.run()
-        process.waitUntilExit()
-        return process.terminationReason == .uncaughtSignal ? 128 + process.terminationStatus : process.terminationStatus
+        var argv = ([executable] + arguments).map { strdup($0) }
+        defer { argv.forEach { free($0) } }
+        guard argv.allSatisfy({ $0 != nil }) else { throw POSIXError(.ENOMEM) }
+        argv.append(nil)
+        var pid: pid_t = 0
+        // Foundation.Process creates a separate process group. Interactive sudo
+        // must inherit our foreground group and controlling terminal instead.
+        let error = posix_spawn(&pid, executable, nil, nil, &argv, environ)
+        guard error == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(error)) }
+        var information = siginfo_t()
+        while waitid(P_PID, id_t(pid), &information, WEXITED) != 0 {
+            let error = errno
+            if error == EINTR { continue }
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(error))
+        }
+        return information.si_code == CLD_EXITED ? information.si_status : 128 + information.si_status
     }
 
     func run(_ executable: String, _ arguments: [String]) throws -> ProcessResult {

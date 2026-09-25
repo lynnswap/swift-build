@@ -10,6 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+import Darwin
 import Foundation
 import Testing
 @testable import CustomXcodeBuildService
@@ -837,9 +838,35 @@ func rootInstallationRequiresAnIdentifiableNonRootInvokingUser(uid: String?) {
     #expect(fixture.runner.attachedCommands.isEmpty)
 }
 
-@Test(arguments: ["exit 7", "kill -TERM $$"])
-func attachedProcessPreservesFailureStatus(script: String) throws {
-    #expect(try ProcessRunner().runAttached("/bin/sh", ["-c", script]) == (script == "exit 7" ? 7 : 143))
+@Test(arguments: [false, true])
+func attachedProcessPreservesFailureStatus(terminated: Bool) throws {
+    // Swift Testing workers can block signals. The fixture explicitly terminates
+    // itself so this tests exit-status handling independently of that mask.
+    let script = """
+    import os, signal, sys
+    if sys.argv[1] == "true":
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, [signal.SIGTERM])
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGTERM)
+    sys.exit(7)
+    """
+    let status = try ProcessRunner().runAttached("/usr/bin/python3", ["-c", script, String(terminated)])
+    #expect(status == (terminated ? 143 : 7))
+}
+
+@Test func attachedProcessKeepsTheCallersProcessGroup() throws {
+    let script = "import os, sys; sys.exit(0 if os.getpgrp() == int(sys.argv[1]) else 1)"
+    #expect(try ProcessRunner().runAttached("/usr/bin/python3", ["-c", script, String(getpgrp())]) == 0)
+}
+
+@Test func attachedProcessReportsSpawnErrors() throws {
+    do {
+        _ = try ProcessRunner().runAttached("/nonexistent-custom-build-service-test", [])
+        Issue.record("A missing executable must fail to launch.")
+    } catch let error as NSError {
+        #expect(error.domain == NSPOSIXErrorDomain)
+        #expect(error.code == Int(ENOENT))
+    }
 }
 
 @Test(arguments: ["Background", "System", "wrongUID"], ["install", "activate", "uninstall", "status", "use custom", "use bundled"])
