@@ -65,7 +65,12 @@ enum Command: Equatable {
     activate   Reapply custom at login if selected (used by the LaunchAgent).
 
     Installing or selecting custom requires Apple Silicon and macOS 26 or later.
-    Do not use sudo. Selection affects future processes for this macOS user account.
+    A macOS desktop login is required for the invoking user. In an Aqua session,
+    installation needs no sudo. From a Background session, the command requests
+    administrator authentication to enter your desktop session, then runs as you.
+    Status reports the information available without requesting authentication;
+    use sudo with the full executable path to inspect GUI settings from Background.
+    Selection affects future processes for this macOS user account.
     After installing, updating, switching, or uninstalling, quit and reopen Xcode,
     terminal applications, and AI agent applications. Start terminal-based agents
     from the restarted terminal. No applications or builds are stopped by this tool.

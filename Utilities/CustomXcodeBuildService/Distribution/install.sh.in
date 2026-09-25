@@ -32,8 +32,9 @@ if [ "$(uname -s)" != Darwin ] || [ "$(sysctl -n hw.optional.arm64)" != 1 ]; the
     printf '%s\n' 'This release requires macOS on Apple silicon.' >&2
     exit 1
 fi
-if [ "$(id -u)" = 0 ]; then
-    printf '%s\n' 'Run this installer as your logged-in user, without sudo.' >&2
+installer_uid=$(id -u)
+if [ "$installer_uid" = 0 ] && ! [ "${SUDO_UID:-0}" -gt 0 ] 2>/dev/null; then
+    printf '%s\n' 'Run this installer using sudo from your logged-in user account; a root login has no installation user.' >&2
     exit 1
 fi
 
@@ -49,7 +50,8 @@ case "$version:$repository" in
 esac
 
 download_url="https://github.com/$repository/releases/download/$version"
-temporary_directory=$(mktemp -d "${TMPDIR:-/tmp}/custom-xcode-build-service.XXXXXX")
+# The original user must be able to traverse this path after dropping root.
+temporary_directory=$(mktemp -d /tmp/custom-xcode-build-service.XXXXXX)
 cleanup() {
     rm -rf "$temporary_directory"
 }
@@ -99,5 +101,8 @@ curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
     tar -xzf "$archive" --no-same-owner --no-same-permissions -C package
 )
 
+if [ "$installer_uid" = 0 ]; then
+    chown -R "$SUDO_UID" "$temporary_directory"
+fi
 "$temporary_directory/package/bin/custom-xcode-build-service" install \
     --package "$temporary_directory/package"
