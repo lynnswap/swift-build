@@ -237,7 +237,6 @@ def check_binary(binary):
 
 
 def copy_binary(source, destination):
-    require(source.is_file(), f"Missing built binary: {source}")
     shutil.copy2(source, destination)
     destination.chmod(0o755)
     load_commands = output(["/usr/bin/otool", "-l", str(destination)])

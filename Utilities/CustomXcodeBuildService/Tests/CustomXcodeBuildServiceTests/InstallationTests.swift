@@ -316,7 +316,7 @@ func statusReportsLiveSettingsWhenInstalledStateIsDamaged(damage: String) throws
         #expect(!report.contains("Installed: none"))
         #expect(!report.contains("Run use custom to reapply it"))
         if damage != "agent" {
-            #expect(report.contains("Installed: unavailable"))
+            #expect(report.contains(damage.contains("manifest") ? "Installed: unavailable" : "Installed: custom-v1.0.0"))
             #expect(report.contains("Installation error:"))
         }
         if damage.contains("agent") {
@@ -327,6 +327,79 @@ func statusReportsLiveSettingsWhenInstalledStateIsDamaged(damage: String) throws
         }
     }
     #expect(fixture.runner.settings == settings)
+    #expect(fixture.runner.launchctlMutations == mutations)
+}
+
+@Test(arguments: ["background", "domain", "environment", "login-job", "processes", "ownership", "lock"])
+func statusPreservesOtherObservationsWhenOneSourceFails(failure: String) throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    let installed = try #require(try fixture.store.selectedPackage())
+    fixture.runner.processes = "123 \(installed.service.path)\n"
+    let mutations = fixture.runner.launchctlMutations
+    switch failure {
+    case "background": fixture.runner.managerName = "Background"
+    case "domain": fixture.runner.failOnce = ["print", "gui/501"]
+    case "environment": fixture.runner.failOnce = ["getenv", "XCBBUILDSERVICE_PATH"]
+    case "login-job": fixture.runner.failOnce = ["print", fixture.manager.environment.job]
+    case "processes": fixture.runner.processStatus = 5
+    case "ownership": try fixture.write("unrecognized", to: fixture.store.root.appendingPathComponent(".owner"))
+    default: try FileManager.default.removeItem(at: fixture.store.root.appendingPathComponent(".lock"))
+    }
+    do {
+        _ = try fixture.manager.status()
+        Issue.record("Incomplete status must retain a failing result.")
+    } catch let error as ServiceError {
+        let report = error.description
+        #expect(report.contains("Selected service: custom"))
+        #expect(report.contains(["ownership", "lock"].contains(failure) ? "Installed: unavailable" : "Installed: custom-v1.0.0"))
+        #expect(report.contains(failure == "processes" ? "Running build services: unavailable" : "PID 123:"))
+        #expect(report.contains(failure == "login-job" ? "Login job: unavailable" : "Login job: loaded"))
+        if ["background", "domain", "environment"].contains(failure) {
+            #expect(report.contains("Launchd selection: unavailable"))
+        } else {
+            #expect(report.contains("XCBBUILDSERVICE_PATH: \(installed.service.path)"))
+        }
+    }
+    #expect(fixture.runner.launchctlMutations == mutations)
+}
+
+@Test func statusDoesNotRequireAWriteableLockFile() throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    let lock = fixture.store.root.appendingPathComponent(".lock")
+    try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: lock.path)
+    defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: lock.path) }
+    #expect(try fixture.manager.status().contains("Installed: custom-v1.0.0"))
+}
+
+@Test(arguments: ["activate", "use custom", "use bundled"])
+func serviceSelectionDoesNotDependOnCleaningInterruptedStaging(command: String) throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    let pending = fixture.store.staging.appendingPathComponent("pending")
+    try fixture.write("pending bytes", to: pending)
+    try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: fixture.store.staging.path)
+    defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fixture.store.staging.path) }
+    switch command {
+    case "activate": _ = try fixture.manager.activate()
+    case "use custom": _ = try fixture.manager.use(.custom)
+    default: _ = try fixture.manager.use(.bundled)
+    }
+    #expect(try fixture.store.selectedService() == (command == "use bundled" ? .bundled : .custom))
+    #expect(try String(contentsOf: pending, encoding: .utf8) == "pending bytes")
+}
+
+@Test func unusedActivationAndAbsentUninstallDoNotRequireAGUISession() throws {
+    let fixture = try Fixture()
+    fixture.runner.managerName = "Background"
+    #expect(try fixture.manager.uninstall() == "No custom build service is installed.")
+    fixture.runner.managerName = "Aqua"
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    _ = try fixture.manager.use(.bundled)
+    fixture.runner.managerName = "Background"
+    let mutations = fixture.runner.launchctlMutations
+    #expect(try fixture.manager.activate().contains("no custom activation is needed"))
     #expect(fixture.runner.launchctlMutations == mutations)
 }
 
@@ -691,27 +764,18 @@ func uninstallRemovesIncompleteInstallation(missingPath: String) throws {
     #expect(try !fixture.store.exists(fixture.store.root))
 }
 
-@Test(arguments: ["Aqua", "Background", "System", "wrongUID"])
-func identifiesWhetherTheCommandNeedsToEnterTheUsersGUISession(context: String) throws {
-    let fixture = try Fixture()
-    fixture.runner.managerName = context == "wrongUID" ? "Aqua" : context
-    fixture.runner.managerUserID = context == "wrongUID" ? "502" : "501"
-    #expect(try fixture.manager.environment.isCurrentGUI() == (context == "Aqua"))
-    #expect(fixture.runner.attachedCommands.isEmpty)
-    #expect(fixture.runner.launchctlMutations.isEmpty)
-}
-
-@Test(arguments: [Int32(0), 1, 130])
-func guiRelaunchDropsAdministratorCredentialsAndPreservesArgumentsAndExitStatus(status: Int32) throws {
+@Test(arguments: [Int32(0), 1, 130], [UInt32(0), 501])
+func guiRelaunchDropsAdministratorCredentialsAndPreservesArgumentsAndExitStatus(status: Int32, currentUserID: UInt32) throws {
     let fixture = try Fixture()
     fixture.runner.managerName = "Background"
     fixture.runner.attachedStatus = status
     let executable = "/tmp/release with spaces/bin/custom-xcode-build-service"
     let arguments = ["install", "--package", "/tmp/package 'with' $literal characters"]
 
-    #expect(try fixture.manager.environment.runInGUI(executable, arguments: arguments) == status)
+    #expect(try fixture.manager.environment.runInGUI(executable, arguments: arguments, currentUserID: currentUserID) == status)
 
-    #expect(fixture.runner.attachedCommands == [[
+    let prefix = currentUserID == 0 ? [] : ["/usr/bin/sudo", "--"]
+    #expect(fixture.runner.attachedCommands == [prefix + [
         "/bin/launchctl", "asuser", "501",
         "/usr/bin/sudo", "-H", "-u", "#501", "--", executable,
     ] + arguments])
@@ -723,7 +787,7 @@ func guiRelaunchDropsAdministratorCredentialsAndPreservesArgumentsAndExitStatus(
     let fixture = try Fixture()
     fixture.runner.failOnce = ["print", "gui/501"]
     #expect(throws: ServiceError.self) {
-        try fixture.manager.environment.runInGUI("/tmp/custom-xcode-build-service", arguments: ["install"])
+        try fixture.manager.environment.runInGUI("/tmp/custom-xcode-build-service", arguments: ["install"], currentUserID: 501)
     }
     #expect(fixture.runner.attachedCommands.isEmpty)
     #expect(fixture.runner.launchctlMutations.isEmpty)
@@ -749,7 +813,7 @@ func rootInstallationRequiresAnIdentifiableNonRootInvokingUser(uid: String?) {
     let fixture = try Fixture()
     let environment = LaunchEnvironment(runner: fixture.runner, userID: 0)
     #expect(throws: ServiceError.self) {
-        try environment.runInGUI("/tmp/custom-xcode-build-service", arguments: ["install"])
+        try environment.runInGUI("/tmp/custom-xcode-build-service", arguments: ["install"], currentUserID: 0)
     }
     #expect(fixture.runner.attachedCommands.isEmpty)
 }
@@ -773,7 +837,7 @@ func rejectsForeignLaunchdContextBeforeFilesystemAndEnvironmentChanges(context: 
     fixture.runner.managerName = context == "wrongUID" ? "Aqua" : context
     fixture.runner.managerUserID = context == "wrongUID" ? "502" : "501"
 
-    #expect(throws: ServiceError.self) {
+    do {
         switch command {
         case "install": _ = try fixture.manager.install(from: package)
         case "activate": _ = try fixture.manager.activate()
@@ -781,6 +845,13 @@ func rejectsForeignLaunchdContextBeforeFilesystemAndEnvironmentChanges(context: 
         case "use custom": _ = try fixture.manager.use(.custom)
         case "use bundled": _ = try fixture.manager.use(.bundled)
         default: _ = try fixture.manager.status()
+        }
+        Issue.record("A foreign launchd context must not change the installation.")
+    } catch {
+        if command == "status" {
+            #expect(error is ServiceError)
+        } else {
+            #expect(error is LaunchEnvironment.GUIRequired)
         }
     }
 
@@ -1051,6 +1122,7 @@ final class FakeRunner: ProcessRunning {
     var xcodeVersion = "Xcode 27.0\nBuild version 27A5252f\n"
     var xcodeStatus: Int32 = 0
     var processes = ""
+    var processStatus: Int32 = 0
     var failOnce: [String]?
     var managerName = "Aqua"
     var managerUserID = "501"
@@ -1064,13 +1136,12 @@ final class FakeRunner: ProcessRunning {
     }
 
     func run(_ executable: String, _ arguments: [String]) throws -> ProcessResult {
-        if executable == "/usr/bin/uname" { return .init(status: 0, output: "arm64\n") }
         if executable == "/usr/bin/xcodebuild" { return .init(status: xcodeStatus, output: xcodeVersion) }
         if executable == "/bin/ps" {
             guard arguments == ["-U", "501", "-x", "-ww", "-o", "pid=,comm="] else {
                 throw ServiceError("Process enumeration must be scoped to the installing user.")
             }
-            return .init(status: 0, output: processes)
+            return .init(status: processStatus, output: processes)
         }
         guard executable == "/bin/launchctl" else { throw ServiceError("Unexpected command \(executable)") }
         if arguments == failOnce { failOnce = nil; return .init(status: 5, output: "injected failure") }

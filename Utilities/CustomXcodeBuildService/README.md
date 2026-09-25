@@ -23,18 +23,19 @@ Use `custom-xcode-build-service <command>`:
 - Apple silicon and macOS 26+.
 - Xcode selected in **Settings > Locations > Command Line Tools** for builds.
 - A logged-in macOS desktop session for your user account.
-- Administrator access through `sudo` for installation.
+- Administrator authentication through `sudo` when the terminal runs in a
+  Background session. An Aqua desktop session does not require it.
 
 ## Install or Update
 
 ```sh
-curl -fsSL https://github.com/lynnswap/swift-build/releases/latest/download/install.sh | sudo sh
+curl -fsSL https://github.com/lynnswap/swift-build/releases/latest/download/install.sh | sh
 ```
 
-Run this from your own user account and enter your password when prompted.
-The installer downloads and verifies the prebuilt release, enters your macOS
-desktop session, and drops administrator privileges before installing it for
-your user account. This also works when your terminal runs in a background session.
+Run this from your own user account. The installer downloads and verifies the
+prebuilt release. In an Aqua session it installs directly. In a Background
+session it asks for administrator authentication to enter your desktop session,
+then drops administrator privileges before installing it for your user account.
 The first install selects the custom service. Run the same command to update;
 updates preserve your choice of custom or bundled service.
 
@@ -55,7 +56,7 @@ or run `make` / `xcodebuild` as usual.
 For a downloaded and verified archive, extract it and run from its root:
 
 ```sh
-sudo ./bin/custom-xcode-build-service install
+./bin/custom-xcode-build-service install
 ```
 
 Without `--package`, `install` uses the package containing that executable.
@@ -65,9 +66,10 @@ Keep the extracted directory structure intact.
 
 ## Select a Service
 
-Run management commands from your desktop session. If the command reports that
-it needs to enter that session, use `sudo` with the full executable path, for
-example `sudo ~/.local/bin/custom-xcode-build-service use bundled`.
+Commands that change the GUI settings request administrator authentication when
+needed to enter your desktop session. `status` reports what it can read without
+authentication; to also read GUI settings from a Background session, run
+`sudo ~/.local/bin/custom-xcode-build-service status`.
 
 Switch to Xcode's bundled service while keeping the custom service installed:
 
@@ -110,8 +112,10 @@ running. The displayed Xcode version records which Xcode built the release.
 Running services can still reflect the previous choice until
 applications are restarted. If the launchd settings differ from the saved
 selection, status reports the mismatch and the command to reapply your choice.
-If the installed release or login configuration cannot be read, status includes
-the error alongside launchd settings and running services and exits with failure.
+If an inspection fails, status shows the information it could read alongside
+the error and exits with failure. Missing service files do not hide readable
+release metadata, and a launchd error does not hide the installed release or
+running processes.
 
 ## Uninstall
 

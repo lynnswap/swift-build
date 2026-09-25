@@ -13,6 +13,13 @@
 import Foundation
 
 struct LaunchEnvironment {
+    struct GUIRequired: Error, CustomStringConvertible {
+        let userID: UInt32
+        var description: String {
+            "Run this command with sudo to enter the logged-in macOS desktop session for user \(userID). Use the full path to custom-xcode-build-service."
+        }
+    }
+
     struct Settings {
         let service: String?
         let concurrentResolution: String?
@@ -40,28 +47,28 @@ struct LaunchEnvironment {
     var domain: String { "gui/\(userID)" }
     var job: String { "\(domain)/\(InstallationStore.label)" }
 
-    func isCurrentGUI() throws -> Bool {
+    func requireGUI() throws {
         let name = try command(["managername"]).trimmingCharacters(in: .whitespacesAndNewlines)
         let uid = try command(["manageruid"]).trimmingCharacters(in: .whitespacesAndNewlines)
-        return name == "Aqua" && UInt32(uid) == userID
-    }
-
-    func requireGUI() throws {
-        guard try isCurrentGUI() else {
-            throw ServiceError("Run this command with sudo to enter the logged-in macOS desktop session for user \(userID). Use the full path to custom-xcode-build-service.")
+        guard name == "Aqua", UInt32(uid) == userID else {
+            throw GUIRequired(userID: userID)
         }
         _ = try command(["print", domain])
     }
 
-    func runInGUI(_ executable: String, arguments: [String]) throws -> Int32 {
+    func runInGUI(_ executable: String, arguments: [String], currentUserID: UInt32) throws -> Int32 {
         guard userID != 0 else { throw ServiceError("A non-root installation user is required.") }
         _ = try command(["print", domain])
         // asuser switches the bootstrap and audit session, but not the credentials.
         // Drop back to the original user before executing any installation code.
-        return try runner.runAttached("/bin/launchctl", [
-            "asuser", String(userID),
+        let command = [
+            "/bin/launchctl", "asuser", String(userID),
             "/usr/bin/sudo", "-H", "-u", "#\(userID)", "--", executable,
-        ] + arguments)
+        ] + arguments
+        if currentUserID == 0 {
+            return try runner.runAttached(command[0], Array(command.dropFirst()))
+        }
+        return try runner.runAttached("/usr/bin/sudo", ["--"] + command)
     }
 
     func settings() throws -> Settings {

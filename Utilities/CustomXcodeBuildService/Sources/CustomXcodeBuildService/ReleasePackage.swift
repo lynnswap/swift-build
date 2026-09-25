@@ -13,8 +13,8 @@
 import Foundation
 
 struct ReleasePackage {
-    struct Manifest: Codable, Equatable {
-        struct Dependency: Codable, Equatable {
+    struct Manifest: Codable {
+        struct Dependency: Codable {
             let identity: String
             let revision: String
         }
@@ -53,21 +53,17 @@ struct ReleasePackage {
         }
         let manifest = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: directory.appendingPathComponent("manifest.json")))
         guard [1, 2].contains(manifest.schemaVersion),
-              Self.matches(manifest.version, "^custom-v[0-9]+\\.[0-9]+\\.[0-9]+(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?$"),
-              Self.matches(manifest.sourceRevision, "^[a-fA-F0-9]{40}$"),
-              Self.matches(manifest.xcodeVersion, "^[0-9]+(?:\\.[0-9]+){0,2}$"),
-              Self.matches(manifest.xcodeBuildVersion, "^[A-Za-z0-9]+$"),
-              manifest.architecture == "arm64", manifest.minimumMacOSVersion == "26.0",
+              Self.matches(manifest.version, "^[A-Za-z0-9][A-Za-z0-9._-]*$"),
               !manifest.resourceBundles.isEmpty,
-              Set(manifest.resourceBundles).count == manifest.resourceBundles.count,
-              manifest.resourceBundles.allSatisfy({ Self.matches($0, "^SwiftBuild_[A-Za-z0-9_]+\\.bundle$") }),
-              !manifest.dependencies.isEmpty,
-              Set(manifest.dependencies.map(\.identity)).count == manifest.dependencies.count,
-              manifest.dependencies.allSatisfy({ Self.matches($0.identity, "^[a-zA-Z0-9_-]+$") && Self.matches($0.revision, "^[a-fA-F0-9]{40}$") }) else {
+              manifest.resourceBundles.allSatisfy({ Self.matches($0, "^SwiftBuild_[A-Za-z0-9_]+\\.bundle$") }) else {
             throw ServiceError("Invalid or unsupported release manifest in \(directory.path).")
         }
         self.directory = directory
         self.manifest = manifest
+    }
+
+    func validateForUse() throws {
+        let files = FileManager.default
         for executable in [executable, service] + (manifest.schemaVersion == 2 ? [hostPlugin] : []) {
             guard try files.attributesOfItem(atPath: executable.path)[.type] as? FileAttributeType == .typeRegular,
                   files.isExecutableFile(atPath: executable.path) else {
@@ -81,25 +77,18 @@ struct ReleasePackage {
                 throw ServiceError("Missing or empty resource bundle: \(resource)")
             }
         }
+        if manifest.schemaVersion == 2 {
+            for plist in [resources.appendingPathComponent("Info.plist"), hostPlugin.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Info.plist")] {
+                guard try files.attributesOfItem(atPath: plist.path)[.type] as? FileAttributeType == .typeRegular else {
+                    throw ServiceError("Missing bundle property list: \(plist.path)")
+                }
+            }
+        }
     }
 
     func validateForInstallation() throws {
-        let files = FileManager.default
+        try validateForUse()
         try Self.validateTree(directory)
-        let actual = try files.contentsOfDirectory(atPath: directory.path)
-        guard Set(actual) == ["manifest.json", "bin", "libexec", "licenses"],
-              try files.contentsOfDirectory(atPath: directory.appendingPathComponent("bin").path) == ["custom-xcode-build-service"],
-              try files.contentsOfDirectory(atPath: directory.appendingPathComponent("libexec").path) == ["swift-build"],
-              Set(try files.contentsOfDirectory(atPath: resources.path)) == Set(manifest.resourceBundles + (manifest.schemaVersion == 1 ? ["SWBBuildServiceBundle"] : ["SWBBuildServiceBundle", "Info.plist", "PlugIns", "_CodeSignature"])),
-              !(try files.contentsOfDirectory(atPath: directory.appendingPathComponent("licenses").path)).isEmpty else {
-            throw ServiceError("Release package layout does not match its manifest.")
-        }
-        if manifest.schemaVersion == 2 {
-            guard try files.contentsOfDirectory(atPath: directory.appendingPathComponent("libexec/swift-build").path) == ["SWBBuildService.bundle"],
-                  try files.contentsOfDirectory(atPath: resources.appendingPathComponent("PlugIns").path) == ["HostPlatformPlugins.bundle"] else {
-                throw ServiceError("Release service bundle layout does not match its manifest.")
-            }
-        }
     }
 
     func matchesInstalledContents(at installedDirectory: URL) throws -> Bool {
@@ -120,11 +109,6 @@ struct ReleasePackage {
             }
         }
         return true
-    }
-
-    func requireSupportedArchitecture(using runner: any ProcessRunning) throws {
-        let architecture = try runner.run("/usr/bin/uname", ["-m"]).requireSuccess("uname").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard architecture == manifest.architecture else { throw ServiceError("This release requires Apple Silicon (arm64).") }
     }
 
     private static func matches(_ value: String, _ pattern: String) -> Bool {

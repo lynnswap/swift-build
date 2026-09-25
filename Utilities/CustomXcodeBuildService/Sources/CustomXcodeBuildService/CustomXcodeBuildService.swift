@@ -24,37 +24,47 @@ struct CustomXcodeBuildService {
             let userID = try installationUserID(currentUserID: currentUserID, sudoUserID: ProcessInfo.processInfo.environment["SUDO_UID"])
             let environment = LaunchEnvironment(runner: runner, userID: userID)
             if currentUserID == 0 {
-                var arguments = Array(CommandLine.arguments.dropFirst())
-                if case .install(let package?) = command {
-                    arguments = ["install", "--package", URL(fileURLWithPath: package).standardizedFileURL.path]
-                }
-                exit(try environment.runInGUI(executableURL().path, arguments: arguments))
+                exit(try relaunch(command, in: environment, currentUserID: currentUserID))
             }
             let manager = InstallationManager(
                 store: InstallationStore(home: FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath()),
                 environment: environment
             )
-            let output: String
-            switch command {
-            case .install(let package):
-                let directory: URL
-                if let package {
-                    directory = URL(fileURLWithPath: package).standardizedFileURL
-                } else {
-                    directory = try executableURL().deletingLastPathComponent().deletingLastPathComponent()
-                }
-                output = try manager.install(from: directory)
-            case .use(let service): output = try manager.use(service)
-            case .status: output = try manager.status()
-            case .uninstall: output = try manager.uninstall()
-            case .activate: output = try manager.activate()
-            case .help: output = Command.helpText
+            do { print(try run(command, manager: manager)) }
+            catch is LaunchEnvironment.GUIRequired {
+                FileHandle.standardError.write(Data("Entering your macOS desktop session. Administrator authentication may be required; installation runs as your user.\n".utf8))
+                exit(try relaunch(command, in: environment, currentUserID: currentUserID))
             }
-            print(output)
         } catch {
             FileHandle.standardError.write(Data("error: \(error)\n".utf8))
             exit(EXIT_FAILURE)
         }
+    }
+
+    private static func run(_ command: Command, manager: InstallationManager) throws -> String {
+        switch command {
+        case .install(let package):
+            let directory: URL
+            if let package {
+                directory = URL(fileURLWithPath: package).standardizedFileURL
+            } else {
+                directory = try executableURL().deletingLastPathComponent().deletingLastPathComponent()
+            }
+            return try manager.install(from: directory)
+        case .use(let service): return try manager.use(service)
+        case .status: return try manager.status()
+        case .uninstall: return try manager.uninstall()
+        case .activate: return try manager.activate()
+        case .help: return Command.helpText
+        }
+    }
+
+    private static func relaunch(_ command: Command, in environment: LaunchEnvironment, currentUserID: UInt32) throws -> Int32 {
+        var arguments = Array(CommandLine.arguments.dropFirst())
+        if case .install(let package?) = command {
+            arguments = ["install", "--package", URL(fileURLWithPath: package).standardizedFileURL.path]
+        }
+        return try environment.runInGUI(executableURL().path, arguments: arguments, currentUserID: currentUserID)
     }
 
     static func installationUserID(currentUserID: UInt32, sudoUserID: String?) throws -> UInt32 {

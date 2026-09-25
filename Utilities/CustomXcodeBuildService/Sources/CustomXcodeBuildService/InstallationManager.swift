@@ -20,7 +20,6 @@ struct InstallationManager {
         try requireUser()
         let package = try ReleasePackage(directory: directory)
         try package.validateForInstallation()
-        try package.requireSupportedArchitecture(using: environment.runner)
         try environment.requireGUI()
         return try store.withInstallationLock {
             try store.validateCommand()
@@ -66,7 +65,7 @@ struct InstallationManager {
                 guard let installed = try store.selectedPackage() else {
                     throw ServiceError("No custom build service is installed. Run install first.")
                 }
-                try installed.requireSupportedArchitecture(using: environment.runner)
+                try installed.validateForUse()
                 customPackage = installed
             case .bundled:
                 customPackage = nil
@@ -88,13 +87,13 @@ struct InstallationManager {
 
     func activate() throws -> String {
         try requireUser()
-        try environment.requireGUI()
         guard let result = try store.withExistingLock(access: .modify, {
             guard try store.selectedService() == .custom else {
                 return "Xcode's bundled service is selected; no custom activation is needed."
             }
+            try environment.requireGUI()
             guard let selected = try store.selectedPackage() else { throw ServiceError("No custom build service is installed.") }
-            try selected.requireSupportedArchitecture(using: environment.runner)
+            try selected.validateForUse()
             let settings = try environment.settings()
             try settings.requireOwnership(in: store)
             try Transaction.perform { transaction in try apply(selected, previous: settings, transaction: transaction) }
@@ -105,8 +104,8 @@ struct InstallationManager {
 
     func uninstall() throws -> String {
         try requireUser()
-        try environment.requireGUI()
         return try store.withExistingLock(access: .modify) {
+            try environment.requireGUI()
             try store.validateCommand()
             let launchState = try readLaunchState()
             let hadCommand = try store.exists(store.command)
@@ -136,10 +135,19 @@ struct InstallationManager {
     }
 
     func status() throws -> String {
-        try environment.requireGUI()
-        return try store.withExistingLock(access: .read) {
-            try statusReport(installed: Result { try store.selectedPackage() }, selection: Result { try store.selectedService() })
-        } ?? statusReport(installed: .success(nil), selection: .success(.bundled))
+        let installed: Result<ReleasePackage?, any Error>
+        let selection: Result<BuildService, any Error>
+        do {
+            let snapshot = try store.withExistingLock(access: .read) {
+                (Result { try store.selectedPackage() }, Result { try store.selectedService() })
+            }
+            installed = snapshot?.0 ?? .success(nil)
+            selection = snapshot?.1 ?? Result { try store.selectedService() }
+        } catch {
+            installed = .failure(error)
+            selection = Result { try store.selectedService() }
+        }
+        return try statusReport(installed: installed, selection: selection)
     }
 
     private func statusReport(installed: Result<ReleasePackage?, any Error>, selection: Result<BuildService, any Error>) throws -> String {
@@ -165,35 +173,51 @@ struct InstallationManager {
             lines.append("Selected service: unavailable")
             issues.append("Selection error: \(error)")
         }
-        lines += issues
-        let settings = try environment.settings()
-        let loaded = try environment.isLoaded()
-        let running = try runningProcesses().filter { Self.serviceNames.contains($0.name) }
         if let package {
             lines.append("Source: \(package.manifest.sourceRevision)")
             lines.append("Built with Xcode: \(package.manifest.xcodeVersion) (\(package.manifest.xcodeBuildVersion))")
             lines.append("Installed custom service: \(package.service.path)")
+            do { try package.validateForUse() }
+            catch { issues.append("Installation error: \(error)") }
         }
-        let active = package != nil && settings.service == package?.service.path && settings.concurrentResolution == "0" && settings.legacyService == nil
-        let noOverrides = settings.service == nil && settings.concurrentResolution == nil && settings.legacyService == nil
-        let applied: String
-        if noOverrides {
-            applied = "bundled (no custom launchd settings)"
-        } else if case .failure = installed {
-            applied = "unverified (installed release unavailable)"
-        } else {
-            applied = active ? "custom release selected for future processes" : "conflicting or incomplete custom settings"
+        do {
+            try environment.requireGUI()
+            let settings = try environment.settings()
+            let active = package != nil && settings.service == package?.service.path && settings.concurrentResolution == "0" && settings.legacyService == nil
+            let noOverrides = settings.service == nil && settings.concurrentResolution == nil && settings.legacyService == nil
+            let applied: String
+            if noOverrides {
+                applied = "bundled (no custom launchd settings)"
+            } else if !issues.isEmpty {
+                applied = "unverified (installed release or selection unavailable)"
+            } else {
+                applied = active ? "custom release selected for future processes" : "conflicting or incomplete custom settings"
+            }
+            lines.append("Launchd selection: \(applied)")
+            if issues.isEmpty, let selectedService, !(selectedService == .custom ? active : noOverrides) {
+                lines.append("Launchd settings do not match the saved selection. Run use \(selectedService.rawValue) to reapply it.")
+            }
+            lines.append("XCBBUILDSERVICE_PATH: \(settings.service ?? "unset")")
+            lines.append("DisableConcurrentDependencyResolution: \(settings.concurrentResolution ?? "unset")")
+            lines.append("SWBBUILDSERVICE_PATH: \(settings.legacyService ?? "unset")")
+        } catch {
+            lines.append("Launchd selection: unavailable")
+            issues.append("Launchd environment error: \(error)")
         }
-        lines.append("Launchd selection: \(applied)")
-        if issues.isEmpty, let selectedService, !(selectedService == .custom ? active : noOverrides) {
-            lines.append("Launchd settings do not match the saved selection. Run use \(selectedService.rawValue) to reapply it.")
+        do { lines.append("Login job: \(try environment.isLoaded() ? "loaded" : "not loaded")") }
+        catch {
+            lines.append("Login job: unavailable")
+            issues.append("Login job error: \(error)")
         }
-        lines.append("XCBBUILDSERVICE_PATH: \(settings.service ?? "unset")")
-        lines.append("DisableConcurrentDependencyResolution: \(settings.concurrentResolution ?? "unset")")
-        lines.append("SWBBUILDSERVICE_PATH: \(settings.legacyService ?? "unset")")
-        lines.append("Login job: \(loaded ? "loaded" : "not loaded")")
-        lines.append("Running build services: \(running.isEmpty ? "none detected" : "")")
-        lines += running.map { "  PID \($0.pid): \($0.path)\($0.path == package?.service.path ? " [installed custom release]" : "")" }
+        do {
+            let running = try runningProcesses().filter { Self.serviceNames.contains($0.name) }
+            lines.append("Running build services: \(running.isEmpty ? "none detected" : "")")
+            lines += running.map { "  PID \($0.pid): \($0.path)\($0.path == package?.service.path ? " [installed custom release]" : "")" }
+        } catch {
+            lines.append("Running build services: unavailable")
+            issues.append("Process inspection error: \(error)")
+        }
+        lines += issues
         lines.append("Launchd settings do not prove that an already running Xcode uses this release.")
         lines.append(Self.restartInstructions)
         let report = lines.joined(separator: "\n")
@@ -202,7 +226,7 @@ struct InstallationManager {
     }
 
     private func requireUser() throws {
-        guard environment.userID != 0 else { throw ServiceError("Run as your logged-in user, without sudo.") }
+        guard environment.userID != 0 else { throw ServiceError("Installation management must run as the invoking user, not root.") }
     }
 
     private struct LaunchState {

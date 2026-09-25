@@ -50,12 +50,11 @@ struct InstallationStore {
 
     private func locked<T>(access: Access, _ operation: () throws -> T) throws -> T {
         try requireOwnership()
-        let descriptor = Darwin.open(root.appendingPathComponent(".lock").path, O_RDWR | O_NOFOLLOW)
+        let descriptor = Darwin.open(root.appendingPathComponent(".lock").path, (access == .read ? O_RDONLY : O_RDWR) | O_NOFOLLOW)
         guard descriptor >= 0 else { throw ServiceError("Cannot open installation lock: \(String(cString: strerror(errno)))") }
         defer { Darwin.close(descriptor) }
         guard flock(descriptor, LOCK_EX) == 0 else { throw ServiceError("Cannot lock installation: \(String(cString: strerror(errno)))") }
         defer { flock(descriptor, LOCK_UN) }
-        if access != .read { try discardStaging() }
         return try operation()
     }
 
@@ -77,8 +76,7 @@ struct InstallationStore {
                 try files.removeItem(at: candidate)
             }
         } catch {
-            if try exists(candidate) { try files.removeItem(at: candidate) }
-            throw error
+            try removeAfterFailure(candidate, error: error)
         }
         try requireOwnership()
     }
@@ -92,8 +90,6 @@ struct InstallationStore {
     }
 
     func selectedDirectory() throws -> URL? {
-        guard try exists(root) else { return nil }
-        try requireOwnership()
         guard try exists(current) else { return nil }
         let destination = try files.destinationOfSymbolicLink(atPath: current.path)
         let selected = (destination.hasPrefix("/") ? URL(fileURLWithPath: destination) : root.appendingPathComponent(destination)).standardizedFileURL
@@ -105,11 +101,7 @@ struct InstallationStore {
 
     func selectedPackage() throws -> ReleasePackage? {
         guard let selected = try selectedDirectory() else { return nil }
-        let package = try ReleasePackage(directory: selected)
-        guard selected.lastPathComponent == package.manifest.version else {
-            throw ServiceError("The selected release's directory and manifest version differ.")
-        }
-        return package
+        return try ReleasePackage(directory: selected)
     }
 
     func validateCommand() throws {
@@ -161,12 +153,12 @@ struct InstallationStore {
     }
 
     func stage(_ package: ReleasePackage) throws -> ReleasePackage {
+        try discardStaging()
         try ensureDirectory(versions)
         let destination = versions.appendingPathComponent(package.manifest.version)
         if try exists(destination) {
             let installed = try ReleasePackage(directory: destination)
-            guard installed.manifest == package.manifest,
-                  try package.matchesInstalledContents(at: destination) else {
+            guard try package.matchesInstalledContents(at: destination) else {
                 throw ServiceError("Version \(package.manifest.version) is already installed with different contents. Publish a new version.")
             }
             return installed
@@ -175,13 +167,11 @@ struct InstallationStore {
         let stagedPackage = staging.appendingPathComponent("package-\(UUID().uuidString)")
         do {
             try files.copyItem(at: package.directory, to: stagedPackage)
-            try ReleasePackage(directory: stagedPackage).validateForInstallation()
             guard Darwin.renamex_np(stagedPackage.path, destination.path, UInt32(RENAME_EXCL)) == 0 else {
                 throw ServiceError("Cannot publish installed release: \(String(cString: strerror(errno)))")
             }
         } catch {
-            if try exists(stagedPackage) { try files.removeItem(at: stagedPackage) }
-            throw error
+            try removeAfterFailure(stagedPackage, error: error)
         }
         return try ReleasePackage(directory: destination)
     }
@@ -191,13 +181,13 @@ struct InstallationStore {
             if try exists(current) { try files.removeItem(at: current) }
             return
         }
+        try discardStaging()
         try ensureDirectory(staging)
         let temporary = staging.appendingPathComponent("current-\(UUID().uuidString)")
         try files.createSymbolicLink(atPath: temporary.path, withDestinationPath: "versions/\(directory.lastPathComponent)")
         if Darwin.rename(temporary.path, current.path) != 0 {
             let failure = errno
-            try files.removeItem(at: temporary)
-            throw ServiceError("Cannot select release: \(String(cString: strerror(failure)))")
+            try removeAfterFailure(temporary, error: ServiceError("Cannot select release: \(String(cString: strerror(failure)))"))
         }
     }
 
@@ -254,6 +244,15 @@ struct InstallationStore {
         try files.removeItem(at: staging)
     }
 
+    private func removeAfterFailure(_ url: URL, error: any Error) throws -> Never {
+        do {
+            if try exists(url) { try files.removeItem(at: url) }
+        } catch let cleanupError {
+            throw ServiceError("\(error)\nCleanup also failed for \(url.path): \(cleanupError)")
+        }
+        throw error
+    }
+
     private func ensureDirectory(_ directory: URL) throws {
         guard directory.path.hasPrefix(home.path + "/") else {
             guard directory == home else { throw ServiceError("Installation path escapes the user's home.") }
@@ -265,8 +264,10 @@ struct InstallationStore {
             guard failure == EEXIST else {
                 throw ServiceError("Cannot create installation directory \(directory.path): \(String(cString: strerror(failure)))")
             }
-            guard try files.attributesOfItem(atPath: directory.path)[.type] as? FileAttributeType == .typeDirectory else {
-                throw ServiceError("Expected a directory, not a file or symbolic link: \(directory.path)")
+            // User-configured parent links are allowed; managed payload directories stay within the owned root.
+            let inspected = directory.path.hasPrefix(root.path + "/") ? directory : directory.resolvingSymlinksInPath()
+            guard try files.attributesOfItem(atPath: inspected.path)[.type] as? FileAttributeType == .typeDirectory else {
+                throw ServiceError("Expected a directory: \(directory.path)")
             }
         }
     }

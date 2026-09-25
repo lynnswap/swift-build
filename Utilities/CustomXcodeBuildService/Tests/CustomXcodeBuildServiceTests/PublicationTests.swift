@@ -99,7 +99,7 @@ func interruptedStagingDoesNotBecomeAnInstalledVersion(command: String) throws {
         #expect(fixture.runner.settings.isEmpty)
     }
 
-    #expect(try !fixture.store.exists(partial))
+    #expect(try fixture.store.exists(partial) == (command == "activate"))
     #expect(try String(contentsOf: external, encoding: .utf8) == "preserve")
 }
 
