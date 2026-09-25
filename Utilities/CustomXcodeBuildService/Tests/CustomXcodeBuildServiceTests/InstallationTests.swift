@@ -233,6 +233,25 @@ func refusesForeignEnvironment(key: String) throws {
     #expect(try String(contentsOf: selected.resources.appendingPathComponent("SwiftBuild_SWBCore.bundle/spec.txt"), encoding: .utf8) == "specification")
 }
 
+@Test(arguments: ["command", "service", "plugin"])
+func reinstallDoesNotReusePayloadsThatLostExecutePermission(binary: String) throws {
+    let fixture = try Fixture()
+    let source = try fixture.package("custom-v1.0.0")
+    _ = try fixture.manager.install(from: source)
+    let installed = try #require(try fixture.store.selectedPackage())
+    let executable = binary == "command" ? installed.executable : (binary == "service" ? installed.service : installed.hostPlugin)
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: executable.path)
+    let settings = fixture.runner.settings
+    let mutations = fixture.runner.launchctlMutations
+
+    #expect(throws: ServiceError.self) { try fixture.manager.install(from: source) }
+
+    #expect(fixture.runner.settings == settings)
+    #expect(fixture.runner.launchctlMutations == mutations)
+    #expect(fixture.runner.loaded)
+    #expect(try fixture.store.selectedDirectory() == installed.directory)
+}
+
 @Test func installsWithDifferentXcodeBuild() throws {
     let fixture = try Fixture()
     fixture.runner.xcodeVersion = "Xcode 27.0\nBuild version 27A266a\n"

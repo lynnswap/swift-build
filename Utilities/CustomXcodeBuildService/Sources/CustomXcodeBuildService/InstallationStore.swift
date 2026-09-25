@@ -158,6 +158,7 @@ struct InstallationStore {
         let destination = versions.appendingPathComponent(package.manifest.version)
         if try exists(destination) {
             let installed = try ReleasePackage(directory: destination)
+            try installed.validateForUse()
             guard try package.matchesInstalledContents(at: destination) else {
                 throw ServiceError("Version \(package.manifest.version) is already installed with different contents. Publish a new version.")
             }
