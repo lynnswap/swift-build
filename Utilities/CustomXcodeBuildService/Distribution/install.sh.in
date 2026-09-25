@@ -18,8 +18,8 @@ repository='@REPOSITORY@'
 archive='custom-xcode-build-service-darwin-arm64.tar.gz'
 
 usage() {
-    printf '%s\n' 'Usage: install.sh' \
-        'Downloads the prebuilt custom Xcode build service and installs it for the current user.'
+    printf '%s\n' 'Usage: sudo sh install.sh' \
+        'Downloads the prebuilt custom Xcode build service and installs it for the user who invoked sudo.'
 }
 
 case "$#:${1:-}" in
@@ -32,8 +32,12 @@ if [ "$(uname -s)" != Darwin ] || [ "$(sysctl -n hw.optional.arm64)" != 1 ]; the
     printf '%s\n' 'This release requires macOS on Apple silicon.' >&2
     exit 1
 fi
-if [ "$(id -u)" = 0 ]; then
-    printf '%s\n' 'Run this installer as your logged-in user, without sudo.' >&2
+if [ "$(id -u)" != 0 ]; then
+    printf '%s\n' 'Run this installer with sudo: curl -fsSL https://github.com/lynnswap/swift-build/releases/latest/download/install.sh | sudo sh' >&2
+    exit 1
+fi
+if ! [ "${SUDO_UID:-0}" -gt 0 ] 2>/dev/null; then
+    printf '%s\n' 'Run this installer using sudo from your logged-in user account; a root login has no installation user.' >&2
     exit 1
 fi
 
@@ -49,7 +53,8 @@ case "$version:$repository" in
 esac
 
 download_url="https://github.com/$repository/releases/download/$version"
-temporary_directory=$(mktemp -d "${TMPDIR:-/tmp}/custom-xcode-build-service.XXXXXX")
+# The original user must be able to traverse this path after dropping root.
+temporary_directory=$(mktemp -d /tmp/custom-xcode-build-service.XXXXXX)
 cleanup() {
     rm -rf "$temporary_directory"
 }
@@ -99,5 +104,6 @@ curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
     tar -xzf "$archive" --no-same-owner --no-same-permissions -C package
 )
 
+chown -R "$SUDO_UID" "$temporary_directory"
 "$temporary_directory/package/bin/custom-xcode-build-service" install \
     --package "$temporary_directory/package"

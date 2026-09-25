@@ -24,9 +24,23 @@ struct ProcessResult {
 
 protocol ProcessRunning {
     func run(_ executable: String, _ arguments: [String]) throws -> ProcessResult
+    func runAttached(_ executable: String, _ arguments: [String]) throws -> Int32
 }
 
 struct ProcessRunner: ProcessRunning {
+    func runAttached(_ executable: String, _ arguments: [String]) throws -> Int32 {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        // Preserve the command's input, output, and diagnostics across the session switch.
+        process.standardInput = FileHandle.standardInput
+        process.standardOutput = FileHandle.standardOutput
+        process.standardError = FileHandle.standardError
+        try process.run()
+        process.waitUntilExit()
+        return process.terminationReason == .uncaughtSignal ? 128 + process.terminationStatus : process.terminationStatus
+    }
+
     func run(_ executable: String, _ arguments: [String]) throws -> ProcessResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)

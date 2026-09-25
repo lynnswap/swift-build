@@ -37,6 +37,9 @@ class ReleaseInstallerTests(unittest.TestCase):
         self.assets.mkdir()
         self.commands = self.root / "commands"
         self.commands.mkdir()
+        identity = self.commands / "id"
+        identity.write_text("#!/bin/sh\necho 0\n")
+        identity.chmod(0o755)
         curl = self.commands / "curl"
         curl.write_text(
             "#!/usr/bin/python3\n"
@@ -65,6 +68,7 @@ class ReleaseInstallerTests(unittest.TestCase):
                 "TMPDIR": str(self.root),
                 "INSTALLER_TEST_ASSETS": str(self.assets),
                 "INSTALL_RECORD": str(self.record),
+                "SUDO_UID": str(os.getuid()),
             }
         )
 
@@ -153,6 +157,25 @@ class ReleaseInstallerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("prebuilt", result.stdout)
         self.assertFalse(self.record.exists())
+
+    def test_installer_requires_sudo_before_downloading(self):
+        (self.commands / "id").write_text("#!/bin/sh\necho 501\n")
+        result = self.run_installer()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("| sudo sh", result.stderr)
+        self.assertFalse(self.record.exists())
+
+    def test_root_login_without_sudo_user_is_rejected_before_downloading(self):
+        for uid in [None, "0", "invalid", "-1"]:
+            with self.subTest(uid=uid):
+                if uid is None:
+                    self.environment.pop("SUDO_UID", None)
+                else:
+                    self.environment["SUDO_UID"] = uid
+                result = self.run_installer()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("root login has no installation user", result.stderr)
+                self.assertFalse(self.record.exists())
 
 
 if __name__ == "__main__":

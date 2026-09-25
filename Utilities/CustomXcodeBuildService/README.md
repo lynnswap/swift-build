@@ -22,17 +22,21 @@ Use `custom-xcode-build-service <command>`:
 
 - Apple silicon and macOS 26+.
 - Xcode selected in **Settings > Locations > Command Line Tools** for builds.
-- A terminal in your logged-in macOS desktop session. Run without `sudo`.
+- A logged-in macOS desktop session for your user account.
+- Administrator access through `sudo` for installation.
 
 ## Install or Update
 
 ```sh
-curl -fsSL https://github.com/lynnswap/swift-build/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/lynnswap/swift-build/releases/latest/download/install.sh | sudo sh
 ```
 
-This downloads and verifies the prebuilt release. The first install selects the
-custom service. Run the same command to update; updates preserve your choice of
-custom or bundled service.
+Run this from your own user account and enter your password when prompted.
+The installer downloads and verifies the prebuilt release, enters your macOS
+desktop session, and drops administrator privileges before installing it for
+your user account. This also works when your terminal runs in a background session.
+The first install selects the custom service. Run the same command to update;
+updates preserve your choice of custom or bundled service.
 
 The CLI is installed in `~/.local/bin`. If that directory is not on your `PATH`,
 add the following to your shell configuration (`~/.zshrc` for zsh):
@@ -51,7 +55,7 @@ or run `make` / `xcodebuild` as usual.
 For a downloaded and verified archive, extract it and run from its root:
 
 ```sh
-./bin/custom-xcode-build-service install
+sudo ./bin/custom-xcode-build-service install
 ```
 
 Without `--package`, `install` uses the package containing that executable.
@@ -60,6 +64,10 @@ Keep the extracted directory structure intact.
 </details>
 
 ## Select a Service
+
+Run management commands from your desktop session. If the command reports that
+it needs to enter that session, use `sudo` with the full executable path, for
+example `sudo ~/.local/bin/custom-xcode-build-service use bundled`.
 
 Switch to Xcode's bundled service while keeping the custom service installed:
 

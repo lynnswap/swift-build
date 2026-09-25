@@ -691,6 +691,74 @@ func uninstallRemovesIncompleteInstallation(missingPath: String) throws {
     #expect(try !fixture.store.exists(fixture.store.root))
 }
 
+@Test(arguments: ["Aqua", "Background", "System", "wrongUID"])
+func identifiesWhetherTheCommandNeedsToEnterTheUsersGUISession(context: String) throws {
+    let fixture = try Fixture()
+    fixture.runner.managerName = context == "wrongUID" ? "Aqua" : context
+    fixture.runner.managerUserID = context == "wrongUID" ? "502" : "501"
+    #expect(try fixture.manager.environment.isCurrentGUI() == (context == "Aqua"))
+    #expect(fixture.runner.attachedCommands.isEmpty)
+    #expect(fixture.runner.launchctlMutations.isEmpty)
+}
+
+@Test(arguments: [Int32(0), 1, 130])
+func guiRelaunchDropsAdministratorCredentialsAndPreservesArgumentsAndExitStatus(status: Int32) throws {
+    let fixture = try Fixture()
+    fixture.runner.managerName = "Background"
+    fixture.runner.attachedStatus = status
+    let executable = "/tmp/release with spaces/bin/custom-xcode-build-service"
+    let arguments = ["install", "--package", "/tmp/package 'with' $literal characters"]
+
+    #expect(try fixture.manager.environment.runInGUI(executable, arguments: arguments) == status)
+
+    #expect(fixture.runner.attachedCommands == [[
+        "/bin/launchctl", "asuser", "501",
+        "/usr/bin/sudo", "-H", "-u", "#501", "--", executable,
+    ] + arguments])
+    #expect(fixture.runner.launchctlMutations.isEmpty)
+    #expect(try !fixture.store.exists(fixture.store.root))
+}
+
+@Test func missingDesktopSessionDoesNotRelaunchTheCommand() throws {
+    let fixture = try Fixture()
+    fixture.runner.failOnce = ["print", "gui/501"]
+    #expect(throws: ServiceError.self) {
+        try fixture.manager.environment.runInGUI("/tmp/custom-xcode-build-service", arguments: ["install"])
+    }
+    #expect(fixture.runner.attachedCommands.isEmpty)
+    #expect(fixture.runner.launchctlMutations.isEmpty)
+}
+
+@Test(arguments: ["501", "502"])
+func sudoInstallationTargetsTheInvokingUser(uid: String) throws {
+    #expect(try CustomXcodeBuildService.installationUserID(currentUserID: 0, sudoUserID: uid) == UInt32(uid))
+}
+
+@Test(arguments: [nil, "0", "", "invalid", "-1", "4294967296"] as [String?])
+func rootInstallationRequiresAnIdentifiableNonRootInvokingUser(uid: String?) {
+    #expect(throws: ServiceError.self) {
+        try CustomXcodeBuildService.installationUserID(currentUserID: 0, sudoUserID: uid)
+    }
+}
+
+@Test func unprivilegedCommandsUseTheirActualUserInsteadOfInheritedSudoMetadata() throws {
+    #expect(try CustomXcodeBuildService.installationUserID(currentUserID: 501, sudoUserID: "502") == 501)
+}
+
+@Test func guiRelaunchDoesNotInstallAsRoot() throws {
+    let fixture = try Fixture()
+    let environment = LaunchEnvironment(runner: fixture.runner, userID: 0)
+    #expect(throws: ServiceError.self) {
+        try environment.runInGUI("/tmp/custom-xcode-build-service", arguments: ["install"])
+    }
+    #expect(fixture.runner.attachedCommands.isEmpty)
+}
+
+@Test(arguments: ["exit 7", "kill -TERM $$"])
+func attachedProcessPreservesFailureStatus(script: String) throws {
+    #expect(try ProcessRunner().runAttached("/bin/sh", ["-c", script]) == (script == "exit 7" ? 7 : 143))
+}
+
 @Test(arguments: ["Background", "System", "wrongUID"], ["install", "activate", "uninstall", "status", "use custom", "use bundled"])
 func rejectsForeignLaunchdContextBeforeFilesystemAndEnvironmentChanges(context: String, command: String) throws {
     let fixture = try Fixture()
@@ -987,6 +1055,13 @@ final class FakeRunner: ProcessRunning {
     var managerName = "Aqua"
     var managerUserID = "501"
     var launchctlMutations: [[String]] = []
+    var attachedCommands: [[String]] = []
+    var attachedStatus: Int32 = 0
+
+    func runAttached(_ executable: String, _ arguments: [String]) throws -> Int32 {
+        attachedCommands.append([executable] + arguments)
+        return attachedStatus
+    }
 
     func run(_ executable: String, _ arguments: [String]) throws -> ProcessResult {
         if executable == "/usr/bin/uname" { return .init(status: 0, output: "arm64\n") }
