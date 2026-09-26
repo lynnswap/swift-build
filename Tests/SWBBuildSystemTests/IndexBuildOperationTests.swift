@@ -11,6 +11,8 @@
 //===----------------------------------------------------------------------===//
 
 import struct Foundation.Date
+import struct Foundation.Data
+import class Foundation.JSONDecoder
 
 import Testing
 
@@ -20,12 +22,147 @@ import struct SWBProtocol.PreparedForIndexResultInfo
 import class SWBTaskConstruction.ProductPlan
 import SWBTestSupport
 import SWBTaskExecution
-import SWBUtil
+@_spi(Testing) import SWBUtil
 import SWBMacro
 
 @Suite
 fileprivate struct IndexBuildOperationTests: CoreBasedTests {
     static let excludedStartTaskTypes = Set(["Gate", "CreateBuildDirectory", ProductPlan.preparedForIndexPreCompilationRuleName, ProductPlan.preparedForIndexModuleContentRuleName, "ClangStatCache", "SwiftExplicitDependencyCompileModuleFromInterface", "SwiftExplicitDependencyGeneratePcm"])
+
+    private func arenaInfo(from path: Path) -> ArenaInfo {
+        return ArenaInfo(derivedDataPath: path.dirname, buildProductsPath: path, buildIntermediatesPath: path, pchPath: path, indexRegularBuildProductsPath: nil, indexRegularBuildIntermediatesPath: nil, indexPCHPath: path, indexDataStoreFolderPath: nil, indexEnableDataStore: false)
+    }
+
+    @Test(.requireSDKs(.macOS))
+    func swiftExplicitModulesInIndexArenaExecutes() async throws {
+        try await withTemporaryDirectory { tmpDirPath in
+            let testWorkspace = try await TestWorkspace(
+                "Test",
+                sourceRoot: tmpDirPath.join("Test"),
+                projects: [
+                    TestProject(
+                        "aProject",
+                        groupTree: TestGroup(
+                            "SomeFiles",
+                            children: [
+                                TestFile("app.swift"),
+                                TestFile("fwk.swift"),
+                                TestFile("core.swift"),
+                            ]),
+                        buildConfigurations: [
+                            TestBuildConfiguration(
+                                "Debug",
+                                buildSettings: [
+                                    "PRODUCT_NAME": "$(TARGET_NAME)",
+                                    "SWIFT_VERSION": swiftVersion,
+                                    "GENERATE_INFOPLIST_FILE": "YES",
+                                    "ALWAYS_SEARCH_USER_PATHS": "NO",
+                                    "SWIFT_ENABLE_EXPLICIT_MODULES": "YES",
+                                    "ARCHS": Architecture.hostStringValue ?? "undefined_arch",
+                                    "MACOSX_DEPLOYMENT_TARGET": "12.0",
+                                ])],
+                        targets: [
+                            TestStandardTarget(
+                                "AppTarget",
+                                type: .application,
+                                buildConfigurations: [
+                                    TestBuildConfiguration("Debug"),
+                                ],
+                                buildPhases: [
+                                    TestSourcesBuildPhase([
+                                        "app.swift",
+                                    ]),
+                                    TestFrameworksBuildPhase([
+                                        "FwkTarget.framework",
+                                    ]),
+                                ],
+                                dependencies: ["FwkTarget"]),
+                            TestStandardTarget(
+                                "FwkTarget",
+                                type: .framework,
+                                buildConfigurations: [
+                                    TestBuildConfiguration("Debug"),
+                                ],
+                                buildPhases: [
+                                    TestSourcesBuildPhase([
+                                        "fwk.swift",
+                                    ]),
+                                    TestFrameworksBuildPhase([
+                                        "CoreTarget.framework",
+                                    ]),
+                                ],
+                                dependencies: ["CoreTarget"]),
+                            TestStandardTarget(
+                                "CoreTarget",
+                                type: .framework,
+                                buildConfigurations: [
+                                    TestBuildConfiguration("Debug"),
+                                ],
+                                buildPhases: [
+                                    TestSourcesBuildPhase([
+                                        "core.swift",
+                                    ]),
+                                ]),
+                        ]),
+                ])
+
+            let tester = try await BuildOperationTester(getCore(), testWorkspace, simulated: false, buildDescriptionMaxCacheSize: (inMemory: 1, onDisk: 2))
+            try await tester.fs.writeFileContents(testWorkspace.sourceRoot.join("aProject/app.swift")) { stream in
+                stream <<< "import FwkTarget\npublic func app() { foo() }"
+            }
+            try await tester.fs.writeFileContents(testWorkspace.sourceRoot.join("aProject/fwk.swift")) { stream in
+                stream <<< "import CoreTarget\npublic func foo() { baz() }"
+            }
+            try await tester.fs.writeFileContents(testWorkspace.sourceRoot.join("aProject/core.swift")) { stream in
+                stream <<< "public func baz() {}"
+            }
+
+            let parameters = BuildParameters(action: .indexBuild, configuration: "Debug", arena: arenaInfo(from: tmpDirPath.join("build")))
+            let buildTargets = tester.workspace.allTargets.map { BuildRequest.BuildTargetInfo(parameters: parameters, target: $0) }
+            let request = BuildRequest(parameters: parameters, buildTargets: buildTargets, continueBuildingAfterErrors: true, useParallelTargets: true, useImplicitDependencies: false, useDryRun: false, buildCommand: .prepareForIndexing(buildOnlyTheseTargets: nil, enableIndexBuildArena: true))
+
+            try await UserDefaults.withEnvironment(["EnableSwiftExplicitModulesInIndexBuild": "YES"]) {
+                // Prep with explicit modules on, then grab FwkTarget's compilation-requirements task.
+                var compilationRequirementsTask: (any ExecutableTask)?
+                try await tester.checkBuild(parameters: parameters, runDestination: .macOS, buildRequest: request, persistent: true) { results in
+                    results.checkNoErrors()
+                    results.checkTask(.matchTargetName("FwkTarget"), .matchRuleItem("SwiftDriver Compilation Requirements")) { task in
+                        compilationRequirementsTask = task
+                    }
+                }
+
+                // The sidecar records FwkTarget's explicit module map (which exists on disk) and a clang-importer target.
+                let sidecars = try tester.fs.traverse(tmpDirPath) { path -> Path? in
+                    path.basename.hasPrefix("FwkTarget-") && path.basename.hasSuffix(".index-explicit-modules.json") ? path : nil
+                }
+                let sidecarPath = try #require(sidecars.first, "expected FwkTarget's explicit-modules index sidecar to be written during prep")
+                let info = try JSONDecoder().decode(IndexExplicitModuleInfo.self, from: Data(tester.fs.read(sidecarPath).bytes))
+                let mapIndex = try #require(info.resolvedArguments.firstIndex(of: "-explicit-swift-module-map-file"), "recorded invocation should carry an explicit swift module map")
+                let mapPath = try #require(info.resolvedArguments[safe: mapIndex + 1], "explicit swift module map flag should be followed by a path")
+                #expect(tester.fs.exists(Path(mapPath)), "explicit swift module map referenced by the sidecar should exist")
+                let clangTargetIndex = try #require(info.resolvedArguments.firstIndex(of: "-clang-target"), "prep should record a clang-importer target when the deployment target is below the SDK")
+                let clangTarget = try #require(info.resolvedArguments[safe: clangTargetIndex + 1], "-clang-target should be followed by a triple")
+
+                // The reader grafts the map and clang-target into the index args, each `-Xfrontend`-wrapped for the driver.
+                let core = try await getCore()
+                let swiftSpec = try core.specRegistry.getSpec(ofType: SwiftCompilerSpec.self)
+                let fwkSource = testWorkspace.sourceRoot.join("aProject/fwk.swift")
+                let task = try #require(compilationRequirementsTask)
+                let indexingInfo = swiftSpec.generateIndexingInfo(for: task, input: TaskGenerateIndexingInfoInput(requestedSourceFile: fwkSource, outputPathOnly: false, enableIndexBuildArena: true)).only?.indexingInfo as? SwiftSourceFileIndexingInfo
+                let grafted = try #require(indexingInfo?.compilerArguments)
+
+                let graftMapFlag = try #require(grafted.firstIndex(of: "-explicit-swift-module-map-file"), "index args should graft the explicit module map")
+                #expect(grafted[safe: graftMapFlag - 1] == "-Xfrontend")
+                #expect(grafted[safe: graftMapFlag + 1] == "-Xfrontend")
+                #expect(grafted[safe: graftMapFlag + 2] == mapPath)
+                let graftClangTarget = try #require(grafted.firstIndex(of: "-clang-target"), "index args should graft the clang-importer target")
+                #expect(grafted[safe: graftClangTarget - 1] == "-Xfrontend")
+                #expect(grafted[safe: graftClangTarget + 1] == "-Xfrontend")
+                #expect(grafted[safe: graftClangTarget + 2] == clangTarget)
+            }
+        }
+    }
+
 
     @Test(.requireSDKs(.macOS), .requireXcode16())
     func legacyPrebuild() async throws {
