@@ -203,11 +203,6 @@ public struct SwiftSourceFileIndexingInfo: SourceFileIndexingInfo {
         var result: [ByteString] = []
         var index = 0
 
-        // Drop the base line's implicit-modules inputs, which are dead once we reuse prep's explicit map:
-        // its module cache paths and the `-ipi-clang-module` markers that only steer implicit clang builds.
-        let extraRemoveArgs: Set<ByteString> = explicitModuleInfo != nil
-            ? ["-module-cache-path", "-clang-scanner-module-cache-path", "-sdk-module-cache-path", "-ipi-clang-module"] : []
-
         if integratedDriver {
             index = commandLine.firstIndex(of: "--") ?? commandLine.endIndex
             index += 1
@@ -226,7 +221,7 @@ public struct SwiftSourceFileIndexingInfo: SourceFileIndexingInfo {
             }
 
             // Skip unwanted flags and their argument
-            guard !removeArgs.contains(arg), !newDriverArgs.contains(arg), !extraRemoveArgs.contains(arg) else {
+            guard !removeArgs.contains(arg), !newDriverArgs.contains(arg) else {
                 index += 1
                 continue
             }
@@ -238,7 +233,7 @@ public struct SwiftSourceFileIndexingInfo: SourceFileIndexingInfo {
                     continue
                 }
 
-                if arg == "-Xfrontend", removeFrontendArgs.contains(nextArg) || extraRemoveArgs.contains(nextArg), commandLine[safe: index + 1] == "-Xfrontend" {
+                if arg == "-Xfrontend", removeFrontendArgs.contains(nextArg), commandLine[safe: index + 1] == "-Xfrontend" {
                     index += 3
                     continue
                 }
@@ -283,9 +278,7 @@ public struct SwiftSourceFileIndexingInfo: SourceFileIndexingInfo {
             if let i = args.firstIndex(of: "-explicit-swift-module-map-file"), let map = args[safe: i + 1] {
                 result += ["-Xfrontend", "-explicit-swift-module-map-file", "-Xfrontend", ByteString(encodingAsUTF8: map)]
             }
-            if args.contains("-disable-implicit-swift-modules") {
-                result += ["-Xfrontend", "-disable-implicit-swift-modules"]
-            }
+            // Keep implicit imports enabled: an edited buffer may import modules absent from the last preparation.
             // Carry prep's clang-importer target, or the importer defaults to the Swift `-target` and rejects
             // the pinned SDK clang modules as a target mismatch.
             if let i = args.firstIndex(of: "-clang-target"), let triple = args[safe: i + 1] {

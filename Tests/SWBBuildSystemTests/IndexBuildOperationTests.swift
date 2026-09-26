@@ -177,6 +177,17 @@ fileprivate struct IndexBuildOperationTests: CoreBasedTests {
                 #expect(grafted[safe: graftClangTarget + 1] == "-Xfrontend")
                 #expect(grafted[safe: graftClangTarget + 2] == clangTarget)
 
+                if !bridgingHeader && !longCommandLine {
+                    try await tester.fs.writeFileContents(appSource) { stream in
+                        stream <<< "import Foundation\nimport FwkTarget\npublic func app() { foo() }"
+                    }
+                    let diagnostics = try await runProcess([swiftCompilerPath.str] + grafted + ["-typecheck"], workingDirectory: tmpDirPath, redirectStderr: true)
+                    #expect(!diagnostics.contains("error:"))
+                    try await tester.fs.writeFileContents(appSource) { stream in
+                        stream <<< "import FwkTarget\npublic func app() { foo() }"
+                    }
+                }
+
                 // Changing Clang flags can change its explicit modules even when the sidecar and map still exist.
                 let changedParameters = parameters.mergingOverrides(["OTHER_SWIFT_FLAGS": "$(inherited) -Xcc -DINDEX_CONTEXT_CHANGED=1"])
                 let changedRequest = BuildRequest(parameters: changedParameters, buildTargets: tester.workspace.allTargets.map {
@@ -199,6 +210,15 @@ fileprivate struct IndexBuildOperationTests: CoreBasedTests {
                         #expect(arguments.contains("-explicit-swift-module-map-file"))
                     }
                 }
+
+                let failingParameters = changedParameters.mergingOverrides(["OTHER_SWIFT_FLAGS": "-Xfrontend -intentional-index-preparation-failure"])
+                let failingRequest = BuildRequest(parameters: failingParameters, buildTargets: tester.workspace.allTargets.map {
+                    BuildRequest.BuildTargetInfo(parameters: failingParameters, target: $0)
+                }, continueBuildingAfterErrors: true, useParallelTargets: true, useImplicitDependencies: false, useDryRun: false, buildCommand: request.buildCommand)
+                try await tester.checkBuild(parameters: failingParameters, runDestination: .macOS, buildRequest: failingRequest, persistent: true) { results in
+                    #expect(results.getErrors().contains { $0.contains("intentional-index-preparation-failure") })
+                }
+                #expect(!tester.fs.exists(sidecarPath))
             }
         }
     }

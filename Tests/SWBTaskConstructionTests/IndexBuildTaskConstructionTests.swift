@@ -663,9 +663,11 @@ fileprivate struct IndexBuildTaskConstructionTests: CoreBasedTests {
                         outputFile: Path("/tmp/main.o"), enableIndexBuildArena: true,
                         integratedDriver: true, explicitModuleInfo: metadata)
                     let arguments = try #require(info.compilerArguments)
-                    #expect(arguments.contains("-ipi-clang-module") == !enabled)
-                    #expect(arguments.contains("DriverHelpers") == !enabled)
-                    #expect(arguments.contains("FrontendHelpers") == !enabled)
+                    #expect(arguments.contains("-ipi-clang-module"))
+                    #expect(arguments.contains("DriverHelpers"))
+                    #expect(arguments.contains("FrontendHelpers"))
+                    #expect(arguments.contains("-module-cache-path"))
+                    #expect(!arguments.contains("-disable-implicit-swift-modules"))
                     #expect(arguments.contains("-warn-long-function-bodies"))
                     #expect(arguments.contains("100"))
                 }
