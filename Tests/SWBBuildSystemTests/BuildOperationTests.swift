@@ -7256,7 +7256,7 @@ That command depends on command in Target 'agg2' (project \'aProject\'): script 
                     try await tester.fs.writeFileContents(swiftFile) { stream in }
                 }
 
-                try await tester.checkBuild(runDestination: .anyiOSDevice) { results -> Void in
+                try await tester.checkBuild(runDestination: destination) { results -> Void in
                     results.checkNoErrors()
 
                     for arch in expectedArchs {
@@ -7288,12 +7288,12 @@ That command depends on command in Target 'agg2' (project \'aProject\'): script 
 
     @Test(.requireSDKs(.iOS))
     func testEnablingSecurityArchBuildSettings_iOS() async throws {
-        try await testEnablingSecurityArchBuildSettings(.iOS)
+        try await testEnablingSecurityArchBuildSettings(.anyiOSDevice)
     }
 
     @Test(.requireSDKs(.macOS))
     func testEnablingSecurityArchBuildSettings_macOS() async throws {
-        try await testEnablingSecurityArchBuildSettings(.macOS)
+        try await testEnablingSecurityArchBuildSettings(.anyMac)
     }
 
     @Test(.requireSDKs(.macOS))
