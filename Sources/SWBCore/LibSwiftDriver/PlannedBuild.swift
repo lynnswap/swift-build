@@ -462,6 +462,13 @@ extension LibSwiftDriver {
             }
         }
 
+        /// Resolve a target job's arguments without replacing them with a response file.
+        package func resolvedCommandLine(for job: PlannedSwiftDriverJob) throws -> [String] {
+            try dispatchQueue.blocking_sync {
+                try argsResolver.resolveArgumentList(for: driverJob(for: job), useResponseFiles: .disabled)
+            }
+        }
+
         public func compilationPlannedDriverJobs() -> ArraySlice<PlannedSwiftDriverJob> {
             dispatchQueue.blocking_sync {
                 self.plannedTargetJobs[compilationIndices]

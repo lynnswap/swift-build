@@ -13,7 +13,6 @@
 public import SWBCore
 import SWBLibc
 import SWBUtil
-import Foundation
 
 final public class SwiftDriverTaskAction: TaskAction, BuildValueValidatingTaskAction {
     public override class var toolIdentifier: String {
@@ -50,6 +49,12 @@ final public class SwiftDriverTaskAction: TaskAction, BuildValueValidatingTaskAc
         }
 
         do {
+            // A failed or cancelled preparation must not leave the previous handoff available.
+            if case .prepareForIndexing(_, true) = executionDelegate.buildCommand,
+               let path = driverPayload.indexExplicitModuleInfoPath, executionDelegate.fs.exists(path) {
+                try executionDelegate.fs.remove(path)
+            }
+
             let environment: [String: String]
             if let executionEnvironment = executionDelegate.environment {
                 environment = executionEnvironment.merging(task.environment.bindingsDictionary, uniquingKeysWith: { a, b in b })
@@ -103,6 +108,9 @@ final public class SwiftDriverTaskAction: TaskAction, BuildValueValidatingTaskAc
             }
 
             guard success else { return .failed }
+        } catch {
+            outputDelegate.error(error)
+            return .failed
         }
 
         do {
@@ -158,4 +166,5 @@ final public class SwiftDriverTaskAction: TaskAction, BuildValueValidatingTaskAc
             return .failed
         }
     }
+
 }
