@@ -173,8 +173,10 @@ final public class SwiftDriverTaskAction: TaskAction, BuildValueValidatingTaskAc
 
         do {
             let plannedBuild = try dependencyGraph.queryPlannedBuild(for: driverPayload.uniqueID)
-            guard let job = plannedBuild.compilationRequirementsPlannedDriverJobs().first else { return }
-            let commandLine = job.driverJob.commandLine.map { $0.asString }
+            guard let job = plannedBuild.compilationRequirementsPlannedDriverJobs().first(where: {
+                $0.driverJob.categorizer.isEmitModule || $0.driverJob.categorizer.isCompile
+            }) else { return }
+            let commandLine = try plannedBuild.resolvedCommandLine(for: job)
             let info = IndexExplicitModuleInfo(resolvedArguments: commandLine)
 
             let encoder = JSONEncoder()
