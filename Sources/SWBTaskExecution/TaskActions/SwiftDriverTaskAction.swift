@@ -177,7 +177,7 @@ final public class SwiftDriverTaskAction: TaskAction, BuildValueValidatingTaskAc
                 $0.driverJob.categorizer.isEmitModule || $0.driverJob.categorizer.isCompile
             }) else { return }
             let commandLine = try plannedBuild.resolvedCommandLine(for: job)
-            let info = IndexExplicitModuleInfo(resolvedArguments: commandLine)
+            let info = IndexExplicitModuleInfo(driverCommandLine: driverPayload.commandLine, compilerVersion: driverPayload.compilerVersion, resolvedArguments: commandLine)
 
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys, .prettyPrinted]

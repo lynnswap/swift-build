@@ -176,6 +176,29 @@ fileprivate struct IndexBuildOperationTests: CoreBasedTests {
                 #expect(grafted[safe: graftClangTarget - 1] == "-Xfrontend")
                 #expect(grafted[safe: graftClangTarget + 1] == "-Xfrontend")
                 #expect(grafted[safe: graftClangTarget + 2] == clangTarget)
+
+                // Changing Clang flags can change its explicit modules even when the sidecar and map still exist.
+                let changedParameters = parameters.mergingOverrides(["OTHER_SWIFT_FLAGS": "$(inherited) -Xcc -DINDEX_CONTEXT_CHANGED=1"])
+                let changedRequest = BuildRequest(parameters: changedParameters, buildTargets: tester.workspace.allTargets.map {
+                    BuildRequest.BuildTargetInfo(parameters: changedParameters, target: $0)
+                }, continueBuildingAfterErrors: true, useParallelTargets: true, useImplicitDependencies: false, useDryRun: false, buildCommand: request.buildCommand)
+                try await tester.checkBuildDescription(changedParameters, runDestination: .macOS, buildRequest: changedRequest, persistent: true) { results in
+                    results.checkNoErrors()
+                    try results.checkTask(.matchTargetName("AppTarget"), .matchRuleItem("SwiftDriver Compilation Requirements")) { changedTask in
+                        let changedInfo = swiftSpec.generateIndexingInfo(for: changedTask, input: TaskGenerateIndexingInfoInput(requestedSourceFile: appSource, outputPathOnly: false, enableIndexBuildArena: true)).only?.indexingInfo as? SwiftSourceFileIndexingInfo
+                        let arguments = try #require(changedInfo?.compilerArguments)
+                        #expect(arguments.contains("-DINDEX_CONTEXT_CHANGED=1"))
+                        #expect(!arguments.contains("-explicit-swift-module-map-file"))
+                    }
+                }
+                try await tester.checkBuild(parameters: changedParameters, runDestination: .macOS, buildRequest: changedRequest, persistent: true) { results in
+                    results.checkNoErrors()
+                    try results.checkTask(.matchTargetName("AppTarget"), .matchRuleItem("SwiftDriver Compilation Requirements")) { changedTask in
+                        let changedInfo = swiftSpec.generateIndexingInfo(for: changedTask, input: TaskGenerateIndexingInfoInput(requestedSourceFile: appSource, outputPathOnly: false, enableIndexBuildArena: true)).only?.indexingInfo as? SwiftSourceFileIndexingInfo
+                        let arguments = try #require(changedInfo?.compilerArguments)
+                        #expect(arguments.contains("-explicit-swift-module-map-file"))
+                    }
+                }
             }
         }
     }

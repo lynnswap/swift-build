@@ -390,6 +390,7 @@ public struct SwiftLocalizationPayload: Serializable, Sendable {
 public struct SwiftDriverPayload: Serializable, TaskPayload, Encodable {
     public let uniqueID: String
     public let compilerLocation: LibSwiftDriver.CompilerLocation
+    public let compilerVersion: String
     public let moduleName: String
     public let outputPrefix: String
     public let tempDirPath: Path
@@ -411,9 +412,10 @@ public struct SwiftDriverPayload: Serializable, TaskPayload, Encodable {
     public let scannerDiagnosticsOutputPath: Path?
     public let diagnosticAttachmentInfo: LibclangDiagnosticAttachmentInfo?
 
-    internal init(uniqueID: String, compilerLocation: LibSwiftDriver.CompilerLocation, moduleName: String, outputPrefix: String, tempDirPath: Path, explicitModulesTempDirPath: Path, variant: String, slice: String, cohortArchitectures: [String], eagerCompilationEnabled: Bool, explicitModulesEnabled: Bool, commandLine: [String], ruleInfo: [String], isUsingWholeModuleOptimization: Bool, casOptions: CASOptions?, reportRequiredTargetDependencies: BooleanWarningLevel, linkerResponseFilePath: Path?, linkerResponseFileFormat: ResponseFileFormat, dependencyFilteringRootPath: Path?, verifyScannerDependencies: Bool, scannerDiagnosticsOutputPath: Path?, diagnosticAttachmentInfo: LibclangDiagnosticAttachmentInfo?) {
+    internal init(uniqueID: String, compilerLocation: LibSwiftDriver.CompilerLocation, compilerVersion: String, moduleName: String, outputPrefix: String, tempDirPath: Path, explicitModulesTempDirPath: Path, variant: String, slice: String, cohortArchitectures: [String], eagerCompilationEnabled: Bool, explicitModulesEnabled: Bool, commandLine: [String], ruleInfo: [String], isUsingWholeModuleOptimization: Bool, casOptions: CASOptions?, reportRequiredTargetDependencies: BooleanWarningLevel, linkerResponseFilePath: Path?, linkerResponseFileFormat: ResponseFileFormat, dependencyFilteringRootPath: Path?, verifyScannerDependencies: Bool, scannerDiagnosticsOutputPath: Path?, diagnosticAttachmentInfo: LibclangDiagnosticAttachmentInfo?) {
         self.uniqueID = uniqueID
         self.compilerLocation = compilerLocation
+        self.compilerVersion = compilerVersion
         self.moduleName = moduleName
         self.outputPrefix = outputPrefix
         self.tempDirPath = tempDirPath
@@ -437,9 +439,10 @@ public struct SwiftDriverPayload: Serializable, TaskPayload, Encodable {
     }
 
     public init(from deserializer: any Deserializer) throws {
-        try deserializer.beginAggregate(22)
+        try deserializer.beginAggregate(23)
         self.uniqueID = try deserializer.deserialize()
         self.compilerLocation = try deserializer.deserialize()
+        self.compilerVersion = try deserializer.deserialize()
         self.moduleName = try deserializer.deserialize()
         self.outputPrefix = try deserializer.deserialize()
         self.tempDirPath = try deserializer.deserialize()
@@ -463,9 +466,10 @@ public struct SwiftDriverPayload: Serializable, TaskPayload, Encodable {
     }
 
     public func serialize<T>(to serializer: T) where T : Serializer {
-        serializer.serializeAggregate(22) {
+        serializer.serializeAggregate(23) {
             serializer.serialize(self.uniqueID)
             serializer.serialize(self.compilerLocation)
+            serializer.serialize(self.compilerVersion)
             serializer.serialize(self.moduleName)
             serializer.serialize(self.outputPrefix)
             serializer.serialize(self.tempDirPath)
@@ -507,10 +511,16 @@ extension SwiftDriverPayload {
 
 /// Serialized by the preparation build and picked up later by the indexing build so that explicitly built modules can be used.
 public struct IndexExplicitModuleInfo: Codable, Equatable, Sendable {
+    /// The driver invocation and compiler version that produced these module inputs.
+    public var driverCommandLine: [String]
+    public var compilerVersion: String
+
     /// The compilation-requirements frontend command line resolved by the dependency scan, verbatim.
     public var resolvedArguments: [String]
 
-    public init(resolvedArguments: [String]) {
+    public init(driverCommandLine: [String], compilerVersion: String, resolvedArguments: [String]) {
+        self.driverCommandLine = driverCommandLine
+        self.compilerVersion = compilerVersion
         self.resolvedArguments = resolvedArguments
     }
 }
@@ -2298,7 +2308,7 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
             let verifyScannerDependencies = explicitModuleBuildEnabled && cbc.scope.evaluate(BuiltinMacros.SWIFT_DEPENDENCY_REGISTRATION_MODE) == .verifySwiftDependencyScanner
             let diagnosticAttachmentInfo = LibclangDiagnosticAttachmentInfo.attachmentInfo(scope: scope)
 
-            return SwiftDriverPayload(uniqueID: uniqueID, compilerLocation: compilerLocation, moduleName: scope.evaluate(BuiltinMacros.SWIFT_MODULE_NAME), outputPrefix: scope.evaluate(BuiltinMacros.TARGET_NAME) + compilationMode.moduleBaseNameSuffix, tempDirPath: tempDirPath, explicitModulesTempDirPath: explicitModulesTempDirPath, variant: variant, slice: slice, cohortArchitectures: cohortArchs, eagerCompilationEnabled: eagerCompilationEnabled(args: args, scope: scope, compilationMode: compilationMode, isUsingWholeModuleOptimization: isUsingWholeModuleOptimization), explicitModulesEnabled: explicitModuleBuildEnabled, commandLine: commandLine, ruleInfo: ruleInfo, isUsingWholeModuleOptimization: isUsingWholeModuleOptimization, casOptions: casOptions, reportRequiredTargetDependencies: scope.evaluate(BuiltinMacros.DIAGNOSE_MISSING_TARGET_DEPENDENCIES), linkerResponseFilePath: linkerResponseFilePath, linkerResponseFileFormat: cbc.scope.evaluate(BuiltinMacros.LINKER_RESPONSE_FILE_FORMAT), dependencyFilteringRootPath: cbc.producer.sdk?.path, verifyScannerDependencies: verifyScannerDependencies, scannerDiagnosticsOutputPath: scannerDiagnosticsOutputPath, diagnosticAttachmentInfo: diagnosticAttachmentInfo)
+            return SwiftDriverPayload(uniqueID: uniqueID, compilerLocation: compilerLocation, compilerVersion: toolSpecInfo.swiftTag.description, moduleName: scope.evaluate(BuiltinMacros.SWIFT_MODULE_NAME), outputPrefix: scope.evaluate(BuiltinMacros.TARGET_NAME) + compilationMode.moduleBaseNameSuffix, tempDirPath: tempDirPath, explicitModulesTempDirPath: explicitModulesTempDirPath, variant: variant, slice: slice, cohortArchitectures: cohortArchs, eagerCompilationEnabled: eagerCompilationEnabled(args: args, scope: scope, compilationMode: compilationMode, isUsingWholeModuleOptimization: isUsingWholeModuleOptimization), explicitModulesEnabled: explicitModuleBuildEnabled, commandLine: commandLine, ruleInfo: ruleInfo, isUsingWholeModuleOptimization: isUsingWholeModuleOptimization, casOptions: casOptions, reportRequiredTargetDependencies: scope.evaluate(BuiltinMacros.DIAGNOSE_MISSING_TARGET_DEPENDENCIES), linkerResponseFilePath: linkerResponseFilePath, linkerResponseFileFormat: cbc.scope.evaluate(BuiltinMacros.LINKER_RESPONSE_FILE_FORMAT), dependencyFilteringRootPath: cbc.producer.sdk?.path, verifyScannerDependencies: verifyScannerDependencies, scannerDiagnosticsOutputPath: scannerDiagnosticsOutputPath, diagnosticAttachmentInfo: diagnosticAttachmentInfo)
         }
 
         func constructSwiftResponseFileTask(path: Path) {
@@ -3165,6 +3175,8 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
     private func freshIndexExplicitModuleInfo(driverPayload: SwiftDriverPayload?, enableIndexBuildArena: Bool) -> IndexExplicitModuleInfo? {
         guard enableIndexBuildArena, let driverPayload, let path = driverPayload.indexExplicitModuleInfoPath else { return nil }
         guard let info = try? JSONDecoder().decode(IndexExplicitModuleInfo.self, from: path, fs: localFS) else { return nil }
+        // A settings request can arrive after its build description changes but before preparation runs again.
+        guard info.driverCommandLine == driverPayload.commandLine, info.compilerVersion == driverPayload.compilerVersion else { return nil }
         // Only usable while the recorded module map still exists on disk.
         guard let i = info.resolvedArguments.firstIndex(of: "-explicit-swift-module-map-file"),
               let map = info.resolvedArguments[safe: i + 1], localFS.exists(Path(map)) else { return nil }

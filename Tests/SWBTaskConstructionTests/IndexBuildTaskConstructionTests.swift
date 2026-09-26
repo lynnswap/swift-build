@@ -654,7 +654,8 @@ fileprivate struct IndexBuildTaskConstructionTests: CoreBasedTests {
                     }
 
                     let payload = try #require(task.execTask.payload as? SwiftTaskPayload)
-                    let metadata = enabled ? IndexExplicitModuleInfo(resolvedArguments: [
+                    let driverPayload = try #require(payload.driverPayload)
+                    let metadata = enabled ? IndexExplicitModuleInfo(driverCommandLine: driverPayload.commandLine, compilerVersion: driverPayload.compilerVersion, resolvedArguments: [
                         "-explicit-swift-module-map-file", "/tmp/explicit-modules.json",
                     ]) : nil
                     let info = SwiftSourceFileIndexingInfo(
