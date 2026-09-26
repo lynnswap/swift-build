@@ -625,6 +625,7 @@ fileprivate struct IndexBuildTaskConstructionTests: CoreBasedTests {
                     "SWIFT_EXEC": swiftCompilerPath.str,
                     "SWIFT_VERSION": swiftVersion,
                     "SWIFT_ENABLE_EXPLICIT_MODULES": "YES",
+                    "OTHER_SWIFT_FLAGS": "-ipi-clang-module DriverHelpers -Xfrontend -ipi-clang-module -Xfrontend FrontendHelpers -Xfrontend -warn-long-function-bodies -Xfrontend 100",
                 ])
             ],
             targets: [
@@ -642,7 +643,7 @@ fileprivate struct IndexBuildTaskConstructionTests: CoreBasedTests {
         try await UserDefaults.withEnvironment(["EnableSwiftExplicitModulesInIndexBuild": enabled ? "YES" : "NO"]) {
             let tester = try await TaskConstructionTester(getCore(), project)
             try await tester.checkIndexBuild() { results in
-                results.checkTask(.matchTargetName("AppTarget"), .matchRuleItem("SwiftDriver Compilation Requirements")) { task in
+                try results.checkTask(.matchTargetName("AppTarget"), .matchRuleItem("SwiftDriver Compilation Requirements")) { task in
                     // Explicit modules should compose with the prepare-for-index mode (still skips function bodies).
                     let skipFlag = swiftFeatures.has(.experimentalSkipAllFunctionBodies) ? "-experimental-skip-all-function-bodies" : "-experimental-skip-non-inlinable-function-bodies"
                     task.checkCommandLineContains(["-Xfrontend", skipFlag])
@@ -651,7 +652,74 @@ fileprivate struct IndexBuildTaskConstructionTests: CoreBasedTests {
                     } else {
                         task.checkCommandLineDoesNotContain("-explicit-module-build")
                     }
+
+                    let payload = try #require(task.execTask.payload as? SwiftTaskPayload)
+                    let metadata = enabled ? IndexExplicitModuleInfo(resolvedArguments: [
+                        "-explicit-swift-module-map-file", "/tmp/explicit-modules.json",
+                    ]) : nil
+                    let info = SwiftSourceFileIndexingInfo(
+                        task: task.execTask, payload: payload.indexingPayload,
+                        outputFile: Path("/tmp/main.o"), enableIndexBuildArena: true,
+                        integratedDriver: true, explicitModuleInfo: metadata)
+                    let arguments = try #require(info.compilerArguments)
+                    #expect(arguments.contains("-ipi-clang-module") == !enabled)
+                    #expect(arguments.contains("DriverHelpers") == !enabled)
+                    #expect(arguments.contains("FrontendHelpers") == !enabled)
+                    #expect(arguments.contains("-warn-long-function-bodies"))
+                    #expect(arguments.contains("100"))
                 }
+                results.checkNoDiagnostics()
+            }
+        }
+    }
+
+    @Test(.requireSDKs(.iOS))
+    func explicitModuleIndexMetadataIsScopedToTargetAndPlatform() async throws {
+        let project = try await TestProject(
+            "aProject",
+            groupTree: TestGroup("Sources", children: [TestFile("main.swift")]),
+            buildConfigurations: [
+                TestBuildConfiguration("Debug", buildSettings: [
+                    "SDKROOT": "iphoneos",
+                    "SUPPORTED_PLATFORMS": "iphoneos iphonesimulator",
+                    "ARCHS": "arm64",
+                    "VALID_ARCHS": "arm64",
+                    "PRODUCT_NAME": "$(TARGET_NAME)",
+                    "SWIFT_MODULE_NAME": "SharedModule",
+                    "SWIFT_EXEC": swiftCompilerPath.str,
+                    "SWIFT_VERSION": swiftVersion,
+                    "SWIFT_ENABLE_EXPLICIT_MODULES": "YES",
+                    "CODE_SIGNING_ALLOWED": "NO",
+                    "GENERATE_INFOPLIST_FILE": "YES",
+                    "ALWAYS_SEARCH_USER_PATHS": "NO",
+                ]),
+            ],
+            targets: ["First", "Second"].map { name in
+                TestStandardTarget(name, type: .framework,
+                    buildConfigurations: [TestBuildConfiguration("Debug")],
+                    buildPhases: [TestSourcesBuildPhase(["main.swift"])])
+            })
+
+        try await UserDefaults.withEnvironment(["EnableSwiftExplicitModulesInIndexBuild": "YES"]) {
+            let tester = try await TaskConstructionTester(getCore(), project)
+            try await tester.checkIndexBuild(runDestination: .iOS) { results in
+                var paths = Set<Path>()
+                var moduleDirectories = Set<Path>()
+                for targetName in ["First", "Second"] {
+                    for platform in ["iphoneos", "iphonesimulator"] {
+                        try results.checkTarget(targetName, platformDiscriminator: platform) { target in
+                            try results.checkTask(.matchTarget(target), .matchRuleItem("SwiftDriver Compilation Requirements")) { task in
+                                let payload = try #require((task.execTask.payload as? SwiftTaskPayload)?.driverPayload)
+                                #expect(payload.moduleName == "SharedModule")
+                                #expect(payload.slice == "arm64")
+                                paths.insert(try #require(payload.indexExplicitModuleInfoPath))
+                                moduleDirectories.insert(payload.explicitModulesTempDirPath)
+                            }
+                        }
+                    }
+                }
+                #expect(moduleDirectories.count == 1)
+                #expect(paths.count == 4)
                 results.checkNoDiagnostics()
             }
         }

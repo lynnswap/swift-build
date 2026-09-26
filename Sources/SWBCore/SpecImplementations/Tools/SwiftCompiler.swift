@@ -238,7 +238,7 @@ public struct SwiftSourceFileIndexingInfo: SourceFileIndexingInfo {
                     continue
                 }
 
-                if arg == "-Xfrontend", removeFrontendArgs.contains(nextArg), commandLine[safe: index + 1] == "-Xfrontend" {
+                if arg == "-Xfrontend", removeFrontendArgs.contains(nextArg) || extraRemoveArgs.contains(nextArg), commandLine[safe: index + 1] == "-Xfrontend" {
                     index += 3
                     continue
                 }
@@ -496,11 +496,12 @@ extension SwiftDriverPayload {
     ///
     /// Derived purely from fields shared by the writer (the prep task action) and the reader
     /// (`generateIndexingInfo`), so both agree on the path without any additional plumbing.
+    /// Keep it in the target's object directory because the explicit module cache is shared across build contexts.
     ///
     /// `nil` when explicit modules aren't enabled.
     public var indexExplicitModuleInfoPath: Path? {
         guard explicitModulesEnabled else { return nil }
-        return explicitModulesTempDirPath.join("\(moduleName)-\(slice).index-explicit-modules.json")
+        return tempDirPath.join("\(moduleName)-\(slice).index-explicit-modules.json")
     }
 }
 
