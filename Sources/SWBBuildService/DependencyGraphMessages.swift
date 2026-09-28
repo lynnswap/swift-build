@@ -39,7 +39,7 @@ final private class ResolverDelegate: TargetDependencyResolverDelegate {
     }
 }
 
-private func constructTargetBuildGraph(for targetGUIDs: [TargetGUID], in workspaceContext: WorkspaceContext, buildParameters: BuildParametersMessagePayload, includeImplicitDependencies: Bool, dependencyScope: DependencyScopeMessagePayload) async throws -> TargetBuildGraph {
+private func constructTargetDependencyGraph(for targetGUIDs: [TargetGUID], in workspaceContext: WorkspaceContext, buildParameters: BuildParametersMessagePayload, includeImplicitDependencies: Bool, dependencyScope: DependencyScopeMessagePayload) async throws -> TargetDependencyGraph {
     var targets: [SWBCore.Target] = []
     for guid in targetGUIDs {
         guard let target = workspaceContext.workspace.target(for: guid.rawValue) else {
@@ -58,7 +58,7 @@ private func constructTargetBuildGraph(for targetGUIDs: [TargetGUID], in workspa
     case .buildRequest:
         scope = .buildRequest
     }
-    let buildGraph = await TargetBuildGraph(workspaceContext: workspaceContext,
+    let buildGraph = await TargetDependencyGraph(workspaceContext: workspaceContext,
                                       buildRequest: BuildRequest(parameters: parameters,
                                                                  buildTargets: targets.map { BuildRequest.BuildTargetInfo(parameters: parameters, target: $0) }, dependencyScope: scope,
                                                                  continueBuildingAfterErrors: false,
@@ -67,8 +67,7 @@ private func constructTargetBuildGraph(for targetGUIDs: [TargetGUID], in workspa
                                                                  useImplicitDependencies: includeImplicitDependencies,
                                                                  useDryRun: false),
                                       buildRequestContext: buildRequestContext,
-                                      delegate: delegate,
-                                      purpose: .dependencyGraph)
+                                      delegate: delegate)
     if delegate.hasErrors {
         throw StubError.error("unable to get target build graph:\n" + delegate.diagnostics.map { $0.formatLocalizedDescription(.debug) }.joined(separator: "\n"))
     }
@@ -81,7 +80,7 @@ struct ComputeDependencyClosureMsg: MessageHandler {
         guard let workspaceContext = session.workspaceContext else {
             throw MsgParserError.missingWorkspaceContext
         }
-        let buildGraph = try await constructTargetBuildGraph(for: message.targetGUIDs.map(TargetGUID.init(rawValue:)), in: workspaceContext, buildParameters: message.buildParameters, includeImplicitDependencies: message.includeImplicitDependencies, dependencyScope: message.dependencyScope)
+        let buildGraph = try await constructTargetDependencyGraph(for: message.targetGUIDs.map(TargetGUID.init(rawValue:)), in: workspaceContext, buildParameters: message.buildParameters, includeImplicitDependencies: message.includeImplicitDependencies, dependencyScope: message.dependencyScope)
         let guids = buildGraph.allTargets.map(\.target.guid)
         return StringListResponse(guids)
     }
@@ -94,7 +93,7 @@ struct ComputeDependencyGraphMsg: MessageHandler {
         guard let workspaceContext = session.workspaceContext else {
             throw MsgParserError.missingWorkspaceContext
         }
-        let buildGraph = try await constructTargetBuildGraph(for: message.targetGUIDs, in: workspaceContext, buildParameters: message.buildParameters, includeImplicitDependencies: message.includeImplicitDependencies, dependencyScope: message.dependencyScope)
+        let buildGraph = try await constructTargetDependencyGraph(for: message.targetGUIDs, in: workspaceContext, buildParameters: message.buildParameters, includeImplicitDependencies: message.includeImplicitDependencies, dependencyScope: message.dependencyScope)
         var adjacencyList: [TargetGUID: [TargetGUID]] = [:]
         for configuredTarget in buildGraph.allTargets {
             adjacencyList[TargetGUID(rawValue: configuredTarget.target.guid), default: []].append(contentsOf: buildGraph.dependencies(of: configuredTarget).map { TargetGUID(rawValue: $0.target.guid) })
@@ -122,7 +121,7 @@ struct NonBlockingComputeDependencyGraphMsg: MessageHandler {
         }
 
         session.dependencyGraphRequestCoordinator.submit(lane: buildParameters.action == .indexBuild ? .index : .foreground, priority: priority) {
-            let buildGraph = try await constructTargetBuildGraph(for: message.targetGUIDs, in: workspaceContext, buildParameters: message.buildParameters, includeImplicitDependencies: message.includeImplicitDependencies, dependencyScope: message.dependencyScope)
+            let buildGraph = try await constructTargetDependencyGraph(for: message.targetGUIDs, in: workspaceContext, buildParameters: message.buildParameters, includeImplicitDependencies: message.includeImplicitDependencies, dependencyScope: message.dependencyScope)
             try _Concurrency.Task.checkCancellation()
             var adjacencyList: [TargetGUID: [TargetGUID]] = [:]
             for configuredTarget in buildGraph.allTargets {

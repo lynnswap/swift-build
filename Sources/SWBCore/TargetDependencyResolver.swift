@@ -113,7 +113,7 @@ public struct TargetBuildGraph: TargetGraph, Sendable {
         await MacroNamespace.withExpressionInterningEnabled {
             await buildRequestContext.keepAliveSettingsCache {
                 let resolver = TargetDependencyResolver(workspaceContext: workspaceContext, buildRequest: buildRequest, buildRequestContext: buildRequestContext, delegate: delegate, purpose: purpose)
-                return await resolver.computeGraph()
+                return await resolver.computeGraph(includeProducingTargets: true)
             }
         }
         self.init(workspaceContext: workspaceContext, buildRequest: buildRequest, buildRequestContext: buildRequestContext, allTargets: allTargets, targetDependencies: targetDependencies, targetsToLinkedReferencesToProducingTargets: targetsToLinkedReferencesToProducingTargets, dynamicallyBuildingTargets: dynamicallyBuildingTargets)
@@ -190,6 +190,28 @@ public struct TargetBuildGraph: TargetGraph, Sendable {
         }
     }
 
+}
+
+/// The configured targets and dependency edges needed by dependency queries, without build-only linkage metadata.
+package struct TargetDependencyGraph: TargetGraph {
+    package let allTargets: OrderedSet<ConfiguredTarget>
+    private let targetDependencies: [ConfiguredTarget: [ResolvedTargetDependency]]
+
+    package init(workspaceContext: WorkspaceContext, buildRequest: BuildRequest, buildRequestContext: BuildRequestContext, delegate: any TargetDependencyResolverDelegate) async {
+        let result = await MacroNamespace.withExpressionInterningEnabled {
+            await buildRequestContext.keepAliveSettingsCache {
+                let resolver = TargetDependencyResolver(workspaceContext: workspaceContext, buildRequest: buildRequest, buildRequestContext: buildRequestContext, delegate: delegate, purpose: .dependencyGraph)
+                return await resolver.computeGraph(includeProducingTargets: false)
+            }
+        }
+        allTargets = result.allTargets
+        targetDependencies = result.targetDependencies
+    }
+
+    package func dependencies(of target: ConfiguredTarget) -> [ConfiguredTarget] {
+        assert(allTargets.contains(target))
+        return targetDependencies[target]?.map(\.target) ?? []
+    }
 }
 
 extension TargetBuildGraph {
@@ -283,7 +305,7 @@ fileprivate extension TargetDependencyResolver {
     /// Computes the dependency closure of configured targets for the resolver's build request.
     ///
     /// The result closure guarantees that all targets a target depends on appear in the returned array before that target.  Any detected dependency cycles will be broken.
-    fileprivate func computeGraph() async -> (allTargets: OrderedSet<ConfiguredTarget>, targetDependencies: [ConfiguredTarget: [ResolvedTargetDependency]], targetsToLinkedReferencesToProducingTargets: [ConfiguredTarget: [BuildFile.BuildableItem: ResolvedTargetDependency]], dynamicallyBuildingTargets: Set<Target>) {
+    fileprivate func computeGraph(includeProducingTargets: Bool) async -> (allTargets: OrderedSet<ConfiguredTarget>, targetDependencies: [ConfiguredTarget: [ResolvedTargetDependency]], targetsToLinkedReferencesToProducingTargets: [ConfiguredTarget: [BuildFile.BuildableItem: ResolvedTargetDependency]], dynamicallyBuildingTargets: Set<Target>) {
         // For generating assembly or preprocessor output, we limit the build to the requested targets.
         switch buildRequest.buildCommand {
         case .generateAssemblyCode, .generatePreprocessedFile:
@@ -465,51 +487,53 @@ fileprivate extension TargetDependencyResolver {
         // For items we matched using an implicit dependency, this is straightforward since we have the buildable item in the ResolvedTargetDependency's TargetDependencyReason.
         // For other items, we need to match them against the product of the target's explicit dependencies.  This is the nasty part which sort of replicates logic in the LinkageDependencyResolver, but we can't just piggy-back on that logic because not all targets have implicit dependencies enabled.
         var targetsToLinkedReferencesToProducingTargets = [ConfiguredTarget: [BuildFile.BuildableItem: ResolvedTargetDependency]]()
-        for configuredTarget in allTargets {
-            if Task.isCancelled { break }
-            guard let target = configuredTarget.target as? BuildPhaseTarget else {
-                continue
-            }
-            let configuredTargetSettings = buildRequestContext.getCachedSettings(configuredTarget.parameters, target: target)
-            let currentPlatformFilter = PlatformFilter(configuredTargetSettings.globalScope)
-            for buildPhase in target.buildPhases {
-                switch buildPhase {
-                case let frameworksBuildPhase as FrameworksBuildPhase:
-                    // Go through the build files.
-                    for buildFile in frameworksBuildPhase.buildFiles where currentPlatformFilter.matches(buildFile.platformFilters) {
-                        var foundProducingTarget = false
-                        var buildFilePath: Path? = nil
+        if includeProducingTargets {
+            for configuredTarget in allTargets {
+                if Task.isCancelled { break }
+                guard let target = configuredTarget.target as? BuildPhaseTarget else {
+                    continue
+                }
+                let configuredTargetSettings = buildRequestContext.getCachedSettings(configuredTarget.parameters, target: target)
+                let currentPlatformFilter = PlatformFilter(configuredTargetSettings.globalScope)
+                for buildPhase in target.buildPhases {
+                    switch buildPhase {
+                    case let frameworksBuildPhase as FrameworksBuildPhase:
+                        // Go through the build files.
+                        for buildFile in frameworksBuildPhase.buildFiles where currentPlatformFilter.matches(buildFile.platformFilters) {
+                            var foundProducingTarget = false
+                            var buildFilePath: Path? = nil
 
-                        // Look for an immediate dependency which produces this build file.
-                        for dependency in targetDependencies[configuredTarget] ?? [] {
-                            switch dependency.reason {
-                            case .explicit:
-                                if let dependencyStandardTarget = dependency.target.target as? StandardTarget {
-                                    // The product reference name may itself be a build setting expression, so evaluate it in the dependency's scope to obtain the concrete basename.
-                                    let productName = dependencyStandardTarget.productReference.evaluatedName(computeSettings: { buildRequestContext.getCachedSettings(dependency.target.parameters, target: dependency.target.target) })
-                                    if buildFilePath == nil {
-                                        // This might be expensive, so we try to evaluate it only once per build file.
-                                        buildFilePath = resolver.resolveBuildFilePath(buildFile, settings: configuredTargetSettings, dynamicallyBuildingTargets: resolver.dynamicallyBuildingTargets)
+                            // Look for an immediate dependency which produces this build file.
+                            for dependency in targetDependencies[configuredTarget] ?? [] {
+                                switch dependency.reason {
+                                case .explicit:
+                                    if let dependencyStandardTarget = dependency.target.target as? StandardTarget {
+                                        // The product reference name may itself be a build setting expression, so evaluate it in the dependency's scope to obtain the concrete basename.
+                                        let productName = dependencyStandardTarget.productReference.evaluatedName(computeSettings: { buildRequestContext.getCachedSettings(dependency.target.parameters, target: dependency.target.target) })
+                                        if buildFilePath == nil {
+                                            // This might be expensive, so we try to evaluate it only once per build file.
+                                            buildFilePath = resolver.resolveBuildFilePath(buildFile, settings: configuredTargetSettings, dynamicallyBuildingTargets: resolver.dynamicallyBuildingTargets)
+                                        }
+                                        if let buildFilePath, buildFilePath.basename == productName {
+                                            targetsToLinkedReferencesToProducingTargets[configuredTarget, default: [:]][buildFile.buildableItem] = dependency
+                                            foundProducingTarget = true
+                                        }
                                     }
-                                    if let buildFilePath, buildFilePath.basename == productName {
-                                        targetsToLinkedReferencesToProducingTargets[configuredTarget, default: [:]][buildFile.buildableItem] = dependency
-                                        foundProducingTarget = true
-                                    }
+                                case .implicitBuildPhaseLinkage(filename: _, buildableItem: let buildableItem, buildPhase: _) where buildableItem == buildFile.buildableItem:
+                                    targetsToLinkedReferencesToProducingTargets[configuredTarget, default: [:]][buildFile.buildableItem] = dependency
+                                    foundProducingTarget = true
+                                default:
+                                    // <rdar://119009960>: We could also track this for other dependency reasons, such as linkages from build settings, but at present we don't need that information.
+                                    break
                                 }
-                            case .implicitBuildPhaseLinkage(filename: _, buildableItem: let buildableItem, buildPhase: _) where buildableItem == buildFile.buildableItem:
-                                targetsToLinkedReferencesToProducingTargets[configuredTarget, default: [:]][buildFile.buildableItem] = dependency
-                                foundProducingTarget = true
-                            default:
-                                // <rdar://119009960>: We could also track this for other dependency reasons, such as linkages from build settings, but at present we don't need that information.
-                                break
-                            }
-                            if foundProducingTarget {
-                                break
+                                if foundProducingTarget {
+                                    break
+                                }
                             }
                         }
+                    default:
+                        break
                     }
-                default:
-                    break
                 }
             }
         }
