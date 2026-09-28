@@ -1417,6 +1417,8 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
         ]
     }
 
+    // Only the final builder publishes editor levels. Retaining these snapshots in
+    // the binding builder would force unused dictionary copies as settings are added.
     private var upToDefaultsSettings: MacroValueAssignmentTable? = nil
     private var upToProjectXcconfigSettings: MacroValueAssignmentTable? = nil
     private var upToProjectSettings: MacroValueAssignmentTable? = nil
@@ -3153,7 +3155,9 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
             self.projectXcconfig = .init(path: path, settings: info.table, finalLineNumber: info.finalLineNumber, finalColumnNumber: info.finalColumnNumber)
 
             // Also save the table we've constructed so far.
-            self.upToProjectXcconfigSettings = MacroValueAssignmentTable(copying: _table)
+            if !forBindingProperties {
+                self.upToProjectXcconfigSettings = MacroValueAssignmentTable(copying: _table)
+            }
         }
 
         // Add application preferences build settings.
@@ -3177,7 +3181,9 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
         self.projectSettings = config.buildSettings
 
         // Also save the table we've constructed so far.
-        self.upToProjectSettings = MacroValueAssignmentTable(copying: _table)
+        if !forBindingProperties {
+            self.upToProjectSettings = MacroValueAssignmentTable(copying: _table)
+        }
     }
 
     func validateSDK(_ sdk: SDK, sdkVariant: SDKVariant?, scope: MacroEvaluationScope) {
@@ -3397,7 +3403,9 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
             self.targetXcconfig = .init(path: path, settings: info.table, finalLineNumber: info.finalLineNumber, finalColumnNumber: info.finalColumnNumber)
 
             // Save the table we've constructed so far.
-            self.upToTargetXcconfigSettings = MacroValueAssignmentTable(copying: _table)
+            if !forBindingProperties {
+                self.upToTargetXcconfigSettings = MacroValueAssignmentTable(copying: _table)
+            }
         }
 
         // Add the targets's config settings.
@@ -3425,7 +3433,9 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
         self.targetSettings = config.buildSettings
 
         // Also save the table we've constructed so far.
-        self.upToTargetSettings = MacroValueAssignmentTable(copying: _table)
+        if !forBindingProperties {
+            self.upToTargetSettings = MacroValueAssignmentTable(copying: _table)
+        }
     }
 
     func addSpecializationOverrides(sdk: SDK?, usesAutomaticSDK: Bool) {

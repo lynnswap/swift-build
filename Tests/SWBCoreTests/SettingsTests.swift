@@ -5224,6 +5224,19 @@ import SWBTestSupport
                 #expect(editorInfo.defaultsResolvedSettingsValues?["CASCADING"] == "defaults")
                 #expect(editorInfo.defaultsResolvedSettingsValues?["DEFAULTS_SETTING"] == "defaults")
             }
+
+            // The service can also provide build-purposed settings to the settings editor.
+            let buildSettings = Settings(workspaceContext: context, buildRequestContext: buildRequestContext, parameters: parameters, project: testProject, target: testTarget, purpose: .build)
+            #expect(buildSettings.errors == [])
+            #expect(buildSettings.warnings == [])
+            #expect(buildSettings.platform?.name == "macosx")
+            #expect(buildSettings.toolchains == [core.coreSettings.defaultToolchain])
+
+            let buildEditorInfo = buildSettings.infoForBuildSettingsEditor
+            #expect(buildEditorInfo.targetResolvedSettingsValues?["CASCADING"] == "target target-xcconfig project project-xcconfig defaults")
+            #expect(buildEditorInfo.targetXcconfigResolvedSettingsValues?["CASCADING"] == "target-xcconfig project project-xcconfig defaults")
+            #expect(buildEditorInfo.projectResolvedSettingsValues?["CASCADING"] == "project project-xcconfig defaults")
+            #expect(buildEditorInfo.projectXcconfigResolvedSettingsValues?["CASCADING"] == "project-xcconfig defaults")
         }
     }
 
