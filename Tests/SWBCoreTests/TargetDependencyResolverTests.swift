@@ -305,6 +305,53 @@ fileprivate enum TargetPlatformSpecializationMode {
         delegate.checkNoDiagnostics()
     }
 
+    @Test(.requireSDKs(.macOS, .iOS))
+    func producingTargetsKeepProductNamesDistinctAcrossConfigurationsAndGraphs() async throws {
+        let core = try await getCore()
+        let names = ["Red", "Blue", "Green", "Yellow"]
+        let linkedFiles = names.map { "\($0).framework" } + ["Fixed.framework"]
+        let workspace = try TestWorkspace("Workspace", projects: [
+            TestProject("Project", groupTree: TestGroup("Files", children: linkedFiles.map { TestFile($0) }), buildConfigurations: [
+                TestBuildConfiguration("Debug", buildSettings: ["SDKROOT": "macosx"]),
+            ], targets: [
+                TestStandardTarget("App1", type: .application, buildPhases: [
+                    TestFrameworksBuildPhase(linkedFiles.map { TestBuildFile($0) }),
+                ], dependencies: ["Framework", "Fixed"]),
+                TestStandardTarget("App2", type: .application, buildPhases: [
+                    TestFrameworksBuildPhase(linkedFiles.map { TestBuildFile($0) }),
+                ], dependencies: ["Framework", "Fixed"]),
+                TestStandardTarget("Framework", type: .framework, productReferenceName: "$(PRODUCT_NAME).framework"),
+                TestStandardTarget("Fixed", type: .framework, productReferenceName: "Fixed.framework"),
+            ])
+        ]).load(core)
+        let context = WorkspaceContext(core: core, workspace: workspace, processExecutionCache: .sharedForTesting)
+        for productNames in [["Red", "Blue"], ["Green", "Yellow"]] {
+            let targets = zip(workspace.projects[0].targets.prefix(2), productNames).enumerated().map { index, pair in
+                BuildRequest.BuildTargetInfo(parameters: BuildParameters(configuration: "Debug", overrides: ["PRODUCT_NAME": pair.1, "SDKROOT": index == 0 ? "macosx" : "iphoneos"]), target: pair.0)
+            }
+            let request = BuildRequest(parameters: targets[0].parameters, buildTargets: targets, continueBuildingAfterErrors: false, useParallelTargets: false, useImplicitDependencies: false, useDryRun: false)
+            let delegate = EmptyTargetDependencyResolverDelegate(workspace: workspace)
+            let graph = await TargetBuildGraph(workspaceContext: context, buildRequest: request, buildRequestContext: BuildRequestContext(workspaceContext: context), delegate: delegate)
+            for (targetInfo, productName) in zip(targets, productNames) {
+                let configuredTarget = try graph.target(for: targetInfo)
+                let target = try #require(targetInfo.target as? StandardTarget)
+                let files = try #require(target.frameworksBuildPhase?.buildFiles)
+                for (file, name) in zip(files, linkedFiles) {
+                    let producing = graph.producingTarget(for: file.buildableItem, in: configuredTarget)
+                    if name == "\(productName).framework" {
+                        #expect(producing?.target.target.name == "Framework")
+                        #expect(producing?.target.parameters == targetInfo.parameters)
+                    } else if name == "Fixed.framework" {
+                        #expect(producing?.target.target.name == "Fixed")
+                    } else {
+                        #expect(producing == nil)
+                    }
+                }
+            }
+            delegate.checkNoDiagnostics()
+        }
+    }
+
     @Test(.requireSDKs(.macOS, .iOS), arguments: [BuildAction.build, .indexBuild], [RunDestinationInfo.macOS, .iOS])
     func dependencyQueryPreservesGraph(action: BuildAction, destination: RunDestinationInfo) async throws {
         let core = try await getCore()

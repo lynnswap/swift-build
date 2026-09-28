@@ -488,6 +488,8 @@ fileprivate extension TargetDependencyResolver {
         // For other items, we need to match them against the product of the target's explicit dependencies.  This is the nasty part which sort of replicates logic in the LinkageDependencyResolver, but we can't just piggy-back on that logic because not all targets have implicit dependencies enabled.
         var targetsToLinkedReferencesToProducingTargets = [ConfiguredTarget: [BuildFile.BuildableItem: ResolvedTargetDependency]]()
         if includeProducingTargets {
+            // Product names are independent of the linked file. Keep evaluations local to this graph and distinct for each target configuration.
+            var evaluatedProductNames: [ConfiguredTarget: String] = [:]
             for configuredTarget in allTargets {
                 if Task.isCancelled { break }
                 guard let target = configuredTarget.target as? BuildPhaseTarget else {
@@ -509,7 +511,15 @@ fileprivate extension TargetDependencyResolver {
                                 case .explicit:
                                     if let dependencyStandardTarget = dependency.target.target as? StandardTarget {
                                         // The product reference name may itself be a build setting expression, so evaluate it in the dependency's scope to obtain the concrete basename.
-                                        let productName = dependencyStandardTarget.productReference.evaluatedName(computeSettings: { buildRequestContext.getCachedSettings(dependency.target.parameters, target: dependency.target.target) })
+                                        let productReference = dependencyStandardTarget.productReference
+                                        let productName: String
+                                        if productReference.name.contains("$") {
+                                            productName = evaluatedProductNames.getOrInsert(dependency.target) {
+                                                productReference.evaluatedName(scope: buildRequestContext.getCachedSettings(dependency.target.parameters, target: dependency.target.target).globalScope)
+                                            }
+                                        } else {
+                                            productName = productReference.name
+                                        }
                                         if buildFilePath == nil {
                                             // This might be expensive, so we try to evaluate it only once per build file.
                                             buildFilePath = resolver.resolveBuildFilePath(buildFile, settings: configuredTargetSettings, dynamicallyBuildingTargets: resolver.dynamicallyBuildingTargets)
