@@ -23,11 +23,12 @@ public final class FilePathResolver: Sendable
     /// The evaluated value $(PROJECT_DIR) which is used as the default backstop for source trees which evaluate to relative paths, or to nothing at all.
     private let projectDir: Path
 
-    /// Private table used to cache paths already evaluated for FileGroups.
-    private let fileGroupCache = Cache<FileGroup, Path>()
+    // These memoized paths belong to this resolver's fixed scope. Using registries avoids
+    // creating two NSCaches per settings instance and their costly nested teardown.
+    private let fileGroupCache = Registry<FileGroup, Path>()
 
     /// Private table use to cache paths already evaluated for build settings in the MacroEvaluationScope.
-    private let buildSettingCache = Cache<MacroDeclaration, Path>()
+    private let buildSettingCache = Registry<MacroDeclaration, Path>()
 
     public init(scope: MacroEvaluationScope, projectDir: Path? = nil)
     {
@@ -50,9 +51,13 @@ public final class FilePathResolver: Sendable
         // If this is a FileGroup, look it up in the cache.
         if let fileGroup = reference as? FileGroup
         {
-            return fileGroupCache.getOrInsert(fileGroup) {
-                return computeAbsolutePath(fileGroup, resolveParameterizedProductName: resolveParameterizedProductName)
+            if let path = fileGroupCache[fileGroup] {
+                return path
             }
+            // Resolving a parent group re-enters this registry, so compute outside its lock.
+            let path = computeAbsolutePath(fileGroup, resolveParameterizedProductName: resolveParameterizedProductName)
+            fileGroupCache[fileGroup] = path
+            return path
         }
 
         return computeAbsolutePath(reference, resolveParameterizedProductName: resolveParameterizedProductName)

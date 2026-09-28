@@ -132,6 +132,64 @@ import SWBMacro
         #expect(resolvedPath == Path.root.join("tmp/SomeProject/RelativeDir/ClassTwo.m"))
     }
 
+    @Test(arguments: [false, true])
+    func concurrentColdGroupResolution(resolveParameterizedProductName: Bool) async throws {
+        let model = try TestGroup("Root", path: "", sourceTree: .buildSetting("SOURCE_TREE_ONE"), children: [
+            TestGroup("Sources", children: [
+                TestGroup("$(CURRENT_ARCH)", children: [TestFile("File.swift")]),
+                TestGroup("Shared", children: [TestFile("Other.swift")]),
+            ]),
+        ]).toProtocol()
+        let root = try #require(Reference.create(model, pifLoader, isRoot: true) as? FileGroup)
+        let sources = try #require(root.children[0] as? FileGroup)
+        let architecture = try #require(sources.children[0] as? FileGroup)
+        let shared = try #require(sources.children[1] as? FileGroup)
+        let references: [(Reference, Path)] = [
+            (architecture.children[0], Path.root.join("tmp/somewhere/Sources/x86_64/File.swift")),
+            (shared.children[0], Path.root.join("tmp/somewhere/Sources/Shared/Other.swift")),
+        ]
+
+        // Resolve leaves before their ancestors so a cold miss must re-enter the group cache.
+        await withTaskGroup(of: Void.self) { group in
+            for index in 0..<64 {
+                group.addTask { [resolver] in
+                    let (reference, expected) = references[index % references.count]
+                    for _ in 0..<10 {
+                        #expect(resolver.resolveAbsolutePath(reference, resolveParameterizedProductName: resolveParameterizedProductName) == expected)
+                    }
+                }
+            }
+        }
+        withExtendedLifetime(root) {}
+    }
+
+    @Test
+    func resolverScopesRemainIndependent() throws {
+        let model = try TestGroup("Root", path: "", sourceTree: .buildSetting("PROJECT_DIR"), children: [
+            TestGroup("$(CURRENT_ARCH)", children: [TestFile("File.swift")]),
+        ]).toProtocol()
+        let root = try #require(Reference.create(model, pifLoader, isRoot: true) as? FileGroup)
+        let child = try #require(root.children[0] as? FileGroup)
+        let file = child.children[0]
+
+        var table = MacroValueAssignmentTable(namespace: FilePathResolverTestsMacros.filePathResolverTestsNamespace)
+        table.push(BuiltinMacros.PROJECT_DIR, literal: Path.root.join("tmp/OtherProject").str)
+        table.push(FilePathResolverTestsMacros.CURRENT_ARCH, literal: "arm64")
+        let otherResolver = FilePathResolver(scope: MacroEvaluationScope(table: table))
+        let overriddenResolver = FilePathResolver(scope: MacroEvaluationScope(table: table), projectDir: Path.root.join("tmp/Override"))
+        let relativeModel = try TestFile("Relative.swift", sourceTree: .groupRelative).toProtocol()
+        let relativeFile = try Reference.create(relativeModel, pifLoader, isRoot: true)
+
+        for _ in 0..<2 {
+            #expect(resolver.resolveAbsolutePath(file, resolveParameterizedProductName: true) == Path.root.join("tmp/SomeProject/x86_64/File.swift"))
+            #expect(otherResolver.resolveAbsolutePath(file, resolveParameterizedProductName: true) == Path.root.join("tmp/OtherProject/arm64/File.swift"))
+            #expect(overriddenResolver.resolveAbsolutePath(file, resolveParameterizedProductName: true) == Path.root.join("tmp/OtherProject/arm64/File.swift"))
+            #expect(otherResolver.resolveAbsolutePath(relativeFile, resolveParameterizedProductName: true) == Path.root.join("tmp/OtherProject/Relative.swift"))
+            #expect(overriddenResolver.resolveAbsolutePath(relativeFile, resolveParameterizedProductName: true) == Path.root.join("tmp/Override/Relative.swift"))
+        }
+        withExtendedLifetime(root) {}
+    }
+
     @Test
     func emptySourceTree() throws {
         let model = try TestFile("ClassThree.m", sourceTree: .buildSetting("EMPTY_SOURCE_TREE")).toProtocol()

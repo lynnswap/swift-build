@@ -68,6 +68,28 @@ fileprivate struct FilePathResolverPerfTests: PerfTests {
     }
 
     @Test
+    func populatedResolversTeardown_X2000() async throws {
+        let model = try TestGroup("Root", path: "", sourceTree: .buildSetting("PROJECT_DIR"), children: [
+            TestGroup("Sources", children: [TestGroup("Nested")]),
+        ]).toProtocol()
+        let root = try #require(Reference.create(model, pifLoader, isRoot: true) as? FileGroup)
+        let sources = try #require(root.children[0] as? FileGroup)
+        let nested = try #require(sources.children[0] as? FileGroup)
+
+        try await measure {
+            var resolvers = (0..<2000).map { _ in FilePathResolver(scope: self.scope) }
+            for resolver in resolvers {
+                #expect(resolver.resolveAbsolutePath(nested, resolveParameterizedProductName: true) == Path("/tmp/SomeProject/Sources/Nested"))
+            }
+            let elapsed = SuspendingClock.suspending.measure {
+                resolvers.removeAll(keepingCapacity: true)
+            }
+            perfPrint("FilePathResolver teardown (2000 populated instances): \(elapsed)")
+        }
+        withExtendedLifetime(root) {}
+    }
+
+    @Test
     func projectRelativeSourceTree_Cached_X100000() async throws {
         let model = try TestGroup("SomeProject", sourceTree: .buildSetting("PROJECT_DIR")).toProtocol()
         let rootGroup = try #require(Reference.create(model, pifLoader, isRoot: true) as? FileGroup)
