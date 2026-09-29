@@ -286,16 +286,8 @@ case "$*" in
   install)
     if [ "$CUSTOM_SERVICE_TEST_FAILURE" = install ]; then exit 17; fi
     cp "$(dirname "$0")/version" "$CUSTOM_SERVICE_TEST_STATE/installed"
-    ;;
-  "use custom")
-    if [ "$CUSTOM_SERVICE_TEST_FAILURE" = selection ]; then exit 18; fi
-    test -f "$CUSTOM_SERVICE_TEST_STATE/installed"
-    printf custom > "$CUSTOM_SERVICE_TEST_STATE/selection"
-    ;;
-  reload)
     if [ "$CUSTOM_SERVICE_TEST_FAILURE" = reload ]; then exit 20; fi
-    test "$(cat "$CUSTOM_SERVICE_TEST_STATE/selection")" = custom
-    printf reloaded > "$CUSTOM_SERVICE_TEST_STATE/reload"
+    printf 'install\n' >> "$CUSTOM_SERVICE_TEST_STATE/commands"
     ;;
   *) exit 19 ;;
 esac
@@ -311,31 +303,27 @@ esac
         ), patch.object(sys, "argv", ["release.py", "install"]):
             release.main()
 
-    def test_repeated_installations_select_custom_and_remove_temporary_builds(self):
-        (self.state / "selection").write_text("bundled")
+    def test_repeated_installations_delegate_to_cli_and_remove_temporary_builds(self):
         for _ in range(2):
             self.install()
             self.assertEqual((self.state / "installed").read_text(), self.versions[-1])
-            self.assertEqual((self.state / "selection").read_text(), "custom")
-            self.assertEqual((self.state / "reload").read_text(), "reloaded")
             self.assertFalse(self.build_directories[-1].exists())
         self.assertEqual(len(set(self.versions)), 2)
+        self.assertEqual((self.state / "commands").read_text().splitlines(), ["install", "install"])
 
     def test_failures_preserve_completed_state_and_remove_temporary_builds(self):
-        for failure in ("build", "install", "selection", "reload"):
+        for failure in ("build", "install", "reload"):
             with self.subTest(failure=failure):
                 self.failure = failure
                 (self.state / "installed").write_text("previous version")
-                (self.state / "selection").write_text("bundled")
                 with patch.object(sys, "stderr", io.StringIO()) as errors:
                     with self.assertRaises(SystemExit) as raised:
                         self.install()
                 self.assertEqual(raised.exception.code, 1)
                 self.assertIn("error:", errors.getvalue())
-                self.assertEqual((self.state / "selection").read_text(), "custom" if failure == "reload" else "bundled")
                 self.assertEqual(
                     (self.state / "installed").read_text(),
-                    self.versions[-1] if failure in ("selection", "reload") else "previous version",
+                    self.versions[-1] if failure == "reload" else "previous version",
                 )
                 self.assertFalse(self.build_directories[-1].exists())
 

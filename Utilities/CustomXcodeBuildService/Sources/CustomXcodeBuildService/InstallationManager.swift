@@ -23,10 +23,8 @@ struct InstallationManager {
         try environment.requireGUI()
         return try store.withInstallationLock {
             try store.validateCommand()
-            let previous = try store.selectedDirectory()
             var launchState = try readLaunchState()
             let hadCommand = try store.exists(store.command)
-            let service: BuildService = previous == nil && !hadCommand ? .custom : launchState.selection
             let staged = try store.stage(package)
             let hadCurrent = try store.exists(store.current)
             try Transaction.perform { transaction in
@@ -49,66 +47,74 @@ struct InstallationManager {
                     try store.writeCommand()
                     transaction.undo { try store.remove(store.command) }
                 }
-                try configure(customPackage: service == .custom ? installed : nil,
+                try configure(customPackage: installed,
                               previous: launchState, transaction: transaction)
             }
             do { try store.discardStaging() }
             catch { throw ServiceError("Installed \(package.manifest.version), but removing the previous payload failed: \(error)") }
-            return """
+            let report = """
             Installed \(package.manifest.version) (\(package.manifest.sourceRevision)).
             Built with Xcode: \(package.manifest.xcodeVersion) (\(package.manifest.xcodeBuildVersion))
             Service: \(store.service.path)
             Command: \(store.command.path)
-            Selected service: \(service.rawValue)
-            Run custom-xcode-build-service reload to use this update in already open custom-service clients.
-            Clients which have never selected custom still need to be restarted once.
+            Selected service: custom
             """
+            if launchState.selection == .custom && launchState.settings.service != nil {
+                do { return report + "\n" + (try reloadInstalledService()) }
+                catch { throw ServiceError(report + "\nService reload failed: \(error)") }
+            }
+            return report + "\n" + Self.clientRestartInstructions
         }
     }
 
     func reload() throws -> String {
         try requireUser()
         return try store.withExistingLock(access: .modify) {
-            guard var installed = try store.selectedPackage() else {
-                throw ServiceError("No custom build service is installed. Run install first.")
-            }
-            try installed.validateForUse()
-            let running = try runningProcesses().filter { Self.serviceNames.contains($0.name) && store.ownsService(at: $0.path) }
-            // A new CLI can also reload an installation created by an older CLI.
-            // Materialize current before redirecting a version it used to point to.
-            if installed.directory != store.current {
-                let staged = try store.stage(installed)
-                try Transaction.perform { transaction in
-                    try store.publish(staged.directory, replacingExisting: true)
-                    transaction.undo { try store.publish(staged.directory, replacingExisting: true) }
-                    installed = try ReleasePackage(directory: store.current)
-                    try updateServiceBundleLink(installed, transaction: transaction)
-                }
-                try store.discardStaging()
-            }
+            try reloadInstalledService()
+        } ?? "No custom build service is installed."
+    }
+
+    // The caller holds the installation lock across replacement and service reload.
+    private func reloadInstalledService() throws -> String {
+        guard var installed = try store.selectedPackage() else {
+            throw ServiceError("No custom build service is installed. Run install first.")
+        }
+        try installed.validateForUse()
+        let running = try runningProcesses().filter { Self.serviceNames.contains($0.name) && store.ownsService(at: $0.path) }
+        // A new CLI can also reload an installation created by an older CLI.
+        // Materialize current before redirecting a version it used to point to.
+        if installed.directory != store.current {
+            let staged = try store.stage(installed)
             try Transaction.perform { transaction in
+                try store.publish(staged.directory, replacingExisting: true)
+                transaction.undo { try store.publish(staged.directory, replacingExisting: true) }
+                installed = try ReleasePackage(directory: store.current)
                 try updateServiceBundleLink(installed, transaction: transaction)
             }
-            do { try store.redirectLegacyVersions(to: installed) }
-            catch { throw ServiceError("The installed service is ready, but legacy path migration failed: \(error). No services were stopped; retry reload.") }
-            var stopped: [String] = []
-            var failures: [String] = []
-            for process in running {
-                do {
-                    // Recheck after migration: the original process may already have exited.
+            try store.discardStaging()
+        }
+        try Transaction.perform { transaction in
+            try updateServiceBundleLink(installed, transaction: transaction)
+        }
+        do { try store.redirectLegacyVersions(to: installed) }
+        catch { throw ServiceError("The installed service is ready, but legacy path migration failed: \(error). No services were stopped; retry reload.") }
+        var stopped: [String] = []
+        var failures: [String] = []
+        for process in running {
+            do {
+                // Recheck after migration: the original process may already have exited.
+                guard try runningProcesses().contains(where: { $0.pid == process.pid && $0.path == process.path }) else { continue }
+                let result = try environment.runner.run("/bin/kill", ["-TERM", process.pid])
+                if result.status != 0 {
                     guard try runningProcesses().contains(where: { $0.pid == process.pid && $0.path == process.path }) else { continue }
-                    let result = try environment.runner.run("/bin/kill", ["-TERM", process.pid])
-                    if result.status != 0 {
-                        guard try runningProcesses().contains(where: { $0.pid == process.pid && $0.path == process.path }) else { continue }
-                        _ = try result.requireSuccess("Stopping service \(process.pid)")
-                    }
-                    stopped.append(process.pid)
-                } catch { failures.append(String(describing: error)) }
-            }
-            let report = "Installed service: \(installed.manifest.version). Sent termination to managed service PIDs: \(stopped.isEmpty ? "none" : stopped.joined(separator: ", ")). Xcode clients start the updated service on demand. Retry any in-flight requests that were interrupted."
-            guard failures.isEmpty else { throw ServiceError(report + "\nReload failures: " + failures.joined(separator: "; ")) }
-            return report
-        } ?? "No custom build service is installed."
+                    _ = try result.requireSuccess("Stopping service \(process.pid)")
+                }
+                stopped.append(process.pid)
+            } catch { failures.append(String(describing: error)) }
+        }
+        let report = "Installed service: \(installed.manifest.version). Sent termination to managed service PIDs: \(stopped.isEmpty ? "none" : stopped.joined(separator: ", ")). Xcode clients start the updated service on demand. Retry any in-flight requests that were interrupted."
+        guard failures.isEmpty else { throw ServiceError(report + "\nReload failures: " + failures.joined(separator: "; ")) }
+        return report
     }
 
     func use(_ service: BuildService) throws -> String {
@@ -130,14 +136,16 @@ struct InstallationManager {
             try Transaction.perform { transaction in
                 try configure(customPackage: customPackage, previous: previous, transaction: transaction)
             }
-            return "Selected service: \(service.rawValue)\n\(Self.restartInstructions)"
+            let report = "Selected service: \(service.rawValue)"
+            let selectionChanged = previous.selection != service || (previous.settings.service != nil) != (service == .custom)
+            return selectionChanged ? report + "\n" + Self.clientRestartInstructions : report
         }) else {
             if service == .custom { throw ServiceError("No custom build service is installed. Run install first.") }
             let state = try readLaunchState()
             guard state.selection == .bundled, state.settings.service == nil else {
                 throw ServiceError("Custom settings exist without an installation. Resolve them before selecting bundled.")
             }
-            return "Selected service: bundled\n\(Self.restartInstructions)"
+            return "Selected service: bundled"
         }
         return result
     }
@@ -154,7 +162,7 @@ struct InstallationManager {
             let settings = try environment.settings()
             try settings.requireOwnership(in: store)
             try Transaction.perform { transaction in try apply(selected, previous: settings, transaction: transaction) }
-            return "Activated \(selected.manifest.version).\n\(Self.restartInstructions)"
+            return "Activated \(selected.manifest.version) for newly started clients."
         }) else { throw ServiceError("No custom build service is installed.") }
         return result
     }
@@ -187,7 +195,8 @@ struct InstallationManager {
             // Settings are removed before payloads, so a new Xcode launch cannot
             // select a service whose resources are being deleted.
             try store.removePayloads()
-            return "Uninstalled the custom build service. Selected service: bundled\n\(Self.restartInstructions)"
+            let report = "Uninstalled the custom build service. Selected service: bundled"
+            return launchState.selection == .custom || launchState.settings.service != nil ? report + "\n" + Self.clientRestartInstructions : report
         } ?? "No custom build service is installed."
     }
 
@@ -281,8 +290,7 @@ struct InstallationManager {
         }
         lines += issues
         lines.append("Launchd settings do not prove that an already running Xcode uses this release.")
-        lines.append("Run reload after updating custom. Existing service processes keep their loaded code until restarted.")
-        lines.append(Self.restartInstructions)
+        lines.append("Existing service processes keep their loaded code until reloaded. Switching services requires refreshing the clients' environment.")
         let report = lines.joined(separator: "\n")
         guard issues.isEmpty else { throw ServiceError(report) }
         return report
@@ -346,11 +354,9 @@ struct InstallationManager {
         }
     }
 
-    private static let restartInstructions = """
-    For updates to an already selected custom service, run reload; Xcode can remain open.
-    First selection, switching to bundled, or uninstalling requires restarting client
-    applications to refresh their environment. Start terminal agents from a restarted
-    terminal. Selecting a service does not stop applications or builds.
+    private static let clientRestartInstructions = """
+    Restart Xcode, Xcode Service (for MCP), terminal applications, and AI agent applications to use this selection.
+    Start terminal-based agents from the restarted terminal so they inherit the new environment.
     """
 
     private func apply(_ selected: ReleasePackage, previous: LaunchEnvironment.Settings, transaction: Transaction) throws {

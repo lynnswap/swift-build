@@ -427,8 +427,6 @@ def install(args):
         ))
         executable = Path(directory) / "payload/bin/custom-xcode-build-service"
         subprocess.run([str(executable), "install"], check=True)
-        subprocess.run([str(executable), "use", "custom"], check=True)
-        subprocess.run([str(executable), "reload"], check=True)
 
 
 def stage(args):
@@ -850,7 +848,8 @@ def main():
         description="Build committed source in a temporary directory, install it "
         "for the current user, select custom, and reload its build services without "
         "quitting Xcode. Does not run tests. Generates a local version and "
-        "removes the temporary build directory when finished.",
+        "removes the temporary build directory when finished. Older revisions "
+        "use the installer behavior from that revision.",
     )
     installing.add_argument("--revision", default="HEAD")
     installing.add_argument("--jobs", type=int, default=2)

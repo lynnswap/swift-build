@@ -15,6 +15,70 @@ import Foundation
 import Testing
 @testable import CustomXcodeBuildService
 
+@Test(arguments: ["none", "bundled", "custom", "custom-without-environment"])
+func installReloadsOnlyForExistingCustomSelection(previousSelection: String) throws {
+    let fixture = try Fixture()
+    if previousSelection != "none" {
+        _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+        if previousSelection == "bundled" { _ = try fixture.manager.use(.bundled) }
+        if previousSelection == "custom-without-environment" { fixture.runner.settings = [:] }
+    }
+    fixture.runner.processes = "10 /Applications/Xcode.app/Contents/MacOS/Xcode\n20 \(fixture.store.service.path)\n"
+    let output = try fixture.manager.install(from: fixture.package("custom-v1.0.1"))
+    #expect(try fixture.store.selectedService() == .custom)
+    #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == fixture.store.service.path)
+    #expect(output.contains("Restart Xcode") == (previousSelection != "custom"))
+    #expect(fixture.runner.killedPIDs == (previousSelection == "custom" ? ["20"] : []))
+    #expect(fixture.runner.processes.contains("10 /Applications/Xcode.app"))
+}
+
+@Test func repeatedSelectionDoesNotRequestAnotherClientRestart() throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    #expect(try !fixture.manager.use(.custom).contains("Restart Xcode"))
+    #expect(try fixture.manager.use(.bundled).contains("Restart Xcode"))
+    #expect(try !fixture.manager.use(.bundled).contains("Restart Xcode"))
+    #expect(try fixture.manager.use(.custom).contains("Restart Xcode"))
+    #expect(try !fixture.manager.activate().contains("Restart Xcode"))
+}
+
+@Test(arguments: ["custom", "bundled", "uninstall"])
+func repairingServiceEnvironmentRequestsClientRestart(command: String) throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    let customSettings = fixture.runner.settings
+    let output: String
+    if command == "custom" {
+        fixture.runner.settings = [:]
+        output = try fixture.manager.use(.custom)
+        #expect(fixture.runner.settings == customSettings)
+    } else {
+        _ = try fixture.manager.use(.bundled)
+        fixture.runner.settings = customSettings
+        output = try command == "bundled" ? fixture.manager.use(.bundled) : fixture.manager.uninstall()
+        #expect(fixture.runner.settings.isEmpty)
+    }
+    #expect(output.contains("Restart Xcode"))
+    #expect(output.contains("Xcode Service (for MCP)"))
+}
+
+@Test func installReportsReloadFailureWithoutRollingBackInstalledPayload() throws {
+    let fixture = try Fixture()
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    fixture.runner.processes = "20 \(fixture.store.service.path)\n"
+    fixture.runner.killFailures = ["20"]
+    do {
+        _ = try fixture.manager.install(from: fixture.package("custom-v1.0.1"))
+        Issue.record("Install must report the failed reload.")
+    } catch let error as ServiceError {
+        #expect(error.description.contains("Installed custom-v1.0.1"))
+        #expect(error.description.contains("Service reload failed"))
+        #expect(!error.description.contains("Restart Xcode"))
+    }
+    #expect(try fixture.store.selectedPackage()?.manifest.version == "custom-v1.0.1")
+    #expect(try fixture.store.selectedService() == .custom)
+}
+
 @Test(arguments: [1, 2], [false, true])
 func reloadMigratesLegacyPathsWithoutStoppingClients(schemaVersion: Int, installUpdate: Bool) throws {
     let fixture = try Fixture()
@@ -60,14 +124,14 @@ func reloadMigratesLegacyPathsWithoutStoppingClients(schemaVersion: Int, install
     #expect(try fixture.store.selectedPackage()?.manifest.version == "custom-v1.0.0")
 }
 
-@Test func replacingMissingPayloadPreservesBundledSelection() throws {
+@Test func replacingMissingPayloadSelectsCustomAndRequestsClientRestart() throws {
     let fixture = try Fixture()
     _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
     _ = try fixture.manager.use(.bundled)
     try FileManager.default.removeItem(at: fixture.store.current)
-    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.1"))
-    #expect(try fixture.store.selectedService() == .bundled)
-    #expect(fixture.runner.settings.isEmpty)
+    let output = try fixture.manager.install(from: fixture.package("custom-v1.0.1"))
+    #expect(try fixture.store.selectedService() == .custom)
+    #expect(output.contains("Restart Xcode"))
     #expect(try fixture.store.selectedPackage()?.manifest.version == "custom-v1.0.1")
 }
 
@@ -370,7 +434,7 @@ func reinstallRepairsPayloadsThatLostExecutePermission(binary: String) throws {
     _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
     _ = try fixture.manager.use(.bundled)
     _ = try fixture.manager.install(from: fixture.package("custom-v1.0.1"))
-    #expect(try fixture.store.selectedService() == .bundled)
+    #expect(try fixture.store.selectedService() == .custom)
     _ = try fixture.manager.use(.custom)
     fixture.runner.settings = [:]
     _ = try fixture.manager.activate()
@@ -1055,7 +1119,7 @@ func rejectsForeignLaunchdContextBeforeFilesystemAndEnvironmentChanges(context: 
 }
 
 @Test(arguments: ["custom-v1.0.0", "custom-v1.0.1"])
-func installingPreservesBundledSelection(version: String) throws {
+func installingFromBundledSelectsCustomAndRequestsRestart(version: String) throws {
     let fixture = try Fixture()
     _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
     let oldPackage = try #require(try fixture.store.selectedPackage())
@@ -1063,12 +1127,13 @@ func installingPreservesBundledSelection(version: String) throws {
 
     let output = try fixture.manager.install(from: fixture.package(version))
 
-    #expect(output.contains("Selected service: bundled"))
+    #expect(output.contains("Selected service: custom"))
     #expect(try fixture.store.selectedPackage()?.manifest.version == version)
-    #expect(try fixture.store.selectedService() == .bundled)
-    #expect(fixture.runner.settings.isEmpty)
-    #expect(!fixture.runner.loaded)
-    #expect(try !fixture.store.exists(fixture.store.agent))
+    #expect(try fixture.store.selectedService() == .custom)
+    #expect(output.contains("Restart Xcode"))
+    #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == fixture.store.service.path)
+    #expect(fixture.runner.loaded)
+    #expect(try fixture.store.exists(fixture.store.agent))
     #expect(try fixture.store.exists(oldPackage.directory))
     #expect(FileManager.default.isExecutableFile(atPath: fixture.store.command.path))
     _ = try fixture.manager.use(.custom)
@@ -1180,7 +1245,7 @@ func selectionRefusesForeignConfiguration(service: BuildService, conflict: Strin
     #expect(fixture.runner.loaded)
 }
 
-@Test func statusAndUpdateReconcileOwnedEnvironmentWithBundledSelection() throws {
+@Test func installSelectsCustomEvenWhenBundledSelectionHasStaleOwnedEnvironment() throws {
     let fixture = try Fixture()
     _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
     let staleSettings = fixture.runner.settings
@@ -1191,10 +1256,11 @@ func selectionRefusesForeignConfiguration(service: BuildService, conflict: Strin
     #expect(status.contains("Selected service: bundled"))
     #expect(status.contains("Launchd selection: custom release selected for future processes"))
     #expect(status.contains("Run use bundled to reapply it"))
-    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.1"))
-    #expect(fixture.runner.settings.isEmpty)
-    #expect(try fixture.store.selectedService() == .bundled)
-    #expect(!fixture.runner.loaded)
+    let output = try fixture.manager.install(from: fixture.package("custom-v1.0.1"))
+    #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == fixture.store.service.path)
+    #expect(try fixture.store.selectedService() == .custom)
+    #expect(fixture.runner.loaded)
+    #expect(output.contains("Restart Xcode"))
 }
 
 final class Fixture {
@@ -1283,6 +1349,7 @@ final class FakeRunner: ProcessRunning {
             guard arguments.count == 2, arguments[0] == "-TERM" else { throw ServiceError("Unexpected signal") }
             if killFailures.contains(arguments[1]) { return .init(status: 1, output: "injected signal failure") }
             killedPIDs.append(arguments[1])
+            processes = processes.split(separator: "\n").filter { $0.split(maxSplits: 1, whereSeparator: \.isWhitespace).first.map(String.init) != arguments[1] }.joined(separator: "\n")
             return .init(status: 0, output: "")
         }
         guard executable == "/bin/launchctl" else { throw ServiceError("Unexpected command \(executable)") }

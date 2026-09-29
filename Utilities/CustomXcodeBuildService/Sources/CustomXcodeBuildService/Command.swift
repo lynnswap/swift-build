@@ -58,8 +58,9 @@ enum Command: Equatable {
       custom-xcode-build-service reload
 
     install    Validate and install an extracted release package. Without --package,
-               use the package containing this executable. First install selects
-               custom; updates preserve the service selection. No source build occurs.
+               use the package containing this executable. Select custom and reload
+               managed services when custom was already selected. Otherwise, report
+               that clients must restart to inherit the new selection. No source build occurs.
     use custom   Select the installed custom service, including after login.
     use bundled  Select Xcode's bundled service, keeping the CLI and installed payload.
     status     Show the installed release, selected service, launchd settings,
@@ -76,10 +77,10 @@ enum Command: Equatable {
     Status reports the information available without requesting authentication;
     use sudo with the full executable path to inspect GUI settings from Background.
     Selection affects future processes for this macOS user account.
-    After updating an already selected custom service, run reload without quitting
-    Xcode. In-flight service requests may fail and need to be retried.
+    Updating an already selected custom service reloads it automatically; Xcode can
+    remain open. In-flight service requests may fail and need to be retried.
     After initially selecting custom, switching to bundled, or uninstalling, restart
-    Xcode, terminal applications, and AI agents to refresh their environment.
+    Xcode, Xcode Service (for MCP), terminal applications, and AI agents to refresh their environment.
     If macOS restores Xcode before the login job runs, quit and reopen Xcode.
     """
 }
