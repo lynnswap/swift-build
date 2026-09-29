@@ -2695,6 +2695,44 @@ fileprivate enum TargetPlatformSpecializationMode {
 // MARK: Test cases for resolving implicit dependencies
 
 @Suite fileprivate struct ImplicitDependencyResolutionTests: CoreBasedTests {
+    @Test(.requireSDKs(.macOS))
+    func explicitProductStemsFollowConfiguredNames() async throws {
+        let core = try await getCore()
+        let names = ["Red", "Blue"]
+        let workspace = try TestWorkspace("Workspace", projects: [
+            TestProject("Project", groupTree: TestGroup("Files", children: names.map {
+                TestFile("\($0).ideplugin/Contents/MacOS/\($0)", fileType: "compiled.mach-o.dylib")
+            }), buildConfigurations: [
+                TestBuildConfiguration("Debug", buildSettings: ["SDKROOT": "macosx"]),
+                TestBuildConfiguration("Release", buildSettings: ["SDKROOT": "macosx"]),
+            ], targets: [
+                TestStandardTarget("App", type: .application, buildPhases: [
+                    TestFrameworksBuildPhase(names.map { TestBuildFile($0) }),
+                ], dependencies: ["Explicit"]),
+                TestStandardTarget("Explicit", type: .framework, buildConfigurations: [
+                    TestBuildConfiguration("Debug", buildSettings: ["PRODUCT_NAME": "Red"]),
+                    TestBuildConfiguration("Release", buildSettings: ["PRODUCT_NAME": "Blue"]),
+                ], productReferenceName: "$(PRODUCT_NAME).framework"),
+                TestStandardTarget("Red", type: .bundle, productReferenceName: "Red.ideplugin"),
+                TestStandardTarget("Blue", type: .bundle, productReferenceName: "Blue.ideplugin"),
+            ])
+        ]).load(core)
+        let context = WorkspaceContext(core: core, workspace: workspace, processExecutionCache: .sharedForTesting)
+        for configuration in ["Debug", "Release", "Debug"] {
+            let parameters = BuildParameters(configuration: configuration)
+            let app = BuildRequest.BuildTargetInfo(parameters: parameters, target: workspace.projects[0].targets[0])
+            let request = BuildRequest(parameters: parameters, buildTargets: [app], continueBuildingAfterErrors: false, useParallelTargets: false, useImplicitDependencies: true, useDryRun: false)
+            for purpose in [TargetBuildGraph.Purpose.build, .dependencyGraph] {
+                let delegate = EmptyTargetDependencyResolverDelegate(workspace: workspace)
+                let graph = await TargetBuildGraph(workspaceContext: context, buildRequest: request, buildRequestContext: BuildRequestContext(workspaceContext: context), delegate: delegate, purpose: purpose)
+                let implicitName = configuration == "Debug" ? "Blue" : "Red"
+                #expect(Set(try graph.dependencies(app).map { $0.target.name }) == ["Explicit", implicitName])
+                #expect(Set(graph.allTargets.map { $0.target.name }) == ["App", "Explicit", implicitName])
+                delegate.checkNoDiagnostics()
+            }
+        }
+    }
+
     /// Test the simple implicit dependency of an application target linking against a framework build by a target in another project.
     @Test
     func appAndFramework() async throws {

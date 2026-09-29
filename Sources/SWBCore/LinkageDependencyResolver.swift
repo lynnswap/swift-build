@@ -250,6 +250,8 @@ actor LinkageDependencyResolver {
             // The product reference name may itself be a build setting expression, so evaluate it in the dependency's scope to obtain the concrete basename.
             return standardTarget.productReference.evaluatedName(computeSettings: { buildRequestContext.getCachedSettings(dependency.parameters, target: dependency.target) })
         })
+        // Full-name matches do not need stems; compute them only on the first fallback lookup.
+        var productNameStemsOfExplicitDependencies: Set<String>?
 
         // Get information about the configured target which we need to determine its implicit dependencies.
         let buildFileFilter = LinkageDependencyBuildFileFilteringContext(scope: configuredTargetSettings.globalScope)
@@ -303,8 +305,12 @@ actor LinkageDependencyResolver {
                     // Look for a target which generates a product with the stem of this name.
                     //
                     // The purpose of this logic (at present) is to be able to resolve implicit dependencies when linking against the binary inside of an arbitrary bundle.  For example, this can be used for the Xcode workspace itself to deal with linking against the binary inside a .ideplugin.
-                    if let stem = buildFilePath.stem, !productNamesOfExplicitDependencies.contains(where: { Path($0).stem == stem }), let implicitDependency = await implicitDependency(forProductNameStem: stem, buildFilePath: buildFilePath, from: configuredTarget, imposedParameters: imposedParameters, source: .productNameStem(stem, buildFile: buildFile, buildPhase: buildPhase)) {
-                        await result.append(ResolvedTargetDependency(target: implicitDependency, reason: .implicitBuildPhaseLinkage(filename: productName, buildableItem: buildFile.buildableItem, buildPhase: buildPhase.name)))
+                    if let stem = buildFilePath.stem {
+                        let explicitStems = productNameStemsOfExplicitDependencies ?? Set(productNamesOfExplicitDependencies.compactMap { Path($0).stem })
+                        productNameStemsOfExplicitDependencies = explicitStems
+                        if !explicitStems.contains(stem), let implicitDependency = await implicitDependency(forProductNameStem: stem, buildFilePath: buildFilePath, from: configuredTarget, imposedParameters: imposedParameters, source: .productNameStem(stem, buildFile: buildFile, buildPhase: buildPhase)) {
+                            await result.append(ResolvedTargetDependency(target: implicitDependency, reason: .implicitBuildPhaseLinkage(filename: productName, buildableItem: buildFile.buildableItem, buildPhase: buildPhase.name)))
+                        }
                     }
                 }
 
