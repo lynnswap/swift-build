@@ -100,11 +100,11 @@ package final class BuildDescriptionManager: Sendable {
     /// for debugging purposes.
     private let lastIndexBuildPlanRequest: SWBMutex<BuildPlanRequest?> = .init(nil)
 
-    /// The last workspace build description generated for the index arena.
+    /// The last build description constructed or reloaded for the index arena.
     ///
     /// Separated from the regular cache as the index assumes that requests for build settings are fast once this is
     /// loaded, so it shouldn't ever be removed.
-    private let lastIndexWorkspaceDescription: SWBMutex<BuildDescription?> = .init(nil)
+    private let lastIndexDescription: SWBMutex<BuildDescription?> = .init(nil)
 
     package init(fs: any FSProxy, buildDescriptionMemoryCacheEvictionPolicy: BuildDescriptionMemoryCacheEvictionPolicy, maxCacheSize: (inMemory: Int, onDisk: Int) = (4, 4)) {
         self.fs = fs
@@ -371,7 +371,7 @@ package final class BuildDescriptionManager: Sendable {
 
     private func getCachedBuildDescription(request: BuildDescriptionRequest, signature: BuildDescriptionSignature, constructionDelegate: any BuildDescriptionConstructionDelegate) -> BuildDescription? {
         var description: BuildDescription?
-        if let lastDescription = lastIndexWorkspaceDescription.withLock({ $0 }), lastDescription.signature == signature {
+        if let lastDescription = lastIndexDescription.withLock({ $0 }), lastDescription.signature == signature {
             description = lastDescription
         } else if let inMemoryDescription = inMemoryCachedBuildDescriptions[signature] {
             description = inMemoryDescription
@@ -431,8 +431,10 @@ package final class BuildDescriptionManager: Sendable {
             // Update in-memory cache (since we either loaded it off disk or created a new description).
             // Do this at elevated priority to ensure any cache evictions that insertion will perform are done promptly and don't delay other work.
             await _Concurrency.Task(priority: .userInitiated) {
-                if request.isIndexWorkspaceDescription {
-                    lastIndexWorkspaceDescription.withLock {
+                // After a service restart, index queries load the existing description
+                // by ID with a run destination, so they are not workspace-creation requests.
+                if request.isIndexWorkspaceDescription || (request.isForCachedOnly && request.isForIndex) {
+                    lastIndexDescription.withLock {
                         $0 = buildDescription
                     }
                 } else {
