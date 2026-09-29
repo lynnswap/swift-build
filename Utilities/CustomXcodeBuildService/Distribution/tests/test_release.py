@@ -172,7 +172,7 @@ class BuildTests(unittest.TestCase):
         ]
         self.assertEqual(
             [command[2] for command, _ in build_commands],
-            ["--version", "build", "test", "build", "build", "build", "stage"],
+            ["--version", "build", "build", "build", "build", "stage"],
         )
         for command, environment in build_commands:
             self.assertEqual(
@@ -234,7 +234,7 @@ class BuildTests(unittest.TestCase):
             if command[0] == sys.executable
             or command[:2] == ["/usr/bin/xcrun", "swift"]
         ]
-        self.assertIn("test", operations)
+        self.assertNotIn("test", operations)
         self.assertIn("stage", operations)
         resolved = self.arguments.output_dir / "source/Package.resolved"
         self.assertNotEqual(resolved.read_text(), self.committed_pins)
@@ -292,6 +292,11 @@ case "$*" in
     test -f "$CUSTOM_SERVICE_TEST_STATE/installed"
     printf custom > "$CUSTOM_SERVICE_TEST_STATE/selection"
     ;;
+  reload)
+    if [ "$CUSTOM_SERVICE_TEST_FAILURE" = reload ]; then exit 20; fi
+    test "$(cat "$CUSTOM_SERVICE_TEST_STATE/selection")" = custom
+    printf reloaded > "$CUSTOM_SERVICE_TEST_STATE/reload"
+    ;;
   *) exit 19 ;;
 esac
 ''')
@@ -312,11 +317,12 @@ esac
             self.install()
             self.assertEqual((self.state / "installed").read_text(), self.versions[-1])
             self.assertEqual((self.state / "selection").read_text(), "custom")
+            self.assertEqual((self.state / "reload").read_text(), "reloaded")
             self.assertFalse(self.build_directories[-1].exists())
         self.assertEqual(len(set(self.versions)), 2)
 
     def test_failures_preserve_completed_state_and_remove_temporary_builds(self):
-        for failure in ("build", "install", "selection"):
+        for failure in ("build", "install", "selection", "reload"):
             with self.subTest(failure=failure):
                 self.failure = failure
                 (self.state / "installed").write_text("previous version")
@@ -326,10 +332,10 @@ esac
                         self.install()
                 self.assertEqual(raised.exception.code, 1)
                 self.assertIn("error:", errors.getvalue())
-                self.assertEqual((self.state / "selection").read_text(), "bundled")
+                self.assertEqual((self.state / "selection").read_text(), "custom" if failure == "reload" else "bundled")
                 self.assertEqual(
                     (self.state / "installed").read_text(),
-                    self.versions[-1] if failure == "selection" else "previous version",
+                    self.versions[-1] if failure in ("selection", "reload") else "previous version",
                 )
                 self.assertFalse(self.build_directories[-1].exists())
 

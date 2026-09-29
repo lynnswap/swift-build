@@ -27,6 +27,8 @@ struct InstallationStore {
     var versions: URL { root.appendingPathComponent("versions") }
     var staging: URL { root.appendingPathComponent("staging") }
     var current: URL { root.appendingPathComponent("current") }
+    var serviceBundle: URL { root.appendingPathComponent("SWBBuildService.bundle") }
+    var service: URL { serviceBundle.appendingPathComponent("SWBBuildServiceBundle") }
     var command: URL { home.appendingPathComponent(".local/bin/custom-xcode-build-service") }
     var agent: URL { home.appendingPathComponent("Library/LaunchAgents/\(Self.label).plist") }
     var persistentExecutable: URL { current.appendingPathComponent("bin/custom-xcode-build-service") }
@@ -91,6 +93,9 @@ struct InstallationStore {
 
     func selectedDirectory() throws -> URL? {
         guard try exists(current) else { return nil }
+        if try files.attributesOfItem(atPath: current.path)[.type] as? FileAttributeType == .typeDirectory {
+            return current
+        }
         let destination = try files.destinationOfSymbolicLink(atPath: current.path)
         let selected = (destination.hasPrefix("/") ? URL(fileURLWithPath: destination) : root.appendingPathComponent(destination)).standardizedFileURL
         guard selected.deletingLastPathComponent().path == versions.path else {
@@ -154,41 +159,74 @@ struct InstallationStore {
 
     func stage(_ package: ReleasePackage) throws -> ReleasePackage {
         try discardStaging()
-        try ensureDirectory(versions)
-        let destination = versions.appendingPathComponent(package.manifest.version)
-        if try exists(destination) {
-            let installed = try ReleasePackage(directory: destination)
-            try installed.validateForUse()
-            guard try package.matchesInstalledContents(at: destination) else {
-                throw ServiceError("Version \(package.manifest.version) is already installed with different contents. Publish a new version.")
-            }
-            return installed
-        }
         try ensureDirectory(staging)
         let stagedPackage = staging.appendingPathComponent("package-\(UUID().uuidString)")
         do {
             try files.copyItem(at: package.directory, to: stagedPackage)
-            guard Darwin.renamex_np(stagedPackage.path, destination.path, UInt32(RENAME_EXCL)) == 0 else {
-                throw ServiceError("Cannot publish installed release: \(String(cString: strerror(errno)))")
-            }
         } catch {
             try removeAfterFailure(stagedPackage, error: error)
         }
-        return try ReleasePackage(directory: destination)
+        return try ReleasePackage(directory: stagedPackage)
     }
 
-    func select(_ directory: URL?) throws {
-        guard let directory else {
-            if try exists(current) { try files.removeItem(at: current) }
+    func publish(_ staged: URL, replacingExisting: Bool) throws {
+        // The same swap restores the old directory (or legacy current symlink) on rollback.
+        let flags = replacingExisting ? RENAME_SWAP : RENAME_EXCL
+        guard Darwin.renamex_np(staged.path, current.path, UInt32(flags)) == 0 else {
+            throw ServiceError("Cannot replace installed service: \(String(cString: strerror(errno))). Staged files: \(staged.path)")
+        }
+    }
+
+    func serviceBundleLink() throws -> String? {
+        guard try exists(serviceBundle) else { return nil }
+        return try files.destinationOfSymbolicLink(atPath: serviceBundle.path)
+    }
+
+    func setServiceBundleLink(_ destination: String?) throws {
+        guard let destination else {
+            if try exists(serviceBundle) { try remove(serviceBundle) }
             return
         }
+        let temporary = root.appendingPathComponent(".service-\(UUID().uuidString)")
+        do {
+            try files.createSymbolicLink(atPath: temporary.path, withDestinationPath: destination)
+            guard Darwin.rename(temporary.path, serviceBundle.path) == 0 else {
+                throw ServiceError("Cannot update service entry point: \(String(cString: strerror(errno)))")
+            }
+        } catch {
+            try removeAfterFailure(temporary, error: error)
+        }
+    }
+
+    func redirectLegacyVersions(to package: ReleasePackage) throws {
+        guard try exists(versions) else { return }
+        try ensureDirectory(versions)
         try discardStaging()
         try ensureDirectory(staging)
-        let temporary = staging.appendingPathComponent("current-\(UUID().uuidString)")
-        try files.createSymbolicLink(atPath: temporary.path, withDestinationPath: "versions/\(directory.lastPathComponent)")
-        if Darwin.rename(temporary.path, current.path) != 0 {
-            let failure = errno
-            try removeAfterFailure(temporary, error: ServiceError("Cannot select release: \(String(cString: strerror(failure)))"))
+        // Existing Xcode processes keep versioned paths in their environment. Keep
+        // only forwarding links until those clients are retired or the tool is uninstalled.
+        for version in try files.contentsOfDirectory(at: versions, includingPropertiesForKeys: nil) {
+            let redirect = staging.appendingPathComponent("redirect-\(UUID().uuidString)")
+            var destinations = [
+                ReleasePackage.servicePath(schemaVersion: 1): service,
+                "libexec/swift-build/SWBBuildService.bundle": serviceBundle,
+                "bin/custom-xcode-build-service": persistentExecutable,
+            ]
+            // Legacy flat executables also locate resources beside their launch path.
+            for name in package.manifest.resourceBundles + ["Info.plist", "PlugIns"] {
+                if try exists(package.resources.appendingPathComponent(name)) {
+                    destinations["libexec/swift-build/\(name)"] = serviceBundle.appendingPathComponent(name)
+                }
+            }
+            for (path, destination) in destinations {
+                let link = redirect.appendingPathComponent(path)
+                try files.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try files.createSymbolicLink(at: link, withDestinationURL: destination)
+            }
+            guard Darwin.renamex_np(redirect.path, version.path, UInt32(RENAME_SWAP)) == 0 else {
+                throw ServiceError("Cannot redirect legacy installation \(version.path): \(String(cString: strerror(errno)))")
+            }
+            try remove(redirect)
         }
     }
 
@@ -220,25 +258,26 @@ struct InstallationStore {
     func remove(_ url: URL) throws { try files.removeItem(at: url) }
 
     func ownsService(at path: String) -> Bool {
+        if path == service.path { return true }
         let service = URL(fileURLWithPath: path).standardizedFileURL
         return [1, 2].contains { schemaVersion in
             let relativePath = ReleasePackage.servicePath(schemaVersion: schemaVersion)
             var version = service
             for _ in relativePath.split(separator: "/") { version.deleteLastPathComponent() }
-            return version.deletingLastPathComponent().path == versions.path
+            return (version == current || version.deletingLastPathComponent().path == versions.path)
                 && path == version.appendingPathComponent(relativePath).path
         }
     }
 
     func removePayloads() throws {
-        for url in [current, versions, staging, root.appendingPathComponent("activation.log")] {
+        for url in [serviceBundle, current, versions, staging, root.appendingPathComponent("activation.log")] {
             if try exists(url) { try remove(url) }
         }
         // Keep the lock inode and its owner marker: a waiting invocation may
         // already hold this inode open when uninstall finishes.
     }
 
-    private func discardStaging() throws {
+    func discardStaging() throws {
         guard try exists(staging) else { return }
         // Only the lock holder writes here; after an interruption these bytes
         // are disposable and must never be interpreted as installed versions.

@@ -380,11 +380,6 @@ def build(args):
         check=True,
     )
     subprocess.run(
-        ["/usr/bin/xcrun", "swift", "test", *cli_args, "--disable-xctest"],
-        env=environment,
-        check=True,
-    )
-    subprocess.run(
         [
             "/usr/bin/xcrun",
             "swift",
@@ -433,6 +428,7 @@ def install(args):
         executable = Path(directory) / "payload/bin/custom-xcode-build-service"
         subprocess.run([str(executable), "install"], check=True)
         subprocess.run([str(executable), "use", "custom"], check=True)
+        subprocess.run([str(executable), "reload"], check=True)
 
 
 def stage(args):
@@ -850,9 +846,10 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     installing = commands.add_parser(
         "install",
-        help="Build committed source, install it, and select the custom service",
+        help="Build committed source, install it, and reload custom build services",
         description="Build committed source in a temporary directory, install it "
-        "for the current user, and select custom. Generates a local version and "
+        "for the current user, select custom, and reload its build services without "
+        "quitting Xcode. Does not run tests. Generates a local version and "
         "removes the temporary build directory when finished.",
     )
     installing.add_argument("--revision", default="HEAD")

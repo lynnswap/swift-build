@@ -25,17 +25,26 @@ struct InstallationManager {
             try store.validateCommand()
             let previous = try store.selectedDirectory()
             var launchState = try readLaunchState()
-            let service: BuildService = previous == nil ? .custom : launchState.selection
             let hadCommand = try store.exists(store.command)
-            let installed = try store.stage(package)
+            let service: BuildService = previous == nil && !hadCommand ? .custom : launchState.selection
+            let staged = try store.stage(package)
+            let hadCurrent = try store.exists(store.current)
             try Transaction.perform { transaction in
                 if launchState.loaded {
                     try environment.bootout()
                     transaction.undo { try environment.bootstrap(store.agent) }
                     launchState.loaded = false
                 }
-                try store.select(installed.directory)
-                transaction.undo { try store.select(previous) }
+                try store.publish(staged.directory, replacingExisting: hadCurrent)
+                transaction.undo {
+                    if hadCurrent {
+                        try store.publish(staged.directory, replacingExisting: true)
+                    } else {
+                        try FileManager.default.moveItem(at: store.current, to: staged.directory)
+                    }
+                }
+                let installed = try ReleasePackage(directory: store.current)
+                try updateServiceBundleLink(installed, transaction: transaction)
                 if !hadCommand {
                     try store.writeCommand()
                     transaction.undo { try store.remove(store.command) }
@@ -43,15 +52,63 @@ struct InstallationManager {
                 try configure(customPackage: service == .custom ? installed : nil,
                               previous: launchState, transaction: transaction)
             }
+            do { try store.discardStaging() }
+            catch { throw ServiceError("Installed \(package.manifest.version), but removing the previous payload failed: \(error)") }
             return """
-            Installed \(installed.manifest.version) (\(installed.manifest.sourceRevision)).
-            Built with Xcode: \(installed.manifest.xcodeVersion) (\(installed.manifest.xcodeBuildVersion))
-            Service: \(installed.service.path)
+            Installed \(package.manifest.version) (\(package.manifest.sourceRevision)).
+            Built with Xcode: \(package.manifest.xcodeVersion) (\(package.manifest.xcodeBuildVersion))
+            Service: \(store.service.path)
             Command: \(store.command.path)
             Selected service: \(service.rawValue)
-            \(Self.restartInstructions)
+            Run custom-xcode-build-service reload to use this update in already open custom-service clients.
+            Clients which have never selected custom still need to be restarted once.
             """
         }
+    }
+
+    func reload() throws -> String {
+        try requireUser()
+        return try store.withExistingLock(access: .modify) {
+            guard var installed = try store.selectedPackage() else {
+                throw ServiceError("No custom build service is installed. Run install first.")
+            }
+            try installed.validateForUse()
+            let running = try runningProcesses().filter { Self.serviceNames.contains($0.name) && store.ownsService(at: $0.path) }
+            // A new CLI can also reload an installation created by an older CLI.
+            // Materialize current before redirecting a version it used to point to.
+            if installed.directory != store.current {
+                let staged = try store.stage(installed)
+                try Transaction.perform { transaction in
+                    try store.publish(staged.directory, replacingExisting: true)
+                    transaction.undo { try store.publish(staged.directory, replacingExisting: true) }
+                    installed = try ReleasePackage(directory: store.current)
+                    try updateServiceBundleLink(installed, transaction: transaction)
+                }
+                try store.discardStaging()
+            }
+            try Transaction.perform { transaction in
+                try updateServiceBundleLink(installed, transaction: transaction)
+            }
+            do { try store.redirectLegacyVersions(to: installed) }
+            catch { throw ServiceError("The installed service is ready, but legacy path migration failed: \(error). No services were stopped; retry reload.") }
+            var stopped: [String] = []
+            var failures: [String] = []
+            for process in running {
+                do {
+                    // Recheck after migration: the original process may already have exited.
+                    guard try runningProcesses().contains(where: { $0.pid == process.pid && $0.path == process.path }) else { continue }
+                    let result = try environment.runner.run("/bin/kill", ["-TERM", process.pid])
+                    if result.status != 0 {
+                        guard try runningProcesses().contains(where: { $0.pid == process.pid && $0.path == process.path }) else { continue }
+                        _ = try result.requireSuccess("Stopping service \(process.pid)")
+                    }
+                    stopped.append(process.pid)
+                } catch { failures.append(String(describing: error)) }
+            }
+            let report = "Installed service: \(installed.manifest.version). Sent termination to managed service PIDs: \(stopped.isEmpty ? "none" : stopped.joined(separator: ", ")). Xcode clients start the updated service on demand. Retry any in-flight requests that were interrupted."
+            guard failures.isEmpty else { throw ServiceError(report + "\nReload failures: " + failures.joined(separator: "; ")) }
+            return report
+        } ?? "No custom build service is installed."
     }
 
     func use(_ service: BuildService) throws -> String {
@@ -116,7 +173,7 @@ struct InstallationManager {
             }
             let running = try runningProcesses()
             guard !running.contains(where: {
-                ["Xcode", "xcodebuild"].contains($0.name) || (Self.serviceNames.contains($0.name) && $0.path.hasPrefix(store.versions.path + "/"))
+                ["Xcode", "xcodebuild"].contains($0.name) || (Self.serviceNames.contains($0.name) && store.ownsService(at: $0.path))
             }) else {
                 throw ServiceError("Xcode, xcodebuild, or an installed custom build service is still running. Quit Xcode, stop command-line builds, and wait for their build services to exit, then retry uninstall.")
             }
@@ -176,14 +233,19 @@ struct InstallationManager {
         if let package {
             lines.append("Source: \(package.manifest.sourceRevision)")
             lines.append("Built with Xcode: \(package.manifest.xcodeVersion) (\(package.manifest.xcodeBuildVersion))")
-            lines.append("Installed custom service: \(package.service.path)")
-            do { try package.validateForUse() }
+            lines.append("Installed custom service: \(store.service.path)")
+            do {
+                try package.validateForUse()
+                guard FileManager.default.isExecutableFile(atPath: store.service.path) else {
+                    throw ServiceError("The fixed service entry point is missing or not executable. Run use custom to repair it.")
+                }
+            }
             catch { issues.append("Installation error: \(error)") }
         }
         do {
             try environment.requireGUI()
             let settings = try environment.settings()
-            let active = package != nil && settings.service == package?.service.path && settings.concurrentResolution == "0" && settings.legacyService == nil
+            let active = package != nil && settings.service == store.service.path && settings.concurrentResolution == "0" && settings.legacyService == nil
             let noOverrides = settings.service == nil && settings.concurrentResolution == nil && settings.legacyService == nil
             let applied: String
             if noOverrides {
@@ -212,13 +274,14 @@ struct InstallationManager {
         do {
             let running = try runningProcesses().filter { Self.serviceNames.contains($0.name) }
             lines.append("Running build services: \(running.isEmpty ? "none detected" : "")")
-            lines += running.map { "  PID \($0.pid): \($0.path)\($0.path == package?.service.path ? " [installed custom release]" : "")" }
+            lines += running.map { "  PID \($0.pid): \($0.path)\(store.ownsService(at: $0.path) ? " [managed custom service]" : "")" }
         } catch {
             lines.append("Running build services: unavailable")
             issues.append("Process inspection error: \(error)")
         }
         lines += issues
         lines.append("Launchd settings do not prove that an already running Xcode uses this release.")
+        lines.append("Run reload after updating custom. Existing service processes keep their loaded code until restarted.")
         lines.append(Self.restartInstructions)
         let report = lines.joined(separator: "\n")
         guard issues.isEmpty else { throw ServiceError(report) }
@@ -284,16 +347,27 @@ struct InstallationManager {
     }
 
     private static let restartInstructions = """
-    Quit and reopen Xcode, terminal applications, and AI agent applications to use
-    this selection. Start terminal-based agents from the restarted terminal.
-    Existing processes keep their previous environment; no applications or builds were stopped.
+    For updates to an already selected custom service, run reload; Xcode can remain open.
+    First selection, switching to bundled, or uninstalling requires restarting client
+    applications to refresh their environment. Start terminal agents from a restarted
+    terminal. Selecting a service does not stop applications or builds.
     """
 
     private func apply(_ selected: ReleasePackage, previous: LaunchEnvironment.Settings, transaction: Transaction) throws {
-        try environment.set("XCBBUILDSERVICE_PATH", to: selected.service.path)
+        try updateServiceBundleLink(selected, transaction: transaction)
+        try environment.set("XCBBUILDSERVICE_PATH", to: store.service.path)
         transaction.undo { try environment.set("XCBBUILDSERVICE_PATH", to: previous.service) }
         try environment.set("DisableConcurrentDependencyResolution", to: "0")
         transaction.undo { try environment.set("DisableConcurrentDependencyResolution", to: previous.concurrentResolution) }
+    }
+
+    private func updateServiceBundleLink(_ selected: ReleasePackage, transaction: Transaction) throws {
+        let previous = try store.serviceBundleLink()
+        // Point at the whole bundle: both the client and Bundle.main need to find
+        // plugins and resources relative to the executable's launch path.
+        if previous == selected.resources.path { return }
+        try store.setServiceBundleLink(selected.resources.path)
+        transaction.undo { try store.setServiceBundleLink(previous) }
     }
 
     private static let serviceNames = ["SWBBuildService", "SWBBuildServiceBundle", "XCBBuildService"]

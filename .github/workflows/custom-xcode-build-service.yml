@@ -59,6 +59,9 @@ jobs:
         run: |
           python3 Utilities/CustomXcodeBuildService/Distribution/release.py build \
             --version "$RELEASE_VERSION" --output-dir "$RUNNER_TEMP/custom-service-build" --jobs 2
+      - name: Test management CLI
+        working-directory: Utilities/CustomXcodeBuildService
+        run: xcodebuild test -scheme CustomXcodeBuildService -testPlan CustomXcodeBuildService -destination 'platform=macOS,arch=arm64'
       - name: Package binaries, resources, and licenses
         run: |
           python3 Utilities/CustomXcodeBuildService/Distribution/release.py package \

@@ -91,26 +91,6 @@ struct ReleasePackage {
         try Self.validateTree(directory)
     }
 
-    func matchesInstalledContents(at installedDirectory: URL) throws -> Bool {
-        let files = FileManager.default
-        for path in try files.subpathsOfDirectory(atPath: directory.path) {
-            let source = directory.appendingPathComponent(path)
-            let installed = installedDirectory.appendingPathComponent(path)
-            let sourceType = try files.attributesOfItem(atPath: source.path)[.type] as? FileAttributeType
-            let installedType: FileAttributeType?
-            do {
-                installedType = try files.attributesOfItem(atPath: installed.path)[.type] as? FileAttributeType
-            } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
-                return false
-            }
-            guard sourceType == installedType else { return false }
-            if sourceType != .typeDirectory && !files.contentsEqual(atPath: source.path, andPath: installed.path) {
-                return false
-            }
-        }
-        return true
-    }
-
     private static func matches(_ value: String, _ pattern: String) -> Bool {
         value.range(of: pattern, options: .regularExpression) == value.startIndex..<value.endIndex
     }

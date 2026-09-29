@@ -12,10 +12,11 @@ Use `custom-xcode-build-service <command>`:
 | --- | --- |
 | `install [--package DIR]` | Install or update an extracted release package. |
 | `use custom` | Select the installed custom service, including after login. |
-| `use bundled` | Select Xcode's bundled service, keeping the CLI and installed releases. |
+| `use bundled` | Select Xcode's bundled service, keeping the CLI and installed payload. |
 | `status` | Show the installed release, selected service, and running services. |
 | `uninstall` | Remove the tool and restore Xcode's bundled service. |
 | `activate` | Reapply custom if selected; the login helper runs this automatically. |
+| `reload` | Restart managed build services for open Xcode clients after an update. |
 | `--help` | Show usage and options. |
 
 ## Requirements
@@ -46,9 +47,19 @@ add the following to your shell configuration (`~/.zshrc` for zsh):
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Quit and reopen **Xcode, your terminal application, and AI agent applications**.
-Start terminal-based agents from the restarted terminal. Then open a workspace
-or run `make` / `xcodebuild` as usual.
+On the first installation, quit and reopen **Xcode, your terminal application, and
+AI agent applications** so they inherit the custom service selection. Start
+terminal-based agents from the restarted terminal.
+
+For updates while custom is already selected, keep Xcode open and run:
+
+```sh
+custom-xcode-build-service reload
+```
+
+This stops only this user's managed custom build-service processes. Xcode and
+Xcode MCP clients start the updated service on their next request. In-flight
+requests may fail and need to be retried; finish explicit builds before reloading.
 
 <details>
 <summary>Install a downloaded archive</summary>
@@ -134,13 +145,23 @@ While custom is selected, the tool manages these settings through `launchctl`:
 
 | Setting | Value |
 | --- | --- |
-| `XCBBUILDSERVICE_PATH` | The installed service executable. |
+| `XCBBUILDSERVICE_PATH` | `~/Library/Developer/CustomXcodeBuildService/SWBBuildService.bundle/SWBBuildServiceBundle` (expanded to an absolute path). |
 | `DisableConcurrentDependencyResolution` | `0` (parallel dependency resolution). |
 
-Releases are stored in `~/Library/Developer/CustomXcodeBuildService`. When custom
-is selected, a helper in `~/Library/LaunchAgents` reapplies it at login. Selecting
-bundled removes that helper and the tool's environment overrides while keeping
-the installed releases and CLI. If macOS restores Xcode before the custom helper
+The payload is replaced at `~/Library/Developer/CustomXcodeBuildService/current`.
+The fixed `SWBBuildService.bundle` link points to the installed service and its
+resources together, so clients can locate both the executable and its plugins. The manifest
+records the installed version; new updates do not create version directories.
+
+When upgrading an older installation, `reload` replaces old version payloads with
+forwarding links. These small compatibility directories let already open clients
+continue using the old paths in their environment. They are removed by uninstall;
+after all clients from before migration have been restarted, they are no longer
+needed. No new legacy paths are added by subsequent updates.
+
+When custom is selected, a helper in `~/Library/LaunchAgents` reapplies it at login.
+Selecting bundled removes that helper and the tool's environment overrides while
+keeping the installed payload and CLI. If macOS restores Xcode before the custom helper
 runs, restart Xcode after checking `status`.
 
 ## Development
@@ -153,22 +174,27 @@ From the repository root, build and install the committed `HEAD`:
 python3 Utilities/CustomXcodeBuildService/Distribution/release.py install
 ```
 
-The command generates a local version, builds in a temporary directory, installs
-the result, and selects custom. It removes the temporary directory afterward.
+The command builds in a temporary directory, replaces the installed payload,
+selects custom, and runs `reload`. It does not run tests. A local version is
+recorded in the manifest, and the temporary build directory is removed afterward.
 Commit source changes before running it; uncommitted changes are not included.
 The build isolates inherited service overrides, so it can run while an older
 custom service is selected. Installation copies the payload into the managed
 installation directory; no GitHub release is needed.
 
-Quit and reopen **Xcode, your terminal application, and AI agent applications**
-after installation. Existing processes keep their previous service selection.
+Xcode and Xcode MCP clients which already use custom can remain open during
+updates. Their build services are restarted, so retry any interrupted request.
+The first switch from Xcode's bundled service still requires restarting clients
+to inherit the custom service selection.
 
 ### Checks
 
 Run checks from the repository root:
 
 ```sh
-swift test --package-path Utilities/CustomXcodeBuildService
+(cd Utilities/CustomXcodeBuildService && xcodebuild test \
+  -scheme CustomXcodeBuildService -testPlan CustomXcodeBuildService \
+  -destination 'platform=macOS,arch=arm64')
 python3 -m unittest discover -s Utilities/CustomXcodeBuildService/Distribution/tests -p 'test_*.py'
 ```
 
