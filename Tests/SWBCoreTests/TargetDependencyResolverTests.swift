@@ -2695,6 +2695,53 @@ fileprivate enum TargetPlatformSpecializationMode {
 // MARK: Test cases for resolving implicit dependencies
 
 @Suite fileprivate struct ImplicitDependencyResolutionTests: CoreBasedTests {
+    @Test(.requireSDKs(.macOS), arguments: [false, true])
+    func implicitLookupExcludesPackagesWithMatchingProductNames(useMacros: Bool) async throws {
+        let core = try await getCore()
+        let workspace = try TestWorkspace("Workspace", projects: [
+            TestProject("Project", groupTree: TestGroup("Files", children: [
+                TestFile("Shared.framework"),
+                TestFile("Plugin.ideplugin/Contents/MacOS/Plugin", fileType: "compiled.mach-o.dylib"),
+                TestFile("PackageOnly.framework"),
+            ]), buildConfigurations: [
+                TestBuildConfiguration("Debug", buildSettings: ["SDKROOT": "macosx"]),
+            ], targets: [
+                TestStandardTarget("App", type: .application, buildPhases: [
+                    TestFrameworksBuildPhase([
+                        TestBuildFile("Shared.framework"), TestBuildFile("Plugin"),
+                        TestBuildFile("PackageOnly.framework"), TestBuildFile(.target("PackageProduct")),
+                    ]),
+                ], dependencies: ["PackageProduct"]),
+                TestStandardTarget("NativeFramework", type: .framework, productReferenceName: "Shared.framework"),
+                TestStandardTarget("NativePlugin", type: .bundle, productReferenceName: "Plugin.ideplugin"),
+            ]),
+            TestPackageProject("Packages", groupTree: TestGroup("Files"), buildConfigurations: [
+                TestBuildConfiguration("Debug", buildSettings: ["SDKROOT": "macosx"]),
+            ], targets: [
+                TestPackageProductTarget("PackageProduct", frameworksBuildPhase: TestFrameworksBuildPhase([TestBuildFile(.target("Module"))]), dependencies: ["Module"]),
+                TestStandardTarget("Module", type: .objectFile),
+                TestStandardTarget("PackageFramework", type: .framework, buildConfigurations: [
+                    TestBuildConfiguration("Debug", buildSettings: ["PRODUCT_NAME": "Shared"]),
+                ], productReferenceName: useMacros ? "$(PRODUCT_NAME).framework" : "Shared.framework"),
+                TestStandardTarget("PackagePlugin", type: .bundle, buildConfigurations: [
+                    TestBuildConfiguration("Debug", buildSettings: ["PRODUCT_NAME": "Plugin"]),
+                ], productReferenceName: useMacros ? "$(PRODUCT_NAME).ideplugin" : "Plugin.ideplugin"),
+                TestStandardTarget("PackageOnly", type: .framework, productReferenceName: useMacros ? "$(TARGET_NAME).framework" : "PackageOnly.framework"),
+            ]),
+        ]).load(core)
+        let context = WorkspaceContext(core: core, workspace: workspace, processExecutionCache: .sharedForTesting)
+        let parameters = BuildParameters(configuration: "Debug")
+        let app = BuildRequest.BuildTargetInfo(parameters: parameters, target: workspace.projects[0].targets[0])
+        let request = BuildRequest(parameters: parameters, buildTargets: [app], continueBuildingAfterErrors: false, useParallelTargets: false, useImplicitDependencies: true, useDryRun: false)
+        for type in TargetGraphFactory.GraphType.allCases {
+            let delegate = EmptyTargetDependencyResolverDelegate(workspace: workspace)
+            let graph = await TargetGraphFactory(workspaceContext: context, buildRequest: request, buildRequestContext: BuildRequestContext(workspaceContext: context), delegate: delegate).graph(type: type)
+            #expect(Set(graph.allTargets.map { $0.target.name }) == ["App", "NativeFramework", "NativePlugin", "PackageProduct", "Module"])
+            #expect(Set(try graph.dependencies(app).map { $0.target.name }) == ["NativeFramework", "NativePlugin", "PackageProduct"])
+            delegate.checkNoDiagnostics()
+        }
+    }
+
     @Test(.requireSDKs(.macOS))
     func explicitProductStemsFollowConfiguredNames() async throws {
         let core = try await getCore()
