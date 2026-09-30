@@ -542,7 +542,10 @@ package final class SourcesTaskProducer: FilesBasedBuildPhaseTaskProducerBase, F
             // dependency would have produced, if any.
             func ssafDependencySidecarPath() -> Path? {
                 guard consumerInvokesSSAF, let producingTargetSettings else { return nil }
+                // Product references resolve the producer's default variant, including when the consumer
+                // builds another variant. Its SSAF input must describe that same linked binary.
                 let producerScope = producingTargetSettings.globalScope
+                let producerBinary = producerScope.evaluate(BuiltinMacros.TARGET_BUILD_DIR).join(producerScope.evaluate(BuiltinMacros.EXECUTABLE_PATH))
                 let producerTriples = producingTargetSettings.triplesForStrings(producerScope.evaluate(BuiltinMacros.TARGET_TRIPLES_BASE))
                 let sidecarScopes = producerTriples.map { producerScope.subscope(bindingTriple: $0) }.filter {
                     let machOType = $0.evaluate(BuiltinMacros.MACH_O_TYPE)
@@ -556,9 +559,9 @@ package final class SourcesTaskProducer: FilesBasedBuildPhaseTaskProducerBase, F
                 let rawSetting = producerScope.evaluateAsString(BuiltinMacros.SSAF_MULTI_ARCH_CREATE)
                 let multiArchCreate = rawSetting.isEmpty ? true : producerScope.evaluate(BuiltinMacros.SSAF_MULTI_ARCH_CREATE)
                 if sidecarScopes.count > 1, multiArchCreate {
-                    return Path(absolutePath.str + ".ssaf-staticlib.json")
+                    return Path(producerBinary.str + ".ssaf-staticlib.json")
                 }
-                return ssafArtifactPath(scope: sliceScope, binaryOutput: absolutePath, suffix: ".ssaf-staticlib.json")
+                return ssafArtifactPath(scope: sliceScope, binaryOutput: producerBinary, suffix: ".ssaf-staticlib.json")
             }
 
             if fileType.conformsTo(context.lookupFileType(identifier: "archive.ar")!) {

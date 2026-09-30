@@ -991,13 +991,14 @@ fileprivate struct ClangTests: CoreBasedTests {
 
     // This checks planned input/output edges without executing the SSAF tools.
     @Test(.requireSDKs(.macOS), arguments: [
-        (["INVOKE_SSAF": "YES"], ["arm64", "x86_64"]),
-        (["INVOKE_SSAF": "YES", "INVOKE_SSAF[arch=x86_64]": "NO"], ["arm64"]),
-        (["INVOKE_SSAF": "NO", "INVOKE_SSAF[arch=arm64]": "YES"], ["arm64"]),
-        (["INVOKE_SSAF": "NO"], []),
-        (["INVOKE_SSAF": "YES", "SSAF_MULTI_ARCH_CREATE": "NO"], ["arm64", "x86_64"]),
-    ])
-    func ssafDependencyInputsMatchGeneratedSlices(librarySettings: [String: String], enabledArchitectures: [String]) async throws {
+        (["INVOKE_SSAF": "YES"], ["arm64", "x86_64"], ["arm64", "x86_64"]),
+        (["INVOKE_SSAF": "YES", "INVOKE_SSAF[arch=x86_64]": "NO"], ["arm64"], ["arm64", "x86_64"]),
+        (["INVOKE_SSAF": "NO", "INVOKE_SSAF[arch=arm64]": "YES"], ["arm64"], ["arm64", "x86_64"]),
+        (["INVOKE_SSAF": "NO"], [], ["arm64", "x86_64"]),
+        (["INVOKE_SSAF": "YES", "SSAF_MULTI_ARCH_CREATE": "NO"], ["arm64", "x86_64"], ["arm64", "x86_64"]),
+        (["INVOKE_SSAF": "YES"], ["arm64"], ["arm64"]),
+    ] as [([String: String], [String], [String])])
+    func ssafDependencyInputsMatchGeneratedSlices(librarySettings: [String: String], enabledArchitectures: [String], architectures: [String]) async throws {
         let libtoolPath = try await self.libtoolPath
         let project = TestProject(
             "Project",
@@ -1007,7 +1008,10 @@ fileprivate struct ClangTests: CoreBasedTests {
                     "PRODUCT_NAME": "$(TARGET_NAME)",
                     "INVOKE_SSAF": "YES",
                     "EXTRACT_SUMMARIES": "CallGraph",
-                    "ARCHS": "arm64 x86_64",
+                    "ARCHS": architectures.joined(separator: " "),
+                    "BUILD_VARIANTS": "normal debug",
+                    "SKIP_INSTALL": "NO",
+                    "INSTALL_PATH": "/usr/local/lib",
                     "MACOSX_DEPLOYMENT_TARGET": "12.0",
                     "LIBTOOL": libtoolPath.str,
                 ]),
@@ -1022,32 +1026,48 @@ fileprivate struct ClangTests: CoreBasedTests {
                 ], buildPhases: [TestSourcesBuildPhase(["Library.c"])]),
             ])
         let tester = try await TaskConstructionTester(getCore(), project)
-        await tester.checkBuild(runDestination: .anyMac) { results in
-            var producedSidecars = Set<Path>()
-            results.checkTasks(.matchTargetName("Library"), .matchRuleType("LinkEntity")) { tasks in
-                producedSidecars.formUnion(tasks.flatMap { $0.outputs.map(\.path) }.filter { $0.str.hasSuffix(".ssaf-staticlib.json") })
-            }
-            results.checkTasks(.matchTargetName("Consumer"), .matchRuleType("LinkEntity")) { tasks in
-                let sliceTasks = tasks.filter { !$0.commandLineAsStrings.contains("multi-arch") }
-                #expect(sliceTasks.count == 2)
-                for arch in ["arm64", "x86_64"] {
-                    guard let task = sliceTasks.first(where: { task in
-                        task.outputs.contains { $0.path.str.contains("/Objects-normal/\(arch)/") }
-                    }) else {
-                        Issue.record("Missing consumer SSAF task for \(arch)")
-                        continue
-                    }
-                    let inputs = task.inputs.map(\.path).filter { $0.str.hasSuffix(".ssaf-staticlib.json") }
-                    #expect(inputs.count == (enabledArchitectures.contains(arch) ? 1 : 0))
-                    for input in inputs {
-                        #expect(producedSidecars.contains(input), "No task produces SSAF dependency input \(input)")
-                        if input.str.contains("/Binary/") {
-                            #expect(input.str.contains("/Objects-normal/\(arch)/"))
+        for parameters in [BuildParameters(action: .build, configuration: "Debug"), BuildParameters(action: .install, configuration: "Debug")] {
+            await tester.checkBuild(parameters, runDestination: .anyMac) { results in
+                var producedSidecars = Set<Path>()
+                results.checkTasks(.matchTargetName("Library"), .matchRuleType("LinkEntity")) { tasks in
+                    producedSidecars.formUnion(tasks.flatMap { $0.outputs.map(\.path) }.filter { $0.str.hasSuffix(".ssaf-staticlib.json") })
+                }
+                results.checkTasks(.matchTargetName("Consumer"), .matchRuleType("LinkEntity")) { tasks in
+                    let sliceTasks = tasks.filter { !$0.commandLineAsStrings.contains("multi-arch") }
+                    #expect(sliceTasks.count == architectures.count * 2)
+                    for variant in ["normal", "debug"] {
+                        for arch in architectures {
+                            let executable = variant == "normal" ? "Consumer.dylib" : "Consumer_debug.dylib"
+                            guard let task = sliceTasks.first(where: { task in
+                                task.outputs.contains {
+                                    $0.path.basename == executable + ".linked-summaries.json"
+                                        && (architectures.count == 1 || $0.path.str.contains("/Objects-\(variant)/\(arch)/"))
+                                }
+                            }) else {
+                                Issue.record("Missing consumer SSAF task for \(variant) \(arch)")
+                                continue
+                            }
+                            let inputs = task.inputs.map(\.path).filter { $0.str.hasSuffix(".ssaf-staticlib.json") }
+                            #expect(inputs.count == (enabledArchitectures.contains(arch) ? 1 : 0))
+                            for input in inputs {
+                                #expect(producedSidecars.contains(input), "No task produces SSAF dependency input \(input)")
+                                #expect(input.basename == "libLibrary.a.ssaf-staticlib.json")
+                                if input.str.contains("/Binary/") {
+                                    #expect(input.str.contains("/Objects-normal/\(arch)/"))
+                                }
+                            }
                         }
                     }
                 }
+                results.checkTasks(.matchTargetName("Consumer"), .matchRuleType("Ld")) { tasks in
+                    #expect(tasks.count == architectures.count * 2)
+                    for task in tasks {
+                        #expect(task.commandLineAsStrings.contains("-lLibrary"))
+                        #expect(!task.commandLineAsStrings.contains("-lLibrary_debug"))
+                    }
+                }
+                results.checkNoDiagnostics()
             }
-            results.checkNoDiagnostics()
         }
     }
 }
