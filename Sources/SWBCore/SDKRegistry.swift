@@ -544,6 +544,9 @@ public final class SDKRegistry: SDKRegistryLookup, CustomStringConvertible, Send
     /// The type of the SDK registry.
     private let type: SDKRegistryType
 
+    /// Directories searched for SDK bundles, including ones that did not exist when the registry was loaded.
+    private let searchPaths: [Path]
+
     /// The delegate.
     private let delegate: any SDKRegistryDelegate
 
@@ -577,6 +580,7 @@ public final class SDKRegistry: SDKRegistryLookup, CustomStringConvertible, Send
     @_spi(Testing) public init(delegate: any SDKRegistryDelegate, searchPaths: [(Path, Platform?)], type: SDKRegistryType, hostOperatingSystem: OperatingSystem) {
         self.delegate = delegate
         self.type = type
+        self.searchPaths = searchPaths.map { $0.0 }
         self.hostOperatingSystem = hostOperatingSystem
 
         extensions = delegate.pluginManager.extensions(of: SDKRegistryExtensionPoint.self)
@@ -1022,7 +1026,7 @@ public final class SDKRegistry: SDKRegistryLookup, CustomStringConvertible, Send
         return AnyCollection(sdksByCanonicalName.values)
     }
 
-    /// The on-disk files whose contents determine the identity of the registered SDKs.
+    /// The on-disk metadata files that identify registered SDKs and SDK candidates in the search directories.
     ///
     /// These are the small metadata files that carry an SDK's version and settings: `SDKSettings.plist`,
     /// `SDKSettings.json`, and the `SystemVersion.plist` that supplies `ProductBuildVersion`. Hashing these
@@ -1030,11 +1034,18 @@ public final class SDKRegistry: SDKRegistryLookup, CustomStringConvertible, Send
     /// existing install where the SDK path does not change — which are otherwise invisible to a long-running
     /// build service that caches this registry for the process lifetime.
     ///
-    /// Only the metadata files are returned, never the SDK bundle roots: `FilesSignature` recursively traverses
-    /// any directory it is given, and handing it a `.sdk` would walk every header in the SDK. Addition or removal
-    /// of an entire SDK is instead reflected by the changing membership of `allSDKs` (and thus of this list).
+    /// Search directory entries are read again so SDK additions are visible without mutating this registry.
+    /// Candidates without metadata are included to detect SDK installations that finish after a directory scan.
+    /// Only metadata paths are returned: passing SDK directories to `FilesSignature` would recursively walk
+    /// every header in each SDK.
     public var inputSignaturePaths: [Path] {
-        return allSDKs.map(\.path).sorted(by: { $0.str < $1.str }).flatMap { sdkPath in
+        var sdkPaths = Set(allSDKs.map(\.path))
+        for searchPath in searchPaths {
+            for name in (try? localFS.listdir(searchPath)) ?? [] where name.hasSuffix(".sdk") {
+                sdkPaths.insert(searchPath.join(name))
+            }
+        }
+        return sdkPaths.sorted(by: { $0.str < $1.str }).flatMap { sdkPath in
             [
                 sdkPath.join("SDKSettings.plist"),
                 sdkPath.join("SDKSettings.json"),

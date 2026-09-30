@@ -113,6 +113,54 @@ import SWBMacro
         }
     }
 
+    @Test(arguments: [(true, true), (true, false), (false, false)])
+    func inputSignatureDetectsSDKAdditions(searchDirectoryExists: Bool, hasRegisteredSDK: Bool) async throws {
+        let core = try await getCore()
+        try await withTemporaryDirectory { temporaryDirectory in
+            let searchPath = temporaryDirectory.join("SDKs")
+            if searchDirectoryExists {
+                try localFS.createDirectory(searchPath)
+            }
+            if hasRegisteredSDK {
+                let originalSDK = searchPath.join("original1.0.sdk")
+                try localFS.createDirectory(originalSDK)
+                try await localFS.writePlist(originalSDK.join("SDKSettings.plist"), ["CanonicalName": "original1.0", "Version": "1.0"])
+            }
+
+            let delegate = TestDataDelegate(pluginManager: core.pluginManager)
+            let registry = SDKRegistry(delegate: delegate, searchPaths: [(searchPath, nil)], type: .builtin, hostOperatingSystem: core.hostOperatingSystem)
+            let initialSignature = FilesSignature(registry.inputSignaturePaths)
+
+            let addedSDK = searchPath.join("added2.0.sdk")
+            try localFS.createDirectory(addedSDK, recursive: true)
+            let incompleteSignature = FilesSignature(registry.inputSignaturePaths)
+            #expect(incompleteSignature != initialSignature)
+
+            // Installing the metadata later must also invalidate a Core loaded while the bundle was incomplete.
+            try await localFS.writePlist(addedSDK.join("SDKSettings.plist"), ["CanonicalName": "added2.0", "Version": "2.0"])
+            let installedSignature = FilesSignature(registry.inputSignaturePaths)
+            #expect(installedSignature != incompleteSignature)
+            #expect(try registry.lookup("added") == nil)
+
+            let reloadedDelegate = TestDataDelegate(pluginManager: core.pluginManager)
+            let reloadedRegistry = SDKRegistry(delegate: reloadedDelegate, searchPaths: [(searchPath, nil)], type: .builtin, hostOperatingSystem: core.hostOperatingSystem)
+            #expect(try reloadedRegistry.lookup("added") != nil)
+            #expect(FilesSignature(reloadedRegistry.inputSignaturePaths) == installedSignature)
+
+            // Header changes belong to build input tracking, not SDK configuration invalidation.
+            let header = addedSDK.join("usr/include/example.h")
+            try localFS.createDirectory(header.dirname, recursive: true)
+            try localFS.write(header, contents: "int example(void);")
+            #expect(FilesSignature(registry.inputSignaturePaths) == installedSignature)
+
+            try localFS.removeDirectory(addedSDK)
+            #expect(FilesSignature(reloadedRegistry.inputSignaturePaths) != installedSignature)
+            #expect(FilesSignature(registry.inputSignaturePaths) == initialSignature)
+            #expect(delegate.errors == [])
+            #expect(reloadedDelegate.errors == [])
+        }
+    }
+
     @Test
     func loadedSettingsSurviveInPlaceSDKChanges() async throws {
         let hostOperatingSystem = try await getCore().hostOperatingSystem
