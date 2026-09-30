@@ -988,4 +988,66 @@ fileprivate struct ClangTests: CoreBasedTests {
             results.checkNoDiagnostics()
         }
     }
+
+    // This checks planned input/output edges without executing the SSAF tools.
+    @Test(.requireSDKs(.macOS), arguments: [
+        (["INVOKE_SSAF": "YES"], ["arm64", "x86_64"]),
+        (["INVOKE_SSAF": "YES", "INVOKE_SSAF[arch=x86_64]": "NO"], ["arm64"]),
+        (["INVOKE_SSAF": "NO", "INVOKE_SSAF[arch=arm64]": "YES"], ["arm64"]),
+        (["INVOKE_SSAF": "NO"], []),
+        (["INVOKE_SSAF": "YES", "SSAF_MULTI_ARCH_CREATE": "NO"], ["arm64", "x86_64"]),
+    ])
+    func ssafDependencyInputsMatchGeneratedSlices(librarySettings: [String: String], enabledArchitectures: [String]) async throws {
+        let libtoolPath = try await self.libtoolPath
+        let project = TestProject(
+            "Project",
+            groupTree: TestGroup("Sources", children: [TestFile("Consumer.c"), TestFile("Library.c")]),
+            buildConfigurations: [
+                TestBuildConfiguration("Debug", buildSettings: [
+                    "PRODUCT_NAME": "$(TARGET_NAME)",
+                    "INVOKE_SSAF": "YES",
+                    "EXTRACT_SUMMARIES": "CallGraph",
+                    "ARCHS": "arm64 x86_64",
+                    "MACOSX_DEPLOYMENT_TARGET": "12.0",
+                    "LIBTOOL": libtoolPath.str,
+                ]),
+            ],
+            targets: [
+                TestStandardTarget("Consumer", type: .dynamicLibrary, buildPhases: [
+                    TestSourcesBuildPhase(["Consumer.c"]),
+                    TestFrameworksBuildPhase([TestBuildFile(.target("Library"))]),
+                ], dependencies: ["Library"]),
+                TestStandardTarget("Library", type: .staticLibrary, buildConfigurations: [
+                    TestBuildConfiguration("Debug", buildSettings: librarySettings),
+                ], buildPhases: [TestSourcesBuildPhase(["Library.c"])]),
+            ])
+        let tester = try await TaskConstructionTester(getCore(), project)
+        await tester.checkBuild(runDestination: .anyMac) { results in
+            var producedSidecars = Set<Path>()
+            results.checkTasks(.matchTargetName("Library"), .matchRuleType("LinkEntity")) { tasks in
+                producedSidecars.formUnion(tasks.flatMap { $0.outputs.map(\.path) }.filter { $0.str.hasSuffix(".ssaf-staticlib.json") })
+            }
+            results.checkTasks(.matchTargetName("Consumer"), .matchRuleType("LinkEntity")) { tasks in
+                let sliceTasks = tasks.filter { !$0.commandLineAsStrings.contains("multi-arch") }
+                #expect(sliceTasks.count == 2)
+                for arch in ["arm64", "x86_64"] {
+                    guard let task = sliceTasks.first(where: { task in
+                        task.outputs.contains { $0.path.str.contains("/Objects-normal/\(arch)/") }
+                    }) else {
+                        Issue.record("Missing consumer SSAF task for \(arch)")
+                        continue
+                    }
+                    let inputs = task.inputs.map(\.path).filter { $0.str.hasSuffix(".ssaf-staticlib.json") }
+                    #expect(inputs.count == (enabledArchitectures.contains(arch) ? 1 : 0))
+                    for input in inputs {
+                        #expect(producedSidecars.contains(input), "No task produces SSAF dependency input \(input)")
+                        if input.str.contains("/Binary/") {
+                            #expect(input.str.contains("/Objects-normal/\(arch)/"))
+                        }
+                    }
+                }
+            }
+            results.checkNoDiagnostics()
+        }
+    }
 }

@@ -542,14 +542,23 @@ package final class SourcesTaskProducer: FilesBasedBuildPhaseTaskProducerBase, F
             // dependency would have produced, if any.
             func ssafDependencySidecarPath() -> Path? {
                 guard consumerInvokesSSAF, let producingTargetSettings else { return nil }
-                guard producingTargetSettings.globalScope.evaluate(BuiltinMacros.INVOKE_SSAF) else { return nil }
-                let producerBaseArchs: [String] = producingTargetSettings.globalScope.evaluate(BuiltinMacros.ARCHS_BASE)
-                if producerBaseArchs.count > 1 {
-                    let rawSetting = producingTargetSettings.globalScope.evaluateAsString(BuiltinMacros.SSAF_MULTI_ARCH_CREATE)
-                    let producerMultiArchCreate = rawSetting.isEmpty ? true : producingTargetSettings.globalScope.evaluate(BuiltinMacros.SSAF_MULTI_ARCH_CREATE)
-                    guard producerMultiArchCreate else { return nil }
+                let producerScope = producingTargetSettings.globalScope
+                let producerTriples = producingTargetSettings.triplesForStrings(producerScope.evaluate(BuiltinMacros.TARGET_TRIPLES_BASE))
+                let sidecarScopes = producerTriples.map { producerScope.subscope(bindingTriple: $0) }.filter {
+                    let machOType = $0.evaluate(BuiltinMacros.MACH_O_TYPE)
+                    return $0.evaluate(BuiltinMacros.INVOKE_SSAF) && (machOType == "staticlib" || machOType == "objectlib")
                 }
-                return Path(absolutePath.str + ".ssaf-staticlib.json")
+                guard let sliceScope = sidecarScopes.first(where: {
+                    $0.evaluate(BuiltinMacros.CURRENT_ARCH) == scope.evaluate(BuiltinMacros.CURRENT_ARCH)
+                }) else { return nil }
+
+                // The multi-arch bundle exists only when at least two SSAF slices are merged.
+                let rawSetting = producerScope.evaluateAsString(BuiltinMacros.SSAF_MULTI_ARCH_CREATE)
+                let multiArchCreate = rawSetting.isEmpty ? true : producerScope.evaluate(BuiltinMacros.SSAF_MULTI_ARCH_CREATE)
+                if sidecarScopes.count > 1, multiArchCreate {
+                    return Path(absolutePath.str + ".ssaf-staticlib.json")
+                }
+                return ssafArtifactPath(scope: sliceScope, binaryOutput: absolutePath, suffix: ".ssaf-staticlib.json")
             }
 
             if fileType.conformsTo(context.lookupFileType(identifier: "archive.ar")!) {
