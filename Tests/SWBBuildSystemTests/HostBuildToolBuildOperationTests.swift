@@ -832,9 +832,9 @@ fileprivate struct HostBuildToolBuildOperationTests: CoreBasedTests {
                         TestShellScriptBuildPhase(name: "UsesTool",
                                                   shellPath: "/bin/zsh",
                                                   originalObjectID: "UsesTool",
-                                                  contents: "${SCRIPT_INPUT_FILE_0} > ${SCRIPT_INPUT_FILE_0}",
+                                                  contents: "${SCRIPT_INPUT_FILE_0} > ${SCRIPT_OUTPUT_FILE_0}",
                                                   inputs: [tmpDirPath.join("Test/Index.noindex/Build/Products/Debug/Tool").str],
-                                                  outputs: [tmpDirPath.join("scriptoutput").str]),
+                                                  outputs: ["$(DERIVED_FILE_DIR)/scriptoutput"]),
                         TestSourcesBuildPhase(["frame.swift"]),
                     ], dependencies: [
                         "Tool"
@@ -876,6 +876,199 @@ fileprivate struct HostBuildToolBuildOperationTests: CoreBasedTests {
                 try results.checkTask(.matchTargetName("Framework"), .matchRuleType(ProductPlan.preparedForIndexPreCompilationRuleName)) { task in
                     try results.checkTaskFollows(task, .matchTargetName("Tool"), .matchRuleType("Ld"))
                 }
+            }
+        }
+    }
+
+    enum ScriptPhaseSkippedForIndexing: String, CaseIterable, CustomTestStringConvertible {
+        case outputOutsideBuildDirectory
+        case noOutputs
+        case scriptExecutionDisabled
+
+        var testDescription: String { rawValue }
+    }
+
+    @Test(.requireSDKs(.macOS), arguments: ScriptPhaseSkippedForIndexing.allCases)
+    func toolsConsumedOnlyByScriptPhasesSkippedForIndexingAreNotBuiltDuringIndexingPreparation(_ scenario: ScriptPhaseSkippedForIndexing) async throws {
+        try await withTemporaryDirectory { tmpDirPath async throws -> Void in
+            let outputs: [String]
+            var frameworkBuildSettings: [String: String] = [:]
+            switch scenario {
+            case .outputOutsideBuildDirectory:
+                outputs = [tmpDirPath.join("scriptoutput").str]
+            case .noOutputs:
+                outputs = []
+            case .scriptExecutionDisabled:
+                outputs = ["$(DERIVED_FILE_DIR)/scriptoutput"]
+                frameworkBuildSettings["INDEX_DISABLE_SCRIPT_EXECUTION"] = "YES"
+            }
+
+            let testProject = try await TestProject(
+                "aProject",
+                groupTree: TestGroup("Foo", children: [
+                    TestFile("tool.swift"),
+                    TestFile("frame.swift"),
+                ]), buildConfigurations: [
+                    TestBuildConfiguration(
+                        "Debug",
+                        buildSettings: [
+                            "SWIFT_VERSION": swiftVersion,
+                            "GENERATE_INFOPLIST_FILE": "YES",
+                            "PRODUCT_NAME": "$(TARGET_NAME)",
+                            "CODE_SIGNING_ALLOWED": "NO",
+                        ]),
+                ],
+                targets: [
+                    TestStandardTarget("Tool", type: .commandLineTool, buildConfigurations: [
+                        TestBuildConfiguration("Debug")
+                    ],
+                    buildPhases: [
+                        TestSourcesBuildPhase(["tool.swift"]),
+                    ]),
+                    TestStandardTarget("Framework", type: .framework, buildConfigurations: [
+                        TestBuildConfiguration("Debug", buildSettings: frameworkBuildSettings)
+                    ], buildPhases: [
+                        TestShellScriptBuildPhase(name: "UsesTool",
+                                                  shellPath: "/bin/zsh",
+                                                  originalObjectID: "UsesTool",
+                                                  contents: "${SCRIPT_INPUT_FILE_0}",
+                                                  inputs: [tmpDirPath.join("Test/Index.noindex/Build/Products/Debug/Tool").str],
+                                                  outputs: outputs,
+                                                  alwaysOutOfDate: scenario == .noOutputs),
+                        TestSourcesBuildPhase(["frame.swift"]),
+                    ], dependencies: [
+                        "Tool"
+                    ]),
+                ]
+            )
+            let testWorkspace = TestWorkspace("aWorkspace", sourceRoot: tmpDirPath.join("Test"), projects: [testProject])
+            let tester = try await BuildOperationTester(getCore(), testWorkspace, simulated: false, systemInfo: .init(operatingSystemVersion: Version(99, 98, 97), productBuildVersion: "99A98", nativeArchitecture: Architecture.host.stringValue ?? "undefined_arch"))
+
+            try await tester.fs.writeFileContents(testWorkspace.sourceRoot.join("aProject/tool.swift")) { stream in
+                stream <<<
+                """
+                @main struct Foo {
+                    static func main() {
+                        print("Hello from tool!")
+                    }
+                }
+                """
+            }
+
+            try await tester.fs.writeFileContents(testWorkspace.sourceRoot.join("aProject/frame.swift")) { stream in
+                stream <<<
+                """
+                public class MyClass {
+
+                }
+                """
+            }
+
+            try await tester.checkIndexBuild(prepareTargets: tester.workspace.targets(named: "Framework").map(\.guid), runDestination: .host, persistent: true) { results in
+                results.checkNoDiagnostics()
+
+                // The script phase doesn't run during prepare-for-index, so the tool it consumes isn't linked.
+                results.checkNoTask(.matchTargetName("Tool"), .matchRuleType("Ld"))
+                results.checkNoTask(.matchTargetName("Framework"), .matchRuleType("PhaseScriptExecution"))
+                results.checkTaskExists(.matchTargetName("Framework"), .matchRuleType(ProductPlan.preparedForIndexPreCompilationRuleName))
+            }
+        }
+    }
+
+    @Test(.requireSDKs(.macOS))
+    func toolDependenciesBuiltDuringIndexingPreparationExportVersionSymbols() async throws {
+        try await withTemporaryDirectory { tmpDirPath async throws -> Void in
+            let testProject = try await TestProject(
+                "aProject",
+                groupTree: TestGroup("Foo", children: [
+                    TestFile("Lib.h"),
+                    TestFile("lib.swift"),
+                    TestFile("tool.swift"),
+                    TestFile("consumer.swift"),
+                ]), buildConfigurations: [
+                    TestBuildConfiguration(
+                        "Debug",
+                        buildSettings: [
+                            "SWIFT_VERSION": swiftVersion,
+                            "GENERATE_INFOPLIST_FILE": "YES",
+                            "PRODUCT_NAME": "$(TARGET_NAME)",
+                            "CODE_SIGNING_ALLOWED": "NO",
+                        ]),
+                ],
+                targets: [
+                    TestStandardTarget("Lib", type: .framework, buildConfigurations: [
+                        TestBuildConfiguration("Debug", buildSettings: [
+                            "DEFINES_MODULE": "YES",
+                            "VERSIONING_SYSTEM": "apple-generic",
+                            "CURRENT_PROJECT_VERSION": "1",
+                            "SUPPORTS_TEXT_BASED_API": "YES",
+                        ])
+                    ], buildPhases: [
+                        TestSourcesBuildPhase(["lib.swift"]),
+                        TestHeadersBuildPhase([TestBuildFile("Lib.h", headerVisibility: .public)]),
+                    ]),
+                    TestStandardTarget("Tool", type: .commandLineTool, buildConfigurations: [
+                        TestBuildConfiguration("Debug")
+                    ], buildPhases: [
+                        TestSourcesBuildPhase(["tool.swift"]),
+                        TestFrameworksBuildPhase([TestBuildFile(.target("Lib"))]),
+                    ], dependencies: [
+                        "Lib"
+                    ]),
+                    TestStandardTarget("Consumer", type: .framework, buildConfigurations: [
+                        TestBuildConfiguration("Debug")
+                    ], buildPhases: [
+                        TestShellScriptBuildPhase(name: "UsesTool",
+                                                  shellPath: "/bin/zsh",
+                                                  originalObjectID: "UsesTool",
+                                                  contents: "touch ${SCRIPT_OUTPUT_FILE_0}",
+                                                  inputs: [tmpDirPath.join("Test/Index.noindex/Build/Products/Debug/Tool").str],
+                                                  outputs: ["$(DERIVED_FILE_DIR)/scriptoutput"]),
+                        TestSourcesBuildPhase(["consumer.swift"]),
+                    ], dependencies: [
+                        "Tool"
+                    ]),
+                ]
+            )
+            let testWorkspace = TestWorkspace("aWorkspace", sourceRoot: tmpDirPath.join("Test"), projects: [testProject])
+            let tester = try await BuildOperationTester(getCore(), testWorkspace, simulated: false, systemInfo: .init(operatingSystemVersion: Version(99, 98, 97), productBuildVersion: "99A98", nativeArchitecture: Architecture.host.stringValue ?? "undefined_arch"))
+
+            try await tester.fs.writeFileContents(testWorkspace.sourceRoot.join("aProject/Lib.h")) { stream in
+                stream <<<
+                """
+                #import <Foundation/Foundation.h>
+
+                FOUNDATION_EXPORT double LibVersionNumber;
+                FOUNDATION_EXPORT const unsigned char LibVersionString[];
+                """
+            }
+            try await tester.fs.writeFileContents(testWorkspace.sourceRoot.join("aProject/lib.swift")) { stream in
+                stream <<< "public func greeting() -> String { \"Hello from lib!\" }\n"
+            }
+            try await tester.fs.writeFileContents(testWorkspace.sourceRoot.join("aProject/tool.swift")) { stream in
+                stream <<<
+                """
+                import Lib
+
+                @main struct Foo {
+                    static func main() {
+                        print(greeting())
+                    }
+                }
+                """
+            }
+            try await tester.fs.writeFileContents(testWorkspace.sourceRoot.join("aProject/consumer.swift")) { stream in
+                stream <<< "public class Consumer {}\n"
+            }
+
+            try await tester.checkIndexBuild(prepareTargets: tester.workspace.targets(named: "Consumer").map(\.guid), runDestination: .host, persistent: true) { results in
+                // 'Lib' is fully built for 'Tool', so its binary exports the version symbols its header declares and passes TAPI verification.
+                // Clang compiles in the index arena get '-index-unit-output-path' without '-index-store-path'.
+                results.checkWarning(.contains("argument unused during compilation: '-index-unit-output-path"), failIfNotFound: false)
+                results.checkNoDiagnostics()
+                results.checkTaskExists(.matchTargetName("Lib"), .matchRuleType("CompileC"), .matchRuleItemBasename("Lib_vers.c"))
+                results.checkTaskExists(.matchTargetName("Lib"), .matchRuleType("GenerateTAPI"))
+                results.checkTaskExists(.matchTargetName("Tool"), .matchRuleType("Ld"))
             }
         }
     }
