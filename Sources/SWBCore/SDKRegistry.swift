@@ -105,6 +105,9 @@ public final class SDK: Sendable {
     /// The SDK product build version, if available.
     public let productBuildVersion: String?
 
+    /// The SDK settings used to construct this instance, preserved across in-place SDK updates.
+    package let settingsData: PropertyListItem
+
     /// The default build settings.
     public let defaultSettings: [String: PropertyListItem]
 
@@ -170,7 +173,8 @@ public final class SDK: Sendable {
     /// Note that this is technically "broken" for macOS, as the third version component in practice is more like a minor version, and macOS does not have true patch versions, but we'll respect the value in the SDK as-is for now.
     @_spi(Testing) public let maximumDeploymentTarget: Version?
 
-    init(_ canonicalName: String, canonicalNameComponents: CanonicalNameComponents?, _ aliases: Set<String>, _ cohortPlatforms: [String], _ displayName: String, platformName: String?, _ path: Path, _ version: Version?, _ productBuildVersion: String?, _ defaultSettings: [String: PropertyListItem], _ overrideSettings: [String: PropertyListItem], _ variants: [String: SDKVariant], _ defaultDeploymentTarget: Version?, _ defaultVariant: SDKVariant?, _ searchPaths: (header: [Path], framework: [Path], library: [Path]), _ directoryMacros: [StringMacroDeclaration], _ isBaseSDK: Bool, _ fallbackSettingConditionValues: [String], _ toolchains: [String], _ versionMap: [String:[Version:Version]], _ maximumDeploymentTarget: Version?) {
+    init(_ canonicalName: String, canonicalNameComponents: CanonicalNameComponents?, _ aliases: Set<String>, _ cohortPlatforms: [String], _ displayName: String, platformName: String?, _ path: Path, _ version: Version?, _ productBuildVersion: String?, _ defaultSettings: [String: PropertyListItem], _ overrideSettings: [String: PropertyListItem], _ variants: [String: SDKVariant], _ defaultDeploymentTarget: Version?, _ defaultVariant: SDKVariant?, _ searchPaths: (header: [Path], framework: [Path], library: [Path]), _ directoryMacros: [StringMacroDeclaration], _ isBaseSDK: Bool, _ fallbackSettingConditionValues: [String], _ toolchains: [String], _ versionMap: [String:[Version:Version]], _ maximumDeploymentTarget: Version?, settingsData: PropertyListItem) {
+        self.settingsData = settingsData
         self.canonicalName = canonicalName
         self.canonicalNameComponents = canonicalNameComponents
         self.aliases = aliases
@@ -959,7 +963,7 @@ public final class SDKRegistry: SDKRegistryLookup, CustomStringConvertible, Send
         }
 
         // Construct the SDK and add it to the registry.
-        let sdk = SDK(canonicalName, canonicalNameComponents: try? parseSDKName(canonicalName), aliases, cohortPlatforms, displayName, platformName: defaultSettings["PLATFORM_NAME"]?.stringValue, path, version, productBuildVersion, defaultSettings, overrideSettings, variants, defaultDeploymentTarget, defaultVariant, (headerSearchPaths, frameworkSearchPaths, librarySearchPaths), directoryMacros.elements, isBaseSDK, fallbackSettingConditionValues, toolchains, versionMap, maximumDeploymentTarget)
+        let sdk = SDK(canonicalName, canonicalNameComponents: try? parseSDKName(canonicalName), aliases, cohortPlatforms, displayName, platformName: defaultSettings["PLATFORM_NAME"]?.stringValue, path, version, productBuildVersion, defaultSettings, overrideSettings, variants, defaultDeploymentTarget, defaultVariant, (headerSearchPaths, frameworkSearchPaths, librarySearchPaths), directoryMacros.elements, isBaseSDK, fallbackSettingConditionValues, toolchains, versionMap, maximumDeploymentTarget, settingsData: data)
 
         // Load before publishing so concurrent lookups can't see a partially initialized SDK.
         if let namespace {

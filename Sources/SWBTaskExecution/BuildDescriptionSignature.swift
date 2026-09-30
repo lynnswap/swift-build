@@ -43,6 +43,13 @@ package struct BuildDescriptionSignatureComponents: Codable, Hashable, Sendable 
         let macroConfigSignature: FilesSignature
     }
 
+    struct SDKMetadata: Codable, Hashable, Sendable {
+        let path: Path
+        let settings: PropertyListItem
+        let version: Version?
+        let productBuildVersion: String?
+    }
+
     let workspaceSignature: String
     let buildRequestParameters: BuildParameters
     let useParallelTargets: Bool
@@ -64,6 +71,10 @@ package struct BuildDescriptionSignatureComponents: Codable, Hashable, Sendable 
     /// SDKs that have no `ProductBuildVersion`, and edits to `SDKSettings.plist`/`SDKSettings.json` that don't move
     /// the version — so an updated SDK forces a fresh build description rather than reusing the previous one from disk.
     let sdkInputsSignature: FilesSignature
+
+    /// Existing sessions keep their loaded SDK settings after a new Core observes an SDK update.
+    /// Include those settings so descriptions built by the two Cores cannot share a disk cache entry.
+    let sdkMetadata: [SDKMetadata]
 
     fileprivate init(_ request: BuildPlanRequest) {
         workspaceSignature = request.workspaceContext.workspace.signature
@@ -103,6 +114,9 @@ package struct BuildDescriptionSignatureComponents: Codable, Hashable, Sendable 
         // Hash the SDK metadata files directly, so in-place SDK edits — including version bumps and SDKs updated
         // independently of Xcode — force a fresh build description instead of reusing a stale one from disk.
         sdkInputsSignature = request.workspaceContext.core.sdkInputsSignature
+        sdkMetadata = request.workspaceContext.core.sdkRegistry.allSDKs.sorted(by: { $0.path.str < $1.path.str }).map {
+            SDKMetadata(path: $0.path, settings: $0.settingsData, version: $0.version, productBuildVersion: $0.productBuildVersion)
+        }
     }
 }
 

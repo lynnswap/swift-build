@@ -114,6 +114,39 @@ import SWBMacro
     }
 
     @Test
+    func loadedSettingsSurviveInPlaceSDKChanges() async throws {
+        let hostOperatingSystem = try await getCore().hostOperatingSystem
+        let original: PropertyListItem = [
+            "CanonicalName": "toastos1.0", "Version": "1.0", "IsBaseSDK": "YES",
+            "DefaultProperties": ["SETTING": "before"],
+        ]
+        try await withRegistryForTestInputs([("toastos1.0.sdk", original)]) { registry, delegate, path in
+            let oldSDK = try #require(registry.lookup("toastos"))
+            let oldDiskSignature = FilesSignature(registry.inputSignaturePaths)
+            let updated: PropertyListItem = [
+                "CanonicalName": "toastos1.0", "Version": "1.0", "IsBaseSDK": "YES",
+                "DefaultProperties": ["SETTING": "after"],
+            ]
+            try await localFS.writePlist(oldSDK.path.join("SDKSettings.plist"), updated)
+            let newDelegate = TestDataDelegate(pluginManager: delegate.pluginManager)
+            let newRegistry = SDKRegistry(delegate: newDelegate, searchPaths: [(path, nil)], type: .builtin, hostOperatingSystem: hostOperatingSystem)
+            let newSDK = try #require(newRegistry.lookup("toastos"))
+
+            // Both registries now see the same disk metadata, but existing sessions still use the old settings.
+            #expect(oldDiskSignature != FilesSignature(registry.inputSignaturePaths))
+            #expect(FilesSignature(registry.inputSignaturePaths) == FilesSignature(newRegistry.inputSignaturePaths))
+            #expect(oldSDK.version == newSDK.version)
+            #expect(oldSDK.productBuildVersion == newSDK.productBuildVersion)
+            #expect(oldSDK.settingsData == original)
+            #expect(newSDK.settingsData == updated)
+            #expect(oldSDK.defaultSettings["SETTING"] == "before")
+            #expect(newSDK.defaultSettings["SETTING"] == "after")
+            #expect(delegate.errors == [])
+            #expect(newDelegate.errors == [])
+        }
+    }
+
+    @Test
     func parsingCanonicalName() async throws {
         func parseAndCheck(sdkName: String, check: (SDK.CanonicalNameComponents?, String?) -> Void) async throws {
             let components: SDK.CanonicalNameComponents?
