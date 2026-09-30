@@ -671,6 +671,9 @@ package final class SourcesTaskProducer: FilesBasedBuildPhaseTaskProducerBase, F
                     dsymPath: dsymPath,
                     privacyFile: privacyFile
                 ))
+                if let sidecar = ssafDependencySidecarPath() {
+                    ssafDependencyInputs.append(sidecar)
+                }
             } else if fileType.conformsTo(context.lookupFileType(identifier: "compiled.mach-o.objfile")!) {
                 librarySpecifiers.append(LinkerSpec.LibrarySpecifier(
                     kind: .object,

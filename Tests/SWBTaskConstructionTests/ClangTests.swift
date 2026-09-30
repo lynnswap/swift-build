@@ -1070,4 +1070,59 @@ fileprivate struct ClangTests: CoreBasedTests {
             }
         }
     }
+    @Test(.requireSDKs(.macOS), arguments: [
+        ("staticlib", ["arm64"]),
+        ("staticlib", ["arm64", "x86_64"]),
+        ("mh_dylib", ["arm64"]),
+        ("mh_dylib", ["arm64", "x86_64"]),
+    ] as [(String, [String])])
+    func ssafDependencyInputsIncludeStaticFrameworks(machOType: String, architectures: [String]) async throws {
+        let libtoolPath = try await self.libtoolPath
+        let project = TestProject(
+            "Project",
+            groupTree: TestGroup("Sources", children: [TestFile("Consumer.c"), TestFile("Framework.c")]),
+            buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: [
+                "PRODUCT_NAME": "$(TARGET_NAME)",
+                "INVOKE_SSAF": "YES",
+                "EXTRACT_SUMMARIES": "CallGraph",
+                "ARCHS": architectures.joined(separator: " "),
+                "MACOSX_DEPLOYMENT_TARGET": "12.0",
+                "LIBTOOL": libtoolPath.str,
+                "CODE_SIGNING_ALLOWED": "NO",
+                "GENERATE_INFOPLIST_FILE": "YES",
+                "SKIP_INSTALL": "NO",
+            ])],
+            targets: [
+                TestStandardTarget("Consumer", type: .dynamicLibrary, buildPhases: [
+                    TestSourcesBuildPhase(["Consumer.c"]),
+                    TestFrameworksBuildPhase([TestBuildFile(.target("Framework"))]),
+                ], dependencies: ["Framework"]),
+                TestStandardTarget("Framework", type: .framework, buildConfigurations: [
+                    TestBuildConfiguration("Debug", buildSettings: ["MACH_O_TYPE": machOType]),
+                ], buildPhases: [TestSourcesBuildPhase(["Framework.c"])]),
+            ])
+        let tester = try await TaskConstructionTester(getCore(), project)
+        for parameters in [BuildParameters(action: .build, configuration: "Debug"), BuildParameters(action: .install, configuration: "Debug")] {
+            await tester.checkBuild(parameters, runDestination: .anyMac) { results in
+                var producedSidecars = Set<Path>()
+                results.checkTasks(.matchTargetName("Framework"), .matchRuleType("LinkEntity")) { tasks in
+                    producedSidecars.formUnion(tasks.flatMap { $0.outputs.map(\.path) }.filter { $0.str.hasSuffix(".ssaf-staticlib.json") })
+                }
+                #expect(producedSidecars.isEmpty == (machOType != "staticlib"))
+                results.checkTasks(.matchTargetName("Consumer"), .matchRuleType("LinkEntity")) { tasks in
+                    let sliceTasks = tasks.filter { !$0.commandLineAsStrings.contains("multi-arch") }
+                    #expect(sliceTasks.count == architectures.count)
+                    for task in sliceTasks {
+                        let inputs = task.inputs.map(\.path).filter { $0.str.hasSuffix(".ssaf-staticlib.json") }
+                        #expect(inputs.count == (machOType == "staticlib" ? 1 : 0))
+                        for input in inputs {
+                            #expect(producedSidecars.contains(input), "No framework task produces SSAF dependency input \(input)")
+                        }
+                    }
+                }
+                results.checkNoDiagnostics()
+            }
+        }
+    }
+
 }
