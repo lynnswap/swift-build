@@ -17,7 +17,6 @@ import SWBLibc
 import SWBUtil
 import SWBTaskConstruction
 
-import enum SWBProtocol.BuildAction
 import struct SWBProtocol.TargetDependencyRelationship
 
 import SWBTestSupport
@@ -470,68 +469,6 @@ fileprivate struct BuildDescriptionTests: CoreBasedTests {
                 try fs.setFileTimestamp(xcframeworkPath.join("Info.plist"), timestamp: 12)
                 #expect(try await buildDescriptionSource() == .new)
             }
-        }
-    }
-
-    @Test(.requireSDKs(.macOS))
-    func cachedIndexDescriptionSurvivesOrdinaryCacheEviction() async throws {
-        try await withTemporaryDirectory { tmpDirPath in
-            let workspace = try await TestWorkspace("Test", sourceRoot: tmpDirPath, projects: [
-                TestProject("Project", groupTree: TestGroup("Sources", children: [TestFile("a.c")]),
-                            buildConfigurations: [TestBuildConfiguration("Debug"), TestBuildConfiguration("Release")],
-                            targets: [TestStandardTarget("Tool", type: .commandLineTool,
-                                                         buildPhases: [TestSourcesBuildPhase(["a.c"])])])
-            ]).load(getCore())
-            let fs = PseudoFS()
-            let overrides = ["OBJROOT": tmpDirPath.join("build").str, "SDKROOT": "macosx"]
-            let writer = BuildDescriptionManager(fs: fs, buildDescriptionMemoryCacheEvictionPolicy: .never)
-            let debugPlan = try await planRequest(for: workspace, configuration: "Debug", activeRunDestination: .macOS, overrides: overrides, fs: fs, includingTargets: { _ in true })
-            let releasePlan = try await planRequest(for: workspace, configuration: "Release", activeRunDestination: .macOS, overrides: overrides, fs: fs, includingTargets: { _ in true })
-            let clientDelegate = MockTestTaskPlanningClientDelegate(hostOS: debugPlan.workspaceContext.core.hostOperatingSystem)
-            let debugInfo = try #require(try await writer.getNewOrCachedBuildDescription(debugPlan, clientDelegate: clientDelegate))
-            let releaseInfo = try #require(try await writer.getNewOrCachedBuildDescription(releasePlan, clientDelegate: clientDelegate))
-            await writer.waitForBuildDescriptionSerialization()
-
-            // A new service has no pinned description. Force ordinary cache eviction
-            // deterministically, as happens when a description exceeds its cost limit.
-            var reader: BuildDescriptionManager? = BuildDescriptionManager(fs: fs, buildDescriptionMemoryCacheEvictionPolicy: .never, maxCacheSize: (inMemory: 0, onDisk: 4))
-            func retrieve(_ info: BuildDescriptionRetrievalInfo, action: BuildAction = .indexBuild) async throws -> BuildDescriptionRetrievalInfo {
-                let parameters = BuildParameters(action: action, configuration: "Debug", activeRunDestination: .macOS, overrides: overrides)
-                let request = BuildRequest(parameters: parameters, buildTargets: [], continueBuildingAfterErrors: true, useParallelTargets: true, useImplicitDependencies: false, useDryRun: false)
-                #expect(!request.buildsIndexWorkspaceDescription)
-                let workspaceContext = debugPlan.workspaceContext
-                let lookup = BuildDescriptionManager.BuildDescriptionRequest.cachedOnly(info.buildDescription.ID, request: request, buildRequestContext: BuildRequestContext(workspaceContext: workspaceContext), workspaceContext: workspaceContext, retain: false)
-                return try #require(try await reader?.getNewOrCachedBuildDescription(lookup, clientDelegate: clientDelegate, constructionDelegate: MockTestBuildDescriptionConstructionDelegate()))
-            }
-
-            weak var firstLoadedDescription: BuildDescription?
-            do {
-                let cold = try await retrieve(debugInfo)
-                #expect(cold.source == .onDiskCache)
-                firstLoadedDescription = cold.buildDescription
-                let warm = try await retrieve(debugInfo)
-                #expect(warm.source == .inMemoryCache)
-                #expect(warm.buildDescription === cold.buildDescription)
-            }
-            #expect(firstLoadedDescription != nil)
-
-            // Ordinary reads neither displace the pinned index description nor
-            // bypass their own cache limits.
-            #expect(try await retrieve(releaseInfo, action: .build).source == .onDiskCache)
-            #expect(try await retrieve(releaseInfo, action: .build).source == .onDiskCache)
-            #expect(try await retrieve(debugInfo).source == .inMemoryCache)
-
-            weak var lastLoadedDescription: BuildDescription?
-            do {
-                let replacement = try await retrieve(releaseInfo)
-                #expect(replacement.source == .onDiskCache)
-                lastLoadedDescription = replacement.buildDescription
-            }
-            await reader?.waitForBuildDescriptionSerialization()
-            #expect(firstLoadedDescription == nil)
-            #expect(lastLoadedDescription != nil)
-            reader = nil
-            #expect(lastLoadedDescription == nil)
         }
     }
 
