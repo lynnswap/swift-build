@@ -18,6 +18,28 @@ import SWBTestSupport
 
 @Suite(.skipHostOS(.windows))
 fileprivate struct BuildServiceTests: CoreBasedTests {
+    @Test(.requireSDKs(.macOS))
+    func sessionCreationRecoversAfterCoreInitializationFailure() async throws {
+        let developerPath = try await Xcode.getActiveDeveloperDirectoryPath()
+        try await withTemporaryDirectory { temporaryDirectory in
+            let applicationPath = temporaryDirectory.join("Xcode.app")
+            let temporaryDeveloperPath = applicationPath.join("Contents/Developer")
+            try localFS.createDirectory(applicationPath)
+
+            try await withBuildService { service in
+                let (failedResult, diagnostics) = await service.createSession(name: "Before repair", developerPath: temporaryDeveloperPath.str, cachePath: nil, inferiorProductsPath: nil, environment: nil)
+                #expect(throws: (any Error).self) { try failedResult.get() }
+                #expect(!diagnostics.isEmpty)
+
+                // Repair the same developer path without changing the cache key or restarting the service.
+                try localFS.symlink(applicationPath.join("Contents"), target: developerPath.dirname)
+                let (result, _) = await service.createSession(name: "After repair", developerPath: temporaryDeveloperPath.str, cachePath: nil, inferiorProductsPath: nil, environment: nil)
+                let session = try result.get()
+                try await session.close()
+            }
+        }
+    }
+
     @Test func createXCFramework() async throws {
         do {
             let (result, message) = try await withBuildService { await $0.createXCFramework([], currentWorkingDirectory: Path.root.str, developerPath: nil) }

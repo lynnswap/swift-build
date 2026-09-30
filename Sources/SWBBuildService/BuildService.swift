@@ -162,11 +162,11 @@ open class BuildService: Service, @unchecked Sendable {
         // If we already have a loaded Core for this key, confirm its SDKs haven't changed on disk before reusing it.
         // The cache key does not capture SDK contents, so an in-place SDK update (e.g. a version bump applied to an
         // existing install at the same path) would otherwise be masked by the cached, stale `SDKRegistry`.
-        if let (cachedCore, cachedSignature, diagnostics) = await sharedCoreCache.peek(forKey: key), let cachedCore, let cachedSignature {
-            if cachedCore.sdkInputsSignature == cachedSignature {
+        if let (cachedCore, cachedSignature, diagnostics) = await sharedCoreCache.peek(forKey: key) {
+            if let cachedCore, let cachedSignature, cachedCore.sdkInputsSignature == cachedSignature {
                 return (cachedCore, diagnostics)
             }
-            // The SDKs changed underneath us; drop the stale Core so it is rebuilt below.
+            // Retry failed initialization as well, since SDK metadata may have been repaired.
             await sharedCoreCache.remove(forKey: key)
         }
 
