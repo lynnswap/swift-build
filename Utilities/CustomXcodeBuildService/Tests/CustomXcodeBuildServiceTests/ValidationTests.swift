@@ -21,7 +21,7 @@ func rejectsInvalidReleaseVersions(version: String) throws {
 }
 
 @Test(arguments: ["local-build", "v1.0.0", "custom-v1.0"])
-func packageVersionOnlyNeedsToIdentifyItsInstallationDirectory(version: String) throws {
+func acceptsNonSemverReleaseLabels(version: String) throws {
     let fixture = try Fixture()
     _ = try fixture.manager.install(from: fixture.package(version))
     #expect(try fixture.store.selectedPackage()?.manifest.version == version)
@@ -70,7 +70,7 @@ func installationStillRequiresBundlePropertyLists(path: String) throws {
     }
     _ = try fixture.manager.install(from: package)
     let installed = try #require(try fixture.store.selectedPackage())
-    #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == installed.service.path)
+    #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == fixture.store.service.path)
     #expect(fixture.runner.loaded)
 }
 
@@ -136,6 +136,7 @@ func uninstallRemovesOwnedLinksWithoutFollowingDestinations(path: String) throws
     _ = try fixture.manager.install(from: package)
     let link = fixture.store.root.appendingPathComponent(path)
     if try fixture.store.exists(link) { try FileManager.default.removeItem(at: link) }
+    try FileManager.default.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
     try FileManager.default.createSymbolicLink(at: link, withDestinationURL: package)
 
     _ = try fixture.manager.uninstall()
@@ -162,15 +163,16 @@ func installsThroughUserDirectoryLinksWithoutRemovingOtherContents(parent: Strin
     #expect(try FileManager.default.destinationOfSymbolicLink(atPath: link.path) == other.path)
 }
 
-@Test func installationDoesNotPublishThroughALinkedVersionsDirectory() throws {
+@Test func installationLeavesLegacyDirectoryLinksAloneAndReloadDoesNotFollowThem() throws {
     let fixture = try Fixture()
     try fixture.store.initializeRoot()
     let other = fixture.directory.appendingPathComponent("unrelated")
     try fixture.write("preserve", to: other.appendingPathComponent("file"))
     try FileManager.default.createSymbolicLink(at: fixture.store.versions, withDestinationURL: other)
-    #expect(throws: ServiceError.self) { try fixture.manager.install(from: fixture.package("custom-v1.0.0")) }
+    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
+    #expect(throws: ServiceError.self) { try fixture.manager.reload() }
     #expect(try FileManager.default.contentsOfDirectory(atPath: other.path) == ["file"])
-    #expect(fixture.runner.launchctlMutations.isEmpty)
+    #expect(fixture.runner.killedPIDs.isEmpty)
 }
 
 @Test func parserAcceptsOnlyDocumentedCommands() throws {
@@ -179,6 +181,7 @@ func installsThroughUserDirectoryLinksWithoutRemovingOtherContents(parent: Strin
     #expect(try Command(arguments: ["install", "--package", "/a path"]) == .install(package: "/a path"))
     #expect(try Command(arguments: ["use", "custom"]) == .use(.custom))
     #expect(try Command(arguments: ["use", "bundled"]) == .use(.bundled))
+    #expect(try Command(arguments: ["reload"]) == .reload)
     for arguments in [["install", "--package"], ["install", "--package", "--help"], ["status", "extra"], ["unknown"],
                       ["use"], ["use", "default"], ["use", "custom", "extra"], ["use", "bundled", "extra"]] {
         #expect(throws: ServiceError.self) { try Command(arguments: arguments) }

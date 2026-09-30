@@ -92,7 +92,7 @@ func interruptedStagingDoesNotBecomeAnInstalledVersion(command: String) throws {
     case "activate":
         fixture.runner.settings = [:]
         _ = try fixture.manager.activate()
-        #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == selected.service.path)
+        #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == fixture.store.service.path)
     default:
         _ = try fixture.manager.uninstall()
         #expect(try fixture.store.selectedPackage() == nil)
@@ -106,7 +106,7 @@ func interruptedStagingDoesNotBecomeAnInstalledVersion(command: String) throws {
 @Test func uninstallRemovesStagingLinkWithoutDeletingItsDestination() throws {
     let fixture = try Fixture()
     _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
-    try FileManager.default.removeItem(at: fixture.store.staging)
+    if try fixture.store.exists(fixture.store.staging) { try FileManager.default.removeItem(at: fixture.store.staging) }
     let external = fixture.directory.appendingPathComponent("unrelated")
     try fixture.write("preserve", to: external.appendingPathComponent("file"))
     try FileManager.default.createSymbolicLink(at: fixture.store.staging, withDestinationURL: external)

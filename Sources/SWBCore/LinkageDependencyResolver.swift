@@ -75,9 +75,8 @@ fileprivate extension LinkageDependencyResolver {
 actor LinkageDependencyResolver {
     /// Lazily-built target lookup maps, keyed by (evaluated) product name and by product-name stem.
     ///
-    /// Building these forces `getCachedSettings` — and thus `Settings` construction — for every workspace
-    /// target whose product-reference name is a build setting expression, which for SwiftPM packages is
-    /// *every* module target (`$(EXECUTABLE_NAME)`/`$(WRAPPER_NAME)`). The maps are only consulted during
+    /// Building these forces `getCachedSettings` — and thus potentially `Settings` construction — for each
+    /// eligible target whose product-reference name is a build setting expression. The maps are only consulted during
     /// implicit-dependency resolution (`implicitDependency(forProductName:)` / `forProductNameStem:`), so
     /// projects that use only explicit dependencies (all SwiftPM packages) never need them. Build them
     /// lazily on first use to avoid that per-target `Settings` construction on every build — it was the
@@ -89,16 +88,19 @@ actor LinkageDependencyResolver {
     private let productNameMapsCache = LazyCache { (resolver: LinkageDependencyResolver) -> ProductNameMaps in
         var byProductName = [String: Set<StandardTarget>]()
         var byProductNameStem = [String: Set<StandardTarget>]()
-        for case let target as StandardTarget in resolver.workspaceContext.workspace.allTargets {
-            // The product reference name may itself be a build setting expression, so evaluate it to obtain the concrete basename that lookups (which use resolved build file paths) will match against.
-            let productName = target.productReference.evaluatedName(computeSettings: { resolver.buildRequestContext.getCachedSettings(resolver.buildRequest.parameters, target: target) })
+        // Package targets are only resolved through explicit dependencies.
+        for project in resolver.workspaceContext.workspace.projects where !project.isPackage {
+            for case let target as StandardTarget in project.targets {
+                // The product reference name may itself be a build setting expression, so evaluate it to obtain the concrete basename that lookups (which use resolved build file paths) will match against.
+                let productName = target.productReference.evaluatedName(computeSettings: { resolver.buildRequestContext.getCachedSettings(resolver.buildRequest.parameters, target: target) })
 
-            // Add to the mapping by the full product name.
-            byProductName[productName, default: []].insert(target)
+                // Add to the mapping by the full product name.
+                byProductName[productName, default: []].insert(target)
 
-            // Add to the mapping by the name stem, if different from the full product name; if it is the same, then lookups should instead end up using the full-name table we created above.
-            if let stem = Path(productName).stem, stem != productName {
-                byProductNameStem[stem, default: []].insert(target)
+                // Add to the mapping by the name stem, if different from the full product name; if it is the same, then lookups should instead end up using the full-name table we created above.
+                if let stem = Path(productName).stem, stem != productName {
+                    byProductNameStem[stem, default: []].insert(target)
+                }
             }
         }
         return ProductNameMaps(byProductName: byProductName, byProductNameStem: byProductNameStem)
@@ -250,6 +252,8 @@ actor LinkageDependencyResolver {
             // The product reference name may itself be a build setting expression, so evaluate it in the dependency's scope to obtain the concrete basename.
             return standardTarget.productReference.evaluatedName(computeSettings: { buildRequestContext.getCachedSettings(dependency.parameters, target: dependency.target) })
         })
+        // Full-name matches do not need stems; compute them only on the first fallback lookup.
+        var productNameStemsOfExplicitDependencies: Set<String>?
 
         // Get information about the configured target which we need to determine its implicit dependencies.
         let buildFileFilter = LinkageDependencyBuildFileFilteringContext(scope: configuredTargetSettings.globalScope)
@@ -303,8 +307,12 @@ actor LinkageDependencyResolver {
                     // Look for a target which generates a product with the stem of this name.
                     //
                     // The purpose of this logic (at present) is to be able to resolve implicit dependencies when linking against the binary inside of an arbitrary bundle.  For example, this can be used for the Xcode workspace itself to deal with linking against the binary inside a .ideplugin.
-                    if let stem = buildFilePath.stem, !productNamesOfExplicitDependencies.contains(where: { Path($0).stem == stem }), let implicitDependency = await implicitDependency(forProductNameStem: stem, buildFilePath: buildFilePath, from: configuredTarget, imposedParameters: imposedParameters, source: .productNameStem(stem, buildFile: buildFile, buildPhase: buildPhase)) {
-                        await result.append(ResolvedTargetDependency(target: implicitDependency, reason: .implicitBuildPhaseLinkage(filename: productName, buildableItem: buildFile.buildableItem, buildPhase: buildPhase.name)))
+                    if let stem = buildFilePath.stem {
+                        let explicitStems = productNameStemsOfExplicitDependencies ?? Set(productNamesOfExplicitDependencies.compactMap { Path($0).stem })
+                        productNameStemsOfExplicitDependencies = explicitStems
+                        if !explicitStems.contains(stem), let implicitDependency = await implicitDependency(forProductNameStem: stem, buildFilePath: buildFilePath, from: configuredTarget, imposedParameters: imposedParameters, source: .productNameStem(stem, buildFile: buildFile, buildPhase: buildPhase)) {
+                            await result.append(ResolvedTargetDependency(target: implicitDependency, reason: .implicitBuildPhaseLinkage(filename: productName, buildableItem: buildFile.buildableItem, buildPhase: buildPhase.name)))
+                        }
                     }
                 }
 
@@ -378,11 +386,6 @@ actor LinkageDependencyResolver {
 
     /// Check if `candidateDependency` is an appropriate implicit dependency for the target whose dependency we're resolving.
     private func implicitDependency(candidate candidateDependencyTarget: Target, parameters candidateParameters: BuildParameters, isValidFor configuredTarget: ConfiguredTarget, imposedParameters: SpecializationParameters?, resolver: isolated DependencyResolver) -> ConfiguredTarget? {
-
-        // Package targets should never be returned as an implicit dependency.
-        guard !workspaceContext.workspace.project(for: candidateDependencyTarget).isPackage else {
-            return nil
-        }
 
         // FIXME: Move settings into ConfiguredTarget.
         let configuredTargetSettings = buildRequestContext.getCachedSettings(configuredTarget.parameters, target: configuredTarget.target)
