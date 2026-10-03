@@ -154,11 +154,13 @@ Run the management CLI and distribution tests from the repository root:
 python3 -m unittest discover -s Utilities/CustomXcodeBuildService/Distribution/tests -p 'test_*.py'
 ```
 
-`brew test custom-xcode-build-service` runs C builds, Swift tests through
-`xcodebuild`, and SwiftPM build/run/test against the installed payload. It sets
-service overrides only in test child processes; it does not change GUI selection.
-The source CI is configured to verify a source Formula build and bottle
-reinstallation with `Distribution/test-homebrew.sh`. Its compatibility jobs test
+`brew test custom-xcode-build-service` checks the CLI version, Xcode C builds,
+and SwiftPM build/run/test against the installed payload. Xcode's Swift package
+manifest loader needs its own sandbox, so those Xcode integration tests run
+outside Homebrew's test sandbox. `Distribution/test-homebrew.sh` runs both sets
+of tests after source installation and again after bottle reinstallation.
+All service overrides are limited to test child processes; GUI selection is unchanged.
+The source CI runs this verification script. Its compatibility jobs test
 one service artifact with installed stable Xcode 26/27 releases and the latest beta
 across `macos-26` and `xcode-27`. This matrix describes the tested combinations;
 it does not restrict which client Xcode can use the service.
