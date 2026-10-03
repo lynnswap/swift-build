@@ -6,6 +6,9 @@ account uses, including after login.
 
 ## Install
 
+Homebrew distribution is being introduced. These commands become available after
+the first `v*` release and its Formula are published in the tap.
+
 ```sh
 brew install lynnswap/tap/custom-xcode-build-service
 custom-xcode-build-service use custom
@@ -64,13 +67,13 @@ selected, an upgrade preserves that selection and `reload` leaves it alone.
 ## Migrate a standalone installation
 
 Older `custom-v*` releases installed a separate payload under your home directory.
-Quit Xcode and finish command-line builds, then install the Formula and invoke
-its CLI by full path to avoid an older command earlier on `PATH`:
+Finish builds and quit Xcode and other build clients, then install the Formula and
+invoke its CLI by full path to avoid an older command earlier on `PATH`:
 
 ```sh
 brew install lynnswap/tap/custom-xcode-build-service
-"$(brew --prefix)/bin/custom-xcode-build-service" uninstall
-"$(brew --prefix)/bin/custom-xcode-build-service" use custom
+"$(brew --prefix custom-xcode-build-service)/bin/custom-xcode-build-service" uninstall
+"$(brew --prefix custom-xcode-build-service)/bin/custom-xcode-build-service" use custom
 ```
 
 Cleanup removes only the owned standalone payload, its `~/.local/bin` link, and
@@ -80,7 +83,8 @@ New releases use tags such as `v0.3.0`; existing `custom-v*` tags remain unchang
 
 ## Uninstall
 
-Restore the bundled service before removing the Formula:
+Finish builds and quit Xcode and other build clients, then restore the bundled
+service before removing the Formula:
 
 ```sh
 custom-xcode-build-service use bundled
@@ -112,7 +116,9 @@ plugin loads platform plugins from that engine's own Xcode installation. Changin
 
 ## Development and verification
 
-Build the committed `HEAD` with Xcode 27 into a directory you keep while using it:
+Select Xcode 27 with `xcode-select` or `DEVELOPER_DIR`, then build the committed
+`HEAD` into a new output directory. Finish builds and quit Xcode and other build
+clients before selecting the local payload:
 
 ```sh
 python3 Utilities/CustomXcodeBuildService/Distribution/release.py build \
@@ -120,9 +126,18 @@ python3 Utilities/CustomXcodeBuildService/Distribution/release.py build \
 /path/to/build/payload/bin/custom-xcode-build-service use custom
 ```
 
-The build does not select or install the service. Switch to bundled before deleting
-a selected local build. Homebrew source builds use `--source-dir` and read the
-commit from the downloaded Git archive, so they do not need a `.git` directory.
+The build does not select or install the service. Keep the payload directory while
+it is selected, including across logins, and restart clients after selection. To
+switch back to Homebrew, finish builds and quit clients, then invoke its CLI:
+
+```sh
+"$(brew --prefix custom-xcode-build-service)/bin/custom-xcode-build-service" use custom
+```
+
+Restart clients before resuming builds. To stop using custom altogether, run
+`use bundled` before deleting the selected local payload. Homebrew source builds
+use `--source-dir` and read the commit from the downloaded Git archive, so they do
+not need a `.git` directory.
 Dependencies are pinned in `Distribution/ServiceDependencies.resolved`.
 
 Run the management CLI and distribution tests from the repository root:
@@ -137,10 +152,11 @@ python3 -m unittest discover -s Utilities/CustomXcodeBuildService/Distribution/t
 `brew test custom-xcode-build-service` runs C builds, Swift tests through
 `xcodebuild`, and SwiftPM build/run/test against the installed payload. It sets
 service overrides only in test child processes; it does not change GUI selection.
-The source CI also verifies a source Formula build and bottle reinstallation with
-`Distribution/test-homebrew.sh`. It builds one service artifact and tests installed stable Xcode 26/27 releases
-and the latest beta across `macos-26` and `xcode-27`. This matrix is test coverage,
-not an Xcode installation allowlist.
+The source CI is configured to verify a source Formula build and bottle
+reinstallation with `Distribution/test-homebrew.sh`. Its compatibility jobs test
+one service artifact with installed stable Xcode 26/27 releases and the latest beta
+across `macos-26` and `xcode-27`. This matrix describes the tested combinations;
+it does not restrict which client Xcode can use the service.
 
 ## Releases
 

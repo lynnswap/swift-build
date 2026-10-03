@@ -122,13 +122,15 @@ struct InstallationStore {
     }
 
     private func validateAgent() throws {
+        // The owned label and activation command survive moving between Homebrew
+        // and local builds; the previous executable path need not equal this one.
         if try exists(agent) {
             guard try files.attributesOfItem(atPath: agent.path)[.type] as? FileAttributeType == .typeRegular,
                   let actual = try PropertyListSerialization.propertyList(from: Data(contentsOf: agent), format: nil) as? [String: Any],
                   actual["Label"] as? String == Self.label,
                   let arguments = actual["ProgramArguments"] as? [String],
-                  [persistentExecutable.path, current.appendingPathComponent("bin/custom-xcode-build-service").path].contains(arguments.first ?? ""),
                   arguments.count == 2, arguments[1] == "activate",
+                  URL(fileURLWithPath: arguments[0]).lastPathComponent == "custom-xcode-build-service",
                   (actual["Program"] == nil || actual["Program"] as? String == arguments.first),
                   actual["BundleProgram"] == nil else {
                 throw ServiceError("Refusing to overwrite an unrelated LaunchAgent: \(agent.path)")

@@ -485,3 +485,190 @@ func homebrewUpgradePreservesSelectionAndReloadRecognizesTheOldCellar(selected: 
         #expect(throws: ServiceError.self) { try Command(arguments: arguments) }
     }
 }
+
+@Test(arguments: ["manifest", "service", "resources", "agent", "manifest-and-agent"])
+func statusReportsLiveSettingsWhenInstalledStateIsDamaged(damage: String) throws {
+    let fixture = try Fixture()
+    _ = try fixture.enable( fixture.package("v1.0.0"))
+    let installed = try #require(try fixture.store.selectedPackage())
+    fixture.runner.processes = "123 \(installed.service.path)\n"
+    let settings = fixture.runner.settings
+    let mutations = fixture.runner.launchctlMutations
+    if damage.contains("manifest") {
+        try fixture.write("{broken", to: installed.directory.appendingPathComponent("manifest.json"))
+    }
+    if damage.contains("agent") {
+        try fixture.write("invalid plist", to: fixture.store.agent)
+    }
+    if damage == "service" { try FileManager.default.removeItem(at: installed.service) }
+    if damage == "resources" {
+        try FileManager.default.removeItem(at: installed.resources.appendingPathComponent("SwiftBuild_SWBCore.bundle"))
+    }
+
+    do {
+        _ = try fixture.manager.status()
+        Issue.record("Incomplete status must retain a failing result.")
+    } catch let error as ServiceError {
+        let report = error.description
+        #expect(report.contains("XCBBUILDSERVICE_PATH: \(fixture.store.service.path)"))
+        #expect(report.contains("DisableConcurrentDependencyResolution: 0"))
+        #expect(report.contains("Login job: loaded"))
+        #expect(report.contains("PID 123: \(installed.service.path)"))
+        #expect(!report.contains("Installed: none"))
+        #expect(!report.contains("Run use custom to reapply it"))
+        if damage != "agent" {
+            #expect(report.contains(damage.contains("manifest") ? "Installed: unavailable" : "Installed: v1.0.0"))
+            #expect(report.contains("Installation error:"))
+        }
+        if damage.contains("agent") {
+            #expect(report.contains("Selected service: unavailable"))
+            #expect(report.contains("Selection error:"))
+        } else {
+            #expect(report.contains("Selected service: custom"))
+        }
+    }
+    #expect(fixture.runner.settings == settings)
+    #expect(fixture.runner.launchctlMutations == mutations)
+}
+
+
+@Test(arguments: ["background", "domain", "environment", "login-job", "processes", "ownership", "lock"])
+func statusPreservesOtherObservationsWhenOneSourceFails(failure: String) throws {
+    let fixture = try Fixture()
+    _ = try fixture.enable( fixture.package("v1.0.0"))
+    let installed = try #require(try fixture.store.selectedPackage())
+    fixture.runner.processes = "123 \(installed.service.path)\n"
+    let mutations = fixture.runner.launchctlMutations
+    switch failure {
+    case "background": fixture.runner.managerName = "Background"
+    case "domain": fixture.runner.failOnce = ["print", "gui/501"]
+    case "environment": fixture.runner.failOnce = ["getenv", "XCBBUILDSERVICE_PATH"]
+    case "login-job": fixture.runner.failOnce = ["print", fixture.manager.environment.job]
+    case "processes": fixture.runner.processStatus = 5
+    case "ownership": try fixture.write("unrecognized", to: fixture.store.root.appendingPathComponent(".owner"))
+    default: try FileManager.default.removeItem(at: fixture.store.root.appendingPathComponent(".lock"))
+    }
+    do {
+        _ = try fixture.manager.status()
+        Issue.record("Incomplete status must retain a failing result.")
+    } catch let error as ServiceError {
+        let report = error.description
+        #expect(report.contains(["ownership", "lock"].contains(failure) ? "Selected service: unavailable" : "Selected service: custom"))
+        #expect(report.contains("Installed: v1.0.0"))
+        #expect(report.contains(failure == "processes" ? "Running build services: unavailable" : "PID 123:"))
+        #expect(report.contains(failure == "login-job" ? "Login job: unavailable" : "Login job: loaded"))
+        if ["background", "domain", "environment"].contains(failure) {
+            #expect(report.contains("Launchd selection: unavailable"))
+        } else {
+            #expect(report.contains("XCBBUILDSERVICE_PATH: \(fixture.store.service.path)"))
+        }
+    }
+    #expect(fixture.runner.launchctlMutations == mutations)
+}
+
+
+@Test(arguments: ["activate", "use custom", "use bundled"])
+func serviceSelectionDoesNotDependOnCleaningInterruptedStaging(command: String) throws {
+    let fixture = try Fixture()
+    _ = try fixture.enable( fixture.package("v1.0.0"))
+    let pending = fixture.store.staging.appendingPathComponent("pending")
+    try fixture.write("pending bytes", to: pending)
+    try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: fixture.store.staging.path)
+    defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fixture.store.staging.path) }
+    switch command {
+    case "activate": _ = try fixture.manager.activate()
+    case "use custom": _ = try fixture.manager.use(.custom)
+    default: _ = try fixture.manager.use(.bundled)
+    }
+    #expect(try fixture.store.selectedService() == (command == "use bundled" ? .bundled : .custom))
+    #expect(try String(contentsOf: pending, encoding: .utf8) == "pending bytes")
+}
+
+
+@Test func unusedActivationAndAbsentUninstallDoNotRequireAGUISession() throws {
+    let fixture = try Fixture()
+    fixture.runner.managerName = "Background"
+    #expect(try fixture.manager.uninstall() == "No custom build service is installed.")
+    fixture.runner.managerName = "Aqua"
+    _ = try fixture.enable( fixture.package("v1.0.0"))
+    _ = try fixture.manager.use(.bundled)
+    fixture.runner.managerName = "Background"
+    let mutations = fixture.runner.launchctlMutations
+    #expect(try fixture.manager.activate().contains("no custom activation is needed"))
+    #expect(fixture.runner.launchctlMutations == mutations)
+}
+
+
+@Test(arguments: [Int32(0), 1, 130], [UInt32(0), 501])
+func guiRelaunchDropsAdministratorCredentialsAndPreservesArgumentsAndExitStatus(status: Int32, currentUserID: UInt32) throws {
+    let fixture = try Fixture()
+    fixture.runner.managerName = "Background"
+    fixture.runner.attachedStatus = status
+    let executable = "/tmp/release with spaces/bin/custom-xcode-build-service"
+    let arguments = ["use", "custom"]
+
+    #expect(try fixture.manager.environment.runInGUI(executable, arguments: arguments, currentUserID: currentUserID) == status)
+
+    let prefix = currentUserID == 0 ? [] : ["/usr/bin/sudo", "--"]
+    #expect(fixture.runner.attachedCommands == [prefix + [
+        "/bin/launchctl", "asuser", "501",
+        "/usr/bin/sudo", "-H", "-u", "#501", "--", executable,
+    ] + arguments])
+    #expect(fixture.runner.launchctlMutations.isEmpty)
+    #expect(try !fixture.store.exists(fixture.store.root))
+}
+
+
+@Test(arguments: ["501", "502"])
+func sudoInstallationTargetsTheInvokingUser(uid: String) throws {
+    #expect(try CustomXcodeBuildService.installationUserID(currentUserID: 0, sudoUserID: uid) == UInt32(uid))
+}
+
+
+@Test(arguments: [nil, "0", "", "invalid", "-1", "4294967296"] as [String?])
+func rootInstallationRequiresAnIdentifiableNonRootInvokingUser(uid: String?) {
+    #expect(throws: ServiceError.self) {
+        try CustomXcodeBuildService.installationUserID(currentUserID: 0, sudoUserID: uid)
+    }
+}
+
+
+@Test(arguments: [false, true])
+func attachedProcessPreservesFailureStatus(terminated: Bool) throws {
+    // Swift Testing workers can block signals. The fixture explicitly terminates
+    // itself so this tests exit-status handling independently of that mask.
+    let script = """
+    import os, signal, sys
+    if sys.argv[1] == "true":
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, [signal.SIGTERM])
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGTERM)
+    sys.exit(7)
+    """
+    let status = try ProcessRunner().runAttached("/usr/bin/python3", ["-c", script, String(terminated)])
+    #expect(status == (terminated ? 143 : 7))
+}
+
+
+@Test func selectionCanMoveBetweenOwnedHomebrewAndLocalBuilds() throws {
+    let fixture = try Fixture()
+    _ = try fixture.enable(fixture.package("v0.3.0"))
+    let local = try fixture.package("v0.0.0-local")
+    let store = InstallationStore(home: fixture.store.home, packageDirectory: local)
+    let manager = InstallationManager(store: store, environment: fixture.manager.environment)
+    _ = try manager.use(.custom)
+    #expect(try store.service.resolvingSymlinksInPath() == ReleasePackage(directory: local).service)
+    _ = try fixture.manager.use(.bundled)
+    #expect(fixture.runner.settings.isEmpty)
+}
+
+@Test func foreignLoginProgramIsNotOverwritten() throws {
+    let fixture = try Fixture()
+    _ = try fixture.enable(fixture.package("v0.3.0"))
+    var properties = fixture.store.agentProperties
+    properties["ProgramArguments"] = ["/bin/sh", "activate"]
+    let data = try PropertyListSerialization.data(fromPropertyList: properties, format: .xml, options: 0)
+    try data.write(to: fixture.store.agent)
+    #expect(throws: ServiceError.self) { try fixture.manager.use(.bundled) }
+    #expect(try Data(contentsOf: fixture.store.agent) == data)
+}
