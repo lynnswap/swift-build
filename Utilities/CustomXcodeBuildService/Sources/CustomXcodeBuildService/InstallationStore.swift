@@ -200,23 +200,22 @@ struct InstallationStore {
         if let selected = try? selectedExecutable() {
             packages.append(selected.deletingLastPathComponent().deletingLastPathComponent())
         }
+        let service = URL(fileURLWithPath: path).standardizedFileURL
         for package in packages {
             for schema in [1, 2] {
                 let executable = package.appendingPathComponent(ReleasePackage.servicePath(schemaVersion: schema))
                 if path == executable.path || path == executable.resolvingSymlinksInPath().path { return true }
             }
-        }
-        let service = URL(fileURLWithPath: path).standardizedFileURL
-        let package = packageDirectory.resolvingSymlinksInPath()
-        let rack = package.deletingLastPathComponent().deletingLastPathComponent()
-        // An already running process can retain an older Cellar path after opt moves.
-        if rack.lastPathComponent == "custom-xcode-build-service", rack.deletingLastPathComponent().lastPathComponent == "Cellar" {
-            let components = service.pathComponents
-            let prefix = rack.pathComponents
-            let suffix = ["libexec"] + ReleasePackage.servicePath(schemaVersion: 2).split(separator: "/").map(String.init)
-            if components.count == prefix.count + 1 + suffix.count,
-               Array(components.prefix(prefix.count)) == prefix,
-               Array(components.suffix(suffix.count)) == suffix { return true }
+            let rack = package.resolvingSymlinksInPath().deletingLastPathComponent().deletingLastPathComponent()
+            // An already running process can retain an older Cellar path after opt moves.
+            if rack.lastPathComponent == "custom-xcode-build-service", rack.deletingLastPathComponent().lastPathComponent == "Cellar" {
+                let components = service.pathComponents
+                let prefix = rack.pathComponents
+                let suffix = ["libexec"] + ReleasePackage.servicePath(schemaVersion: 2).split(separator: "/").map(String.init)
+                if components.count == prefix.count + 1 + suffix.count,
+                   Array(components.prefix(prefix.count)) == prefix,
+                   Array(components.suffix(suffix.count)) == suffix { return true }
+            }
         }
         return [1, 2].contains { schemaVersion in
             let relativePath = ReleasePackage.servicePath(schemaVersion: schemaVersion)

@@ -699,3 +699,23 @@ func anotherCLIReappliesTheSavedPackageWithoutChangingSelection(command: String)
     #expect(status.contains("Installed: v0.3.0"))
     #expect(status.contains("Selected custom package: v0.0.0-local"))
 }
+
+@Test func localCLIReloadsAnUpgradedHomebrewSelectionAfterOldKegCleanup() throws {
+    let fixture = try Fixture()
+    let old = try fixture.package("v0.3.0")
+    _ = try fixture.enable(old)
+    let oldService = try ReleasePackage(directory: old).service
+    try fixture.link(fixture.package("v0.3.1"))
+    try FileManager.default.removeItem(at: old.deletingLastPathComponent())
+    let local = fixture.directory.appendingPathComponent("local-build/payload")
+    try FileManager.default.createDirectory(at: local.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try FileManager.default.copyItem(at: fixture.package("v0.0.0-local"), to: local)
+    let store = InstallationStore(home: fixture.store.home, packageDirectory: local)
+    let manager = InstallationManager(store: store, environment: fixture.manager.environment)
+    fixture.runner.processes = "20 \(oldService.path)\n30 /other/Cellar/custom-xcode-build-service/0.3.0/libexec/libexec/swift-build/SWBBuildService.bundle/SWBBuildServiceBundle\n"
+    let agent = try Data(contentsOf: store.agent)
+    _ = try manager.reload()
+    #expect(fixture.runner.killedPIDs == ["20"])
+    #expect(try Data(contentsOf: store.agent) == agent)
+    #expect(try store.selectedPackage()?.manifest.version == "v0.3.1")
+}
