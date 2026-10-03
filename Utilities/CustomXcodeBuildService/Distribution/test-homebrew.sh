@@ -36,6 +36,14 @@ brew trust --formula "$formula"
 cache="$(brew --cache --build-from-source "$formula")"
 mkdir -p "$(dirname "$cache")"
 source_archive="$(awk '$2 ~ /^custom-xcode-build-service-.*\.tar\.gz$/ { print $2 }' "$release_dir/SHA256SUMS.txt")"
+expected_version="${source_archive#custom-xcode-build-service-}"
+expected_version="${expected_version%.tar.gz}"
+brew info --json=v2 "$formula" | python3 -c '
+import json, sys
+version = json.load(sys.stdin)["formulae"][0]["versions"]["stable"]
+if version != sys.argv[1]:
+    sys.exit(f"Homebrew parsed version {version!r}; expected {sys.argv[1]!r}.")
+' "$expected_version"
 cp "$release_dir/$source_archive" "$cache"
 brew install --build-bottle "$formula"
 brew test "$formula"

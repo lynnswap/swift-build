@@ -838,7 +838,12 @@ def source_package(args):
     shutil.copyfile(args.source_archive, args.output_dir / archive_name)
     digest = hashlib.sha256(args.source_archive.read_bytes()).hexdigest()
     template = (REPOSITORY_ROOT / DISTRIBUTION_PATH / "custom-xcode-build-service.rb.in").read_text()
-    formula = template.replace("@VERSION@", args.version.removeprefix("v")).replace("@SHA256@", digest).replace("@REVISION@", revision)
+    version = args.version.removeprefix("v")
+    # Homebrew's URL parser drops some prerelease suffixes. Stable versions stay
+    # inferred so updating the URL cannot leave a stale explicit version behind.
+    explicit_version = f'  version "{version}"\n' if "-" in version else ""
+    formula = (template.replace("@EXPLICIT_VERSION@\n", explicit_version)
+               .replace("@VERSION@", version).replace("@SHA256@", digest))
     (args.output_dir / "custom-xcode-build-service.rb").write_text(formula)
     names = (archive_name, "custom-xcode-build-service.rb")
     (args.output_dir / "SHA256SUMS.txt").write_text("".join(

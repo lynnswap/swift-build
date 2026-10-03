@@ -293,15 +293,20 @@ class SourceBuildTests(BuildTests):
         subprocess.run(["git", "-C", str(self.repository), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "Recipe"], check=True)
         source = self.root / "public.tar.gz"
         subprocess.run(["git", "-C", str(self.repository), "archive", "--format=tar.gz", "--prefix=swift-build-v1.2.3/", "HEAD", "--output", str(source)], check=True)
-        args = argparse.Namespace(version="v1.2.3", revision="HEAD", source_archive=source, output_dir=self.root / "release")
-        with patch.object(release, "REPOSITORY_ROOT", self.repository):
-            release.source_package(args)
-        recipe = (args.output_dir / "custom-xcode-build-service.rb").read_text()
-        self.assertIn("/archive/refs/tags/v1.2.3.tar.gz", recipe)
-        self.assertIn(release.hashlib.sha256(source.read_bytes()).hexdigest(), recipe)
-        self.assertIn('"--source-archive", cached_download', recipe)
-        self.assertNotIn("@REVISION@", recipe)
-        self.assertEqual((args.output_dir / "custom-xcode-build-service-1.2.3.tar.gz").read_bytes(), source.read_bytes())
+        for version in ("1.2.3", "1.2.3-dev.1", "0.0.0-validation"):
+            with self.subTest(version=version):
+                args = argparse.Namespace(version=f"v{version}", revision="HEAD", source_archive=source, output_dir=self.root / version)
+                with patch.object(release, "REPOSITORY_ROOT", self.repository):
+                    release.source_package(args)
+                recipe = (args.output_dir / "custom-xcode-build-service.rb").read_text()
+                self.assertIn(f"/archive/refs/tags/v{version}.tar.gz", recipe)
+                self.assertIn(release.hashlib.sha256(source.read_bytes()).hexdigest(), recipe)
+                self.assertIn('"--source-archive", cached_download', recipe)
+                self.assertNotIn("@EXPLICIT_VERSION@", recipe)
+                self.assertEqual('  version "' in recipe, "-" in version)
+                if "-" in version:
+                    self.assertIn(f'  version "{version}"', recipe)
+                self.assertEqual((args.output_dir / f"custom-xcode-build-service-{version}.tar.gz").read_bytes(), source.read_bytes())
 
 
 

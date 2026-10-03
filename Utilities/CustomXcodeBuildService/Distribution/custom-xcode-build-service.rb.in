@@ -2,6 +2,7 @@ class CustomXcodeBuildService < Formula
   desc "Select a custom Swift Build service for Xcode"
   homepage "https://github.com/lynnswap/swift-build"
   url "https://github.com/lynnswap/swift-build/archive/refs/tags/v@VERSION@.tar.gz"
+@EXPLICIT_VERSION@
   sha256 "@SHA256@"
   license "Apache-2.0" => { with: "Swift-exception" }
 
