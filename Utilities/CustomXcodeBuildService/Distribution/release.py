@@ -11,7 +11,7 @@
 ##
 ##===----------------------------------------------------------------------===##
 
-"""Local installation, release builds, packaging, and relocation checks."""
+"""Release builds, Homebrew source packaging, and relocation checks."""
 
 import argparse
 import gzip
@@ -33,7 +33,7 @@ from pathlib import Path, PurePosixPath
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 DISTRIBUTION_PATH = Path("Utilities/CustomXcodeBuildService/Distribution")
 ARCHIVE = "custom-xcode-build-service-darwin-arm64.tar.gz"
-ASSETS = (ARCHIVE, "install.sh")
+ASSETS = (ARCHIVE,)
 SERVICE_BUNDLE = Path("libexec/swift-build/SWBBuildService.bundle")
 SERVICE_BINARY = SERVICE_BUNDLE / "SWBBuildServiceBundle"
 HOST_PLUGIN = SERVICE_BUNDLE / "PlugIns/HostPlatformPlugins.bundle"
@@ -54,7 +54,7 @@ BUNDLES = tuple(
     )
 )
 VERSION_PATTERN = (
-    r"custom-v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?"
+    r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?"
 )
 REVISION_PATTERN = r"[0-9a-f]{40}"
 
@@ -280,24 +280,24 @@ def copy_licenses(source, destination):
 def build(args):
     require(
         re.fullmatch(VERSION_PATTERN, args.version),
-        "Version must look like custom-v1.2.3 or custom-v1.2.3-beta.1.",
+        "Version must look like v1.2.3 or v1.2.3-beta.1.",
     )
     require(args.jobs > 0, "--jobs must be positive.")
     require(
         platform.system() == "Darwin" and platform.machine() == "arm64",
         "Building this distribution requires an Apple Silicon Mac.",
     )
-    revision = output(
-        [
-            "git",
-            "-C",
-            str(REPOSITORY_ROOT),
-            "rev-parse",
-            "--verify",
-            "--end-of-options",
-            f"{args.revision}^{{commit}}",
-        ]
-    )
+    source_dir = getattr(args, "source_dir", None)
+    if source_dir is None:
+        revision = output(["git", "-C", str(REPOSITORY_ROOT), "rev-parse", "--verify",
+                           "--end-of-options", f"{args.revision}^{{commit}}"])
+    else:
+        revision = args.source_revision
+        if revision is None and args.source_archive is not None:
+            with tarfile.open(args.source_archive) as archive:
+                revision = archive.pax_headers.get("comment")
+        require(re.fullmatch(REVISION_PATTERN, revision or ""),
+                "Source archive builds require a Git archive commit comment or --source-revision.")
     environment = dict(os.environ)
     # Keep every build, test, and metadata query on the initially selected toolchain.
     environment["DEVELOPER_DIR"] = environment.get("DEVELOPER_DIR") or output(
@@ -307,18 +307,20 @@ def build(args):
     empty_directory(args.output_dir)
     directory = args.output_dir.resolve()
     source = directory / "source"
-    source.mkdir()
     (directory / "build").mkdir()
-    with tempfile.TemporaryFile() as archive:
-        subprocess.run(
-            ["git", "-C", str(REPOSITORY_ROOT), "archive", revision],
-            stdout=archive,
-            check=True,
-        )
-        archive.seek(0)
-        subprocess.run(
-            ["/usr/bin/tar", "-x", "-C", str(source)], stdin=archive, check=True
-        )
+    if source_dir is None:
+        source.mkdir()
+        with tempfile.TemporaryFile() as archive:
+            subprocess.run(["git", "-C", str(REPOSITORY_ROOT), "archive", revision],
+                           stdout=archive, check=True)
+            archive.seek(0)
+            subprocess.run(["/usr/bin/tar", "-x", "-C", str(source)], stdin=archive, check=True)
+    else:
+        source_dir = source_dir.resolve()
+        def exclude_build(path, names):
+            return [name for name in names if name in (".git", ".build")
+                    or (Path(path) / name).resolve() == directory]
+        shutil.copytree(source_dir, source, ignore=exclude_build)
     pins = source / DISTRIBUTION_PATH / "ServiceDependencies.resolved"
     shutil.copy2(pins, source / "Package.resolved")
     (directory / "source-revision.txt").write_text(revision + "\n")
@@ -417,16 +419,6 @@ def build(args):
         check=True,
     )
     print(f"Built payload: {directory / 'payload'}")
-
-
-def install(args):
-    with tempfile.TemporaryDirectory(prefix="custom-service-local-") as directory:
-        build(argparse.Namespace(
-            version=f"custom-v0.0.0-local.{time.time_ns()}",
-            output_dir=Path(directory), revision=args.revision, jobs=args.jobs,
-        ))
-        executable = Path(directory) / "payload/bin/custom-xcode-build-service"
-        subprocess.run([str(executable), "install"], check=True)
 
 
 def stage(args):
@@ -528,19 +520,6 @@ def package(args):
     payload = args.build_dir / "payload"
     manifest = validate_payload(payload)
     empty_directory(args.output_dir)
-    template = (
-        args.build_dir / "source" / DISTRIBUTION_PATH / "install.sh.in"
-    ).read_text()
-    require(
-        "@VERSION@" in template and "@REPOSITORY@" in template,
-        "Missing installer template markers.",
-    )
-    installer = template.replace("@VERSION@", manifest["version"]).replace(
-        "@REPOSITORY@", "lynnswap/swift-build"
-    )
-    (args.output_dir / "install.sh").write_text(installer)
-    (args.output_dir / "install.sh").chmod(0o755)
-    subprocess.run(["/bin/bash", "-n", str(args.output_dir / "install.sh")], check=True)
     # Fixed tar/gzip metadata makes repackaging the same payload byte-for-byte stable.
     with (args.output_dir / ARCHIVE).open("wb") as raw:
         with gzip.GzipFile(fileobj=raw, mode="wb", filename="", mtime=0) as compressed:
@@ -601,8 +580,8 @@ def extract_archive(archive_path, destination):
             target.chmod(member.mode)
 
 
-def smoke_build(payload, temporary, manifest):
-    fixture = REPOSITORY_ROOT / "Tests/SwiftBuildTests/TestData/CommandLineTool"
+def smoke_build(payload, temporary, manifest, fixture=None):
+    fixture = fixture or REPOSITORY_ROOT / "Tests/SwiftBuildTests/TestData/CommandLineTool"
     shutil.copytree(fixture, temporary / "Smoke")
     service = service_path(payload, manifest)
     environment = dict(os.environ)
@@ -634,6 +613,7 @@ def smoke_build(payload, temporary, manifest):
 
 def run_xcodebuild(command, environment, service, cwd=None):
     observed_service = False
+    service = service.resolve()
     deadline = time.monotonic() + 600
     with subprocess.Popen(command, env=environment, cwd=cwd) as process:
         try:
@@ -643,7 +623,7 @@ def run_xcodebuild(command, environment, service, cwd=None):
                 processes = output(["/bin/ps", "-axo", "pid=,ppid=,comm="]).splitlines()
                 for row in processes:
                     fields = row.split(maxsplit=2)
-                    if len(fields) == 3 and fields[1] == str(process.pid) and fields[2] == str(service):
+                    if len(fields) == 3 and fields[1] == str(process.pid) and Path(fields[2]).resolve() == service:
                         observed_service = True
                 return_code = process.poll()
                 if return_code is not None:
@@ -806,9 +786,6 @@ def verify(args):
         == checksum_file(args.release_dir),
         "Release asset checksums do not match.",
     )
-    subprocess.run(
-        ["/bin/bash", "-n", str(args.release_dir / "install.sh")], check=True
-    )
     with tempfile.TemporaryDirectory(prefix="custom service relocation ") as directory:
         temporary = Path(directory)
         payload = temporary / "payload"
@@ -839,20 +816,47 @@ def verify(args):
     )
 
 
+def source_package(args):
+    require(re.fullmatch(VERSION_PATTERN, args.version), "Use a vX.Y.Z release tag.")
+    revision = output(["git", "-C", str(REPOSITORY_ROOT), "rev-parse", "--verify", "--end-of-options", f"{args.revision}^{{commit}}"])
+    # Compare source entries, since GitHub controls the public archive's compression.
+    def contents(archive):
+        entries = archive.getmembers()
+        root = entries[0].name.split("/")[0]
+        return sorted((entry.name.partition("/")[2], entry.type, entry.mode & 0o111,
+                       entry.linkname, archive.extractfile(entry).read() if entry.isfile() else b"")
+                      for entry in entries if entry.name.rstrip("/") != root)
+    with tempfile.TemporaryFile() as source:
+        subprocess.run(["git", "-C", str(REPOSITORY_ROOT), "archive", "--prefix=source/", revision], stdout=source, check=True)
+        source.seek(0)
+        with tarfile.open(fileobj=source) as expected, tarfile.open(args.source_archive) as downloaded:
+            require(contents(expected) == contents(downloaded), "Public source archive differs from the selected commit.")
+    empty_directory(args.output_dir)
+    archive_name = f"custom-xcode-build-service-{args.version.removeprefix('v')}.tar.gz"
+    shutil.copyfile(args.source_archive, args.output_dir / archive_name)
+    digest = hashlib.sha256(args.source_archive.read_bytes()).hexdigest()
+    template = (REPOSITORY_ROOT / DISTRIBUTION_PATH / "custom-xcode-build-service.rb.in").read_text()
+    formula = template.replace("@VERSION@", args.version.removeprefix("v")).replace("@SHA256@", digest).replace("@REVISION@", revision)
+    (args.output_dir / "custom-xcode-build-service.rb").write_text(formula)
+    names = (archive_name, "custom-xcode-build-service.rb")
+    (args.output_dir / "SHA256SUMS.txt").write_text("".join(
+        f"{hashlib.sha256((args.output_dir / name).read_bytes()).hexdigest()}  {name}\n" for name in names))
+
+
+def verify_payload(args):
+    payload = args.payload.resolve()
+    manifest = validate_payload(payload)
+    for binary in [payload / "bin/custom-xcode-build-service", service_path(payload, manifest), payload / HOST_PLUGIN_BINARY]:
+        check_binary(binary)
+    with tempfile.TemporaryDirectory(prefix="custom-service-bottle-test-") as directory:
+        temporary = Path(directory)
+        smoke_build(payload, temporary, manifest, args.fixture_dir)
+        smoke_swift(payload, temporary, manifest)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    installing = commands.add_parser(
-        "install",
-        help="Build committed source, install it, and reload custom build services",
-        description="Build committed source in a temporary directory, install it "
-        "for the current user, select custom, and reload its build services without "
-        "quitting Xcode. Does not run tests. Generates a local version and "
-        "removes the temporary build directory when finished. Older revisions "
-        "use the installer behavior from that revision.",
-    )
-    installing.add_argument("--revision", default="HEAD")
-    installing.add_argument("--jobs", type=int, default=2)
     building = commands.add_parser(
         "build",
         help="Build committed source with the selected Xcode on Apple Silicon",
@@ -864,6 +868,9 @@ def main():
     building.add_argument("--output-dir", type=Path, required=True)
     building.add_argument("--revision", default="HEAD")
     building.add_argument("--jobs", type=int, default=2)
+    building.add_argument("--source-dir", type=Path, help="Build an extracted source archive without .git")
+    building.add_argument("--source-revision", help="Commit represented by --source-dir")
+    building.add_argument("--source-archive", type=Path, help="Read the source commit from a Git archive")
     staging = commands.add_parser(
         "stage", help="Stage built binaries, resources, licenses, and metadata"
     )
@@ -880,9 +887,17 @@ def main():
         "verify", help="Verify a release with the selected Xcode; does not install"
     )
     verification.add_argument("--release-dir", type=Path, required=True)
+    sources = commands.add_parser("source", help="Prepare a source archive and Formula for a tagged release")
+    sources.add_argument("--version", required=True)
+    sources.add_argument("--revision", default="HEAD")
+    sources.add_argument("--source-archive", type=Path, required=True)
+    sources.add_argument("--output-dir", type=Path, required=True)
+    installed = commands.add_parser("verify-payload", help="Run build smoke tests with an installed Homebrew payload")
+    installed.add_argument("--payload", type=Path, required=True)
+    installed.add_argument("--fixture-dir", type=Path, default=REPOSITORY_ROOT / "Tests/SwiftBuildTests/TestData/CommandLineTool")
     args = parser.parse_args()
     try:
-        {"install": install, "build": build, "stage": stage, "package": package, "verify": verify}[
+        {"build": build, "stage": stage, "package": package, "verify": verify, "source": source_package, "verify-payload": verify_payload}[
             args.command
         ](args)
     except (

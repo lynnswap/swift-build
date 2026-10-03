@@ -80,7 +80,7 @@ class BuildTests(unittest.TestCase):
         (distribution / "release.py").write_text("uncommitted staging implementation\n")
         (self.repository / "Package.resolved").write_text("developer dependency pins\n")
         self.arguments = argparse.Namespace(
-            version="custom-v1.2.3",
+            version="v1.2.3",
             output_dir=self.root / "output",
             revision="HEAD",
             jobs=2,
@@ -260,75 +260,60 @@ class BuildTests(unittest.TestCase):
         )
 
 
-class LocalInstallTests(unittest.TestCase):
-    def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix="local install tests ")
-        self.addCleanup(self.temporary.cleanup)
-        self.state = Path(self.temporary.name)
-        self.build_directories = []
-        self.versions = []
-        self.failure = ""
+class SourceBuildTests(BuildTests):
+    def test_extracted_source_build_does_not_need_git_or_copy_the_output_into_itself(self):
+        source = self.root / "source archive"
+        source.mkdir()
+        subprocess.run(["git", "-C", str(self.repository), "archive", "HEAD", "--output", str(self.root / "source.tar")], check=True)
+        with tarfile.open(self.root / "source.tar") as archive:
+            archive.extractall(source)
+        self.arguments.source_dir = source
+        self.arguments.source_archive = self.root / "source.tar"
+        self.arguments.source_revision = None
+        self.arguments.output_dir = source / "products"
+        self.build()
+        self.assertEqual((self.arguments.output_dir / "source-revision.txt").read_text().strip(), self.revision)
+        self.assertFalse((self.arguments.output_dir / "source/products").exists())
+        self.assertFalse(any(command[0] == "git" for command, _ in self.commands))
+        self.assertEqual((self.arguments.output_dir / "source/Package.resolved").read_text(), self.committed_pins)
 
-    def build_fixture(self, args):
-        self.build_directories.append(args.output_dir)
-        self.versions.append(args.version)
-        self.assertEqual(args.revision, "HEAD")
-        self.assertEqual(args.jobs, 2)
-        self.assertRegex(args.version, f"^{release.VERSION_PATTERN}$")
-        if self.failure == "build":
-            raise subprocess.CalledProcessError(1, ["swift", "build"])
-        binary = args.output_dir / "payload/bin/custom-xcode-build-service"
-        binary.parent.mkdir(parents=True)
-        (binary.parent / "version").write_text(args.version)
-        binary.write_text('''#!/bin/sh
-set -eu
-case "$*" in
-  install)
-    if [ "$CUSTOM_SERVICE_TEST_FAILURE" = install ]; then exit 17; fi
-    cp "$(dirname "$0")/version" "$CUSTOM_SERVICE_TEST_STATE/installed"
-    if [ "$CUSTOM_SERVICE_TEST_FAILURE" = reload ]; then exit 20; fi
-    printf 'install\n' >> "$CUSTOM_SERVICE_TEST_STATE/commands"
-    ;;
-  *) exit 19 ;;
-esac
-''')
-        binary.chmod(0o755)
+    def test_public_source_recipe_uses_the_archive_checksum_and_plain_version_tag(self):
+        template = release.REPOSITORY_ROOT / release.DISTRIBUTION_PATH / "custom-xcode-build-service.rb.in"
+        destination = self.repository / release.DISTRIBUTION_PATH / template.name
+        shutil.copyfile(template, destination)
+        subprocess.run(["git", "-C", str(self.repository), "add", str(destination)], check=True)
+        subprocess.run(["git", "-C", str(self.repository), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "Recipe"], check=True)
+        source = self.root / "public.tar.gz"
+        subprocess.run(["git", "-C", str(self.repository), "archive", "--format=tar.gz", "--prefix=swift-build-v1.2.3/", "HEAD", "--output", str(source)], check=True)
+        args = argparse.Namespace(version="v1.2.3", revision="HEAD", source_archive=source, output_dir=self.root / "release")
+        with patch.object(release, "REPOSITORY_ROOT", self.repository):
+            release.source_package(args)
+        recipe = (args.output_dir / "custom-xcode-build-service.rb").read_text()
+        self.assertIn("/archive/refs/tags/v1.2.3.tar.gz", recipe)
+        self.assertIn(release.hashlib.sha256(source.read_bytes()).hexdigest(), recipe)
+        self.assertIn('"--source-archive", cached_download', recipe)
+        self.assertNotIn("@REVISION@", recipe)
+        self.assertEqual((args.output_dir / "custom-xcode-build-service-1.2.3.tar.gz").read_bytes(), source.read_bytes())
 
-    def install(self):
-        with patch.object(release, "build", side_effect=self.build_fixture), patch.dict(
-            os.environ, {
-                "CUSTOM_SERVICE_TEST_STATE": str(self.state),
-                "CUSTOM_SERVICE_TEST_FAILURE": self.failure,
-            }
-        ), patch.object(sys, "argv", ["release.py", "install"]):
-            release.main()
-
-    def test_repeated_installations_delegate_to_cli_and_remove_temporary_builds(self):
-        for _ in range(2):
-            self.install()
-            self.assertEqual((self.state / "installed").read_text(), self.versions[-1])
-            self.assertFalse(self.build_directories[-1].exists())
-        self.assertEqual(len(set(self.versions)), 2)
-        self.assertEqual((self.state / "commands").read_text().splitlines(), ["install", "install"])
-
-    def test_failures_preserve_completed_state_and_remove_temporary_builds(self):
-        for failure in ("build", "install", "reload"):
-            with self.subTest(failure=failure):
-                self.failure = failure
-                (self.state / "installed").write_text("previous version")
-                with patch.object(sys, "stderr", io.StringIO()) as errors:
-                    with self.assertRaises(SystemExit) as raised:
-                        self.install()
-                self.assertEqual(raised.exception.code, 1)
-                self.assertIn("error:", errors.getvalue())
-                self.assertEqual(
-                    (self.state / "installed").read_text(),
-                    self.versions[-1] if failure == "reload" else "previous version",
-                )
-                self.assertFalse(self.build_directories[-1].exists())
 
 
 class XcodeInvocationTests(unittest.TestCase):
+    def test_child_service_can_be_reported_through_a_filesystem_alias(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            actual = root / "real"
+            actual.mkdir()
+            (actual / "SWBBuildServiceBundle").write_text("fixture")
+            alias = root / "alias"
+            alias.symlink_to(actual, target_is_directory=True)
+            with patch.object(release.subprocess, "Popen") as launch, patch.object(
+                release, "output", return_value=f"300 200 {alias / 'SWBBuildServiceBundle'}"
+            ):
+                process = launch.return_value.__enter__.return_value
+                process.pid = 200
+                process.poll.return_value = 0
+                release.run_xcodebuild(["xcodebuild", "test"], {}, actual / "SWBBuildServiceBundle")
+
     def test_only_the_current_xcodebuild_child_proves_service_selection(self):
         service = Path("/tmp/custom service/SWBBuildServiceBundle")
         for parent in ("1", "100", "200"):
@@ -380,7 +365,7 @@ class DistributionTests(unittest.TestCase):
             (directory / "LICENSE.txt").write_text(f"License for {name}\n")
         self.manifest = dict(
             schemaVersion=2,
-            version="custom-v1.2.3-beta.1",
+            version="v1.2.3-beta.1",
             sourceRevision="a" * 40,
             xcodeVersion="27.0",
             xcodeBuildVersion="27A5252f",
@@ -390,12 +375,6 @@ class DistributionTests(unittest.TestCase):
             dependencies=[dict(identity="swift-driver", revision="b" * 40)],
         )
         (self.payload / "manifest.json").write_text(json.dumps(self.manifest))
-        template = self.build / "source" / release.DISTRIBUTION_PATH / "install.sh.in"
-        template.parent.mkdir(parents=True)
-        template.write_text(
-            '#!/bin/bash\nversion="@VERSION@"\nrepository="@REPOSITORY@"\n'
-        )
-
     def package(self, name="release"):
         destination = self.root / name
         release.package(
@@ -420,13 +399,6 @@ class DistributionTests(unittest.TestCase):
                     bool(source.stat().st_mode & 0o111),
                     bool(destination.stat().st_mode & 0o111),
                 )
-        self.assertIn(
-            'version="custom-v1.2.3-beta.1"', (directory / "install.sh").read_text()
-        )
-        self.assertIn(
-            'repository="lynnswap/swift-build"', (directory / "install.sh").read_text()
-        )
-
     def test_legacy_archive_remains_readable(self):
         service = self.payload / "libexec/swift-build"
         (self.payload / release.SERVICE_BINARY).rename(service / "SWBBuildServiceBundle")

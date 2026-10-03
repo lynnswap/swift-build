@@ -1,0 +1,45 @@
+class CustomXcodeBuildService < Formula
+  desc "Select a custom Swift Build service for Xcode"
+  homepage "https://github.com/lynnswap/swift-build"
+  url "https://github.com/lynnswap/swift-build/archive/refs/tags/v@VERSION@.tar.gz"
+  sha256 "@SHA256@"
+  license "Apache-2.0" => { with: "Swift-exception" }
+
+  depends_on "python@3.14" => [:build, :test]
+  depends_on xcode: ["27.0", :build, :test]
+  depends_on arch: :arm64
+  depends_on macos: :tahoe
+
+  def install
+    distribution = buildpath/"Utilities/CustomXcodeBuildService/Distribution"
+    system "python3", distribution/"release.py", "build",
+           "--source-dir", buildpath, "--source-archive", cached_download,
+           "--version", "v#{version}", "--output-dir", buildpath/"products",
+           "--jobs", ENV.make_jobs
+    libexec.install Dir["products/payload/*"]
+    # Keep the opt path in the launcher's argv[0] and the saved login configuration.
+    bin.write_exec_script opt_libexec/"bin/custom-xcode-build-service"
+    pkgshare.install distribution/"release.py" => "verify.py"
+    pkgshare.install "Tests/SwiftBuildTests/TestData/CommandLineTool"
+  end
+
+  def caveats
+    <<~EOS
+      Select the service for your macOS user account:
+        custom-xcode-build-service use custom
+      Restart Xcode, Xcode Service (for MCP), terminals, and AI agents afterward.
+
+      Finish builds before upgrading; then run:
+        custom-xcode-build-service reload
+
+      Before uninstalling, restore Xcode's bundled service:
+        custom-xcode-build-service use bundled
+    EOS
+  end
+
+  test do
+    assert_equal "v#{version}", shell_output("#{bin}/custom-xcode-build-service --version").strip
+    system "python3", pkgshare/"verify.py", "verify-payload", "--payload", libexec,
+           "--fixture-dir", pkgshare/"CommandLineTool"
+  end
+end

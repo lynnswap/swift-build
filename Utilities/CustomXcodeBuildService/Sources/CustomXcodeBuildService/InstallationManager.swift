@@ -16,57 +16,6 @@ struct InstallationManager {
     let store: InstallationStore
     let environment: LaunchEnvironment
 
-    func install(from directory: URL) throws -> String {
-        try requireUser()
-        let package = try ReleasePackage(directory: directory)
-        try package.validateForInstallation()
-        try environment.requireGUI()
-        return try store.withInstallationLock {
-            try store.validateCommand()
-            var launchState = try readLaunchState()
-            let hadCommand = try store.exists(store.command)
-            let staged = try store.stage(package)
-            let hadCurrent = try store.exists(store.current)
-            try Transaction.perform { transaction in
-                if launchState.loaded {
-                    try environment.bootout()
-                    transaction.undo { try environment.bootstrap(store.agent) }
-                    launchState.loaded = false
-                }
-                try store.publish(staged.directory, replacingExisting: hadCurrent)
-                transaction.undo {
-                    if hadCurrent {
-                        try store.publish(staged.directory, replacingExisting: true)
-                    } else {
-                        try FileManager.default.moveItem(at: store.current, to: staged.directory)
-                    }
-                }
-                let installed = try ReleasePackage(directory: store.current)
-                try updateServiceBundleLink(installed, transaction: transaction)
-                if !hadCommand {
-                    try store.writeCommand()
-                    transaction.undo { try store.remove(store.command) }
-                }
-                try configure(customPackage: installed,
-                              previous: launchState, transaction: transaction)
-            }
-            do { try store.discardStaging() }
-            catch { throw ServiceError("Installed \(package.manifest.version), but removing the previous payload failed: \(error)") }
-            let report = """
-            Installed \(package.manifest.version) (\(package.manifest.sourceRevision)).
-            Built with Xcode: \(package.manifest.xcodeVersion) (\(package.manifest.xcodeBuildVersion))
-            Service: \(store.service.path)
-            Command: \(store.command.path)
-            Selected service: custom
-            """
-            if launchState.selection == .custom && launchState.settings.service != nil {
-                do { return report + "\n" + (try reloadInstalledService()) }
-                catch { throw ServiceError(report + "\nService reload failed: \(error)") }
-            }
-            return report + "\n" + Self.clientRestartInstructions
-        }
-    }
-
     func reload() throws -> String {
         try requireUser()
         return try store.withExistingLock(access: .modify) {
@@ -76,33 +25,22 @@ struct InstallationManager {
 
     // The caller holds the installation lock across replacement and service reload.
     private func reloadInstalledService() throws -> String {
-        guard var installed = try store.selectedPackage() else {
-            throw ServiceError("No custom build service is installed. Run install first.")
+        guard try store.selectedService() == .custom else {
+            return "Xcode's bundled service is selected; no custom reload is needed."
+        }
+        guard let installed = try store.selectedPackage() else {
+            throw ServiceError("No packaged service is available. Reinstall with Homebrew.")
         }
         try installed.validateForUse()
         let running = try runningProcesses().filter { Self.serviceNames.contains($0.name) && store.ownsService(at: $0.path) }
-        // A new CLI can also reload an installation created by an older CLI.
-        // Materialize current before redirecting a version it used to point to.
-        if installed.directory != store.current {
-            let staged = try store.stage(installed)
-            try Transaction.perform { transaction in
-                try store.publish(staged.directory, replacingExisting: true)
-                transaction.undo { try store.publish(staged.directory, replacingExisting: true) }
-                installed = try ReleasePackage(directory: store.current)
-                try updateServiceBundleLink(installed, transaction: transaction)
-            }
-            try store.discardStaging()
-        }
         try Transaction.perform { transaction in
             try updateServiceBundleLink(installed, transaction: transaction)
         }
-        do { try store.redirectLegacyVersions(to: installed) }
-        catch { throw ServiceError("The installed service is ready, but legacy path migration failed: \(error). No services were stopped; retry reload.") }
         var stopped: [String] = []
         var failures: [String] = []
         for process in running {
             do {
-                // Recheck after migration: the original process may already have exited.
+                // The original process may already have exited while updating the link.
                 guard try runningProcesses().contains(where: { $0.pid == process.pid && $0.path == process.path }) else { continue }
                 let result = try environment.runner.run("/bin/kill", ["-TERM", process.pid])
                 if result.status != 0 {
@@ -120,34 +58,38 @@ struct InstallationManager {
     func use(_ service: BuildService) throws -> String {
         try requireUser()
         try environment.requireGUI()
-        guard let result = try store.withExistingLock(access: .modify, {
-            let previous = try readLaunchState()
-            let customPackage: ReleasePackage?
-            switch service {
-            case .custom:
-                guard let installed = try store.selectedPackage() else {
-                    throw ServiceError("No custom build service is installed. Run install first.")
-                }
-                try installed.validateForUse()
-                customPackage = installed
-            case .bundled:
-                customPackage = nil
+        if service == .custom {
+            guard let package = try store.selectedPackage() else {
+                throw ServiceError("No packaged service is available. Reinstall with Homebrew.")
             }
-            try Transaction.perform { transaction in
-                try configure(customPackage: customPackage, previous: previous, transaction: transaction)
-            }
-            let report = "Selected service: \(service.rawValue)"
-            let selectionChanged = previous.selection != service || (previous.settings.service != nil) != (service == .custom)
-            return selectionChanged ? report + "\n" + Self.clientRestartInstructions : report
-        }) else {
-            if service == .custom { throw ServiceError("No custom build service is installed. Run install first.") }
-            let state = try readLaunchState()
-            guard state.selection == .bundled, state.settings.service == nil else {
-                throw ServiceError("Custom settings exist without an installation. Resolve them before selecting bundled.")
-            }
-            return "Selected service: bundled"
+            try package.validateForUse()
+            return try store.withInstallationLock { try select(service) }
         }
-        return result
+        if let result = try store.withExistingLock(access: .modify, { try select(service) }) { return result }
+        let previous = try readLaunchState()
+        if previous.selection == .bundled, previous.settings.service == nil { return "Selected service: bundled" }
+        return try store.withInstallationLock { try select(service) }
+    }
+
+    private func select(_ service: BuildService) throws -> String {
+        let previous = try readLaunchState()
+        let customPackage: ReleasePackage?
+        switch service {
+        case .custom:
+            guard let installed = try store.selectedPackage() else {
+                throw ServiceError("No custom build service is installed. Reinstall with Homebrew.")
+            }
+            try installed.validateForUse()
+            customPackage = installed
+        case .bundled:
+            customPackage = nil
+        }
+        try Transaction.perform { transaction in
+            try configure(customPackage: customPackage, previous: previous, transaction: transaction)
+        }
+        let report = "Selected service: \(service.rawValue)"
+        let selectionChanged = previous.selection != service || (previous.settings.service != nil) != (service == .custom)
+        return selectionChanged ? report + "\n" + Self.clientRestartInstructions : report
     }
 
     func activate() throws -> String {
@@ -174,6 +116,7 @@ struct InstallationManager {
             try store.validateCommand()
             let launchState = try readLaunchState()
             let hadCommand = try store.exists(store.command)
+            let oldCommandTarget = hadCommand ? try FileManager.default.destinationOfSymbolicLink(atPath: store.command.path) : ""
             let hadPayloads = try store.exists(store.current) || store.exists(store.versions)
             guard hadPayloads || launchState.selection == .custom || hadCommand || launchState.loaded || launchState.settings.service != nil else {
                 try store.removePayloads()
@@ -189,30 +132,26 @@ struct InstallationManager {
                 try configure(customPackage: nil, previous: launchState, transaction: transaction)
                 if hadCommand {
                     try store.remove(store.command)
-                    transaction.undo { try store.writeCommand() }
+                    transaction.undo { try FileManager.default.createSymbolicLink(atPath: store.command.path, withDestinationPath: oldCommandTarget) }
                 }
             }
             // Settings are removed before payloads, so a new Xcode launch cannot
             // select a service whose resources are being deleted.
             try store.removePayloads()
-            let report = "Uninstalled the custom build service. Selected service: bundled"
+            let report = "Removed user settings and legacy payloads. Selected service: bundled. Homebrew files are unchanged; run brew uninstall custom-xcode-build-service to remove them."
             return launchState.selection == .custom || launchState.settings.service != nil ? report + "\n" + Self.clientRestartInstructions : report
         } ?? "No custom build service is installed."
     }
 
     func status() throws -> String {
-        let installed: Result<ReleasePackage?, any Error>
+        // Homebrew owns the payload; our lock only protects per-user selection.
+        let installed = Result { try store.selectedPackage() }
         let selection: Result<BuildService, any Error>
         do {
-            let snapshot = try store.withExistingLock(access: .read) {
-                (Result { try store.selectedPackage() }, Result { try store.selectedService() })
-            }
-            installed = snapshot?.0 ?? .success(nil)
-            selection = snapshot?.1 ?? Result { try store.selectedService() }
-        } catch {
-            installed = .failure(error)
-            selection = Result { try store.selectedService() }
-        }
+            selection = .success(try store.withExistingLock(access: .read) {
+                try store.selectedService()
+            } ?? store.selectedService())
+        } catch { selection = .failure(error) }
         return try statusReport(installed: installed, selection: selection)
     }
 
@@ -245,7 +184,7 @@ struct InstallationManager {
             lines.append("Installed custom service: \(store.service.path)")
             do {
                 try package.validateForUse()
-                guard FileManager.default.isExecutableFile(atPath: store.service.path) else {
+                guard selectedService != .custom || FileManager.default.isExecutableFile(atPath: store.service.path) else {
                     throw ServiceError("The fixed service entry point is missing or not executable. Run use custom to repair it.")
                 }
             }

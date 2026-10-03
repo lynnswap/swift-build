@@ -27,7 +27,10 @@ struct CustomXcodeBuildService {
                 exit(try relaunch(command, in: environment, currentUserID: currentUserID))
             }
             let manager = InstallationManager(
-                store: InstallationStore(home: FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath()),
+                store: InstallationStore(
+                    home: FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath(),
+                    packageDirectory: try executableURL().deletingLastPathComponent().deletingLastPathComponent()
+                ),
                 environment: environment
             )
             do { print(try run(command, manager: manager)) }
@@ -43,15 +46,12 @@ struct CustomXcodeBuildService {
 
     private static func run(_ command: Command, manager: InstallationManager) throws -> String {
         switch command {
-        case .install(let package):
-            let directory: URL
-            if let package {
-                directory = URL(fileURLWithPath: package).standardizedFileURL
-            } else {
-                directory = try executableURL().deletingLastPathComponent().deletingLastPathComponent()
-            }
-            return try manager.install(from: directory)
         case .use(let service): return try manager.use(service)
+        case .version:
+            guard let package = try manager.store.selectedPackage() else {
+                throw ServiceError("No packaged service is available. Reinstall with Homebrew.")
+            }
+            return package.manifest.version
         case .status: return try manager.status()
         case .uninstall: return try manager.uninstall()
         case .activate: return try manager.activate()
@@ -61,10 +61,7 @@ struct CustomXcodeBuildService {
     }
 
     private static func relaunch(_ command: Command, in environment: LaunchEnvironment, currentUserID: UInt32) throws -> Int32 {
-        var arguments = Array(CommandLine.arguments.dropFirst())
-        if case .install(let package?) = command {
-            arguments = ["install", "--package", URL(fileURLWithPath: package).standardizedFileURL.path]
-        }
+        let arguments = Array(CommandLine.arguments.dropFirst())
         return try environment.runInGUI(executableURL().path, arguments: arguments, currentUserID: currentUserID)
     }
 
@@ -82,6 +79,6 @@ struct CustomXcodeBuildService {
         var buffer = [CChar](repeating: 0, count: Int(size))
         guard _NSGetExecutablePath(&buffer, &size) == 0 else { throw ServiceError("Cannot locate this executable.") }
         let path = String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
-        return URL(fileURLWithPath: path).resolvingSymlinksInPath()
+        return URL(fileURLWithPath: path).standardizedFileURL
     }
 }
