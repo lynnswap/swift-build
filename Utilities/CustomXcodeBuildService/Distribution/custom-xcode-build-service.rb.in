@@ -12,7 +12,7 @@ class CustomXcodeBuildService < Formula
 
   def install
     distribution = buildpath/"Utilities/CustomXcodeBuildService/Distribution"
-    system "python3", distribution/"release.py", "build",
+    system "python3", distribution/"release.py", "build", "--disable-sandbox",
            "--source-dir", buildpath, "--source-archive", cached_download,
            "--version", "v#{version}", "--output-dir", buildpath/"products",
            "--jobs", ENV.make_jobs
@@ -39,7 +39,7 @@ class CustomXcodeBuildService < Formula
 
   test do
     assert_equal "v#{version}", shell_output("#{bin}/custom-xcode-build-service --version").strip
-    system "python3", pkgshare/"verify.py", "verify-payload", "--payload", libexec,
+    system "python3", pkgshare/"verify.py", "verify-payload", "--disable-sandbox", "--payload", libexec,
            "--fixture-dir", pkgshare/"CommandLineTool"
   end
 end

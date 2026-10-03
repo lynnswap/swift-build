@@ -137,7 +137,8 @@ python3 -m unittest discover -s Utilities/CustomXcodeBuildService/Distribution/t
 `brew test custom-xcode-build-service` runs C builds, Swift tests through
 `xcodebuild`, and SwiftPM build/run/test against the installed payload. It sets
 service overrides only in test child processes; it does not change GUI selection.
-The source CI builds one artifact and tests installed stable Xcode 26/27 releases
+The source CI also verifies a source Formula build and bottle reinstallation with
+`Distribution/test-homebrew.sh`. It builds one service artifact and tests installed stable Xcode 26/27 releases
 and the latest beta across `macos-26` and `xcode-27`. This matrix is test coverage,
 not an Xcode installation allowlist.
 

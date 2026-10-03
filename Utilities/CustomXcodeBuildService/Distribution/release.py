@@ -350,6 +350,8 @@ def build(args):
         "--security-path",
         str(directory / "build/security"),
     ]
+    if getattr(args, "disable_sandbox", False):
+        common.append("--disable-sandbox")
     service_args = [
         *common,
         "--package-path",
@@ -647,7 +649,7 @@ def run_xcodebuild(command, environment, service, cwd=None):
     require(observed_service, "Xcode did not invoke the relocated custom service.")
 
 
-def smoke_swift(payload, temporary, manifest):
+def smoke_swift(payload, temporary, manifest, disable_sandbox=False):
     package = temporary / "SwiftPMSmoke"
     (package / "Sources/Smoke").mkdir(parents=True)
     (package / "Tests/SmokeTests").mkdir(parents=True)
@@ -672,7 +674,7 @@ let package = Package(name: "Smoke", targets: [
     for command in ("build", "run", "test"):
         subprocess.run(
             ["/usr/bin/xcrun", "swift", command, "--build-system", "swiftbuild",
-             "--package-path", str(package)],
+             *( ["--disable-sandbox"] if disable_sandbox else []), "--package-path", str(package)],
             env=environment, check=True, timeout=600,
         )
     run_xcodebuild(
@@ -851,7 +853,7 @@ def verify_payload(args):
     with tempfile.TemporaryDirectory(prefix="custom-service-bottle-test-") as directory:
         temporary = Path(directory)
         smoke_build(payload, temporary, manifest, args.fixture_dir)
-        smoke_swift(payload, temporary, manifest)
+        smoke_swift(payload, temporary, manifest, args.disable_sandbox)
 
 
 def main():
@@ -868,6 +870,7 @@ def main():
     building.add_argument("--output-dir", type=Path, required=True)
     building.add_argument("--revision", default="HEAD")
     building.add_argument("--jobs", type=int, default=2)
+    building.add_argument("--disable-sandbox", action="store_true", help="Avoid nesting SwiftPM's sandbox inside Homebrew's")
     building.add_argument("--source-dir", type=Path, help="Build an extracted source archive without .git")
     building.add_argument("--source-revision", help="Commit represented by --source-dir")
     building.add_argument("--source-archive", type=Path, help="Read the source commit from a Git archive")
@@ -894,6 +897,7 @@ def main():
     sources.add_argument("--output-dir", type=Path, required=True)
     installed = commands.add_parser("verify-payload", help="Run build smoke tests with an installed Homebrew payload")
     installed.add_argument("--payload", type=Path, required=True)
+    installed.add_argument("--disable-sandbox", action="store_true")
     installed.add_argument("--fixture-dir", type=Path, default=REPOSITORY_ROOT / "Tests/SwiftBuildTests/TestData/CommandLineTool")
     args = parser.parse_args()
     try:

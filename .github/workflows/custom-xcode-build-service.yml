@@ -135,6 +135,29 @@ jobs:
           python3 Utilities/CustomXcodeBuildService/Distribution/release.py verify \
             --release-dir "$RUNNER_TEMP/custom-service-release"
 
+  homebrew:
+    name: Test source Formula and installed bottle
+    runs-on: xcode-27
+    timeout-minutes: 180
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+      RELEASE_VERSION: ${{ github.event_name == 'push' && github.ref_name || inputs.version || 'v0.0.0-validation' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Homebrew/actions/setup-homebrew@e99025eb970cfa124b8284a35463d87426917478 # 2026.09.28.1
+        with:
+          token: ${{ github.token }}
+      - name: Prepare the checked-out source for isolated Formula verification
+        run: |
+          git archive --format=tar.gz --prefix=source/ HEAD --output="$RUNNER_TEMP/source.tar.gz"
+          python3 Utilities/CustomXcodeBuildService/Distribution/release.py source \
+            --version "$RELEASE_VERSION" --source-archive "$RUNNER_TEMP/source.tar.gz" \
+            --output-dir "$RUNNER_TEMP/homebrew-verification"
+      - name: Build, bottle, reinstall, and test
+        run: bash Utilities/CustomXcodeBuildService/Distribution/test-homebrew.sh "$RUNNER_TEMP/homebrew-verification"
+
   source:
     name: Prepare Homebrew source and Formula
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -162,7 +185,7 @@ jobs:
 
   publish:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'lynnswap/swift-build'
-    needs: [build, compatibility, source]
+    needs: [build, compatibility, homebrew, source]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -184,7 +207,6 @@ jobs:
           gh release view "$RELEASE_TAG" --json isDraft,body > release.json
           python3 - <<'PY'
           import json
-          import os
           from pathlib import Path
 
           release = json.loads(Path('release.json').read_text())
