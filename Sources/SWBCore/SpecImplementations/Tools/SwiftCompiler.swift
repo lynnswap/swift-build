@@ -809,7 +809,7 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
         return false
     }
 
-    public override func commandLineForSignature(for task: any ExecutableTask) -> [ByteString] {
+    public override func signatureIgnoredArgumentIndices(for task: any ExecutableTask) -> [Int] {
         // TODO: We should probably allow the specs themselves to mark options
         // as output agnostic, rather than always postprocessing the command
         // line. In some cases we will have to postprocess, because of settings
@@ -817,13 +817,10 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
         // metadata to the values, but those settings be handled on a
         // case-by-case basis.
         let taskCommandLine = task.commandLine
-        return taskCommandLine.indices.compactMap { index in
+        return taskCommandLine.indices.filter { index in
             let arg = taskCommandLine[index].asByteString
             let prevArg = index > taskCommandLine.startIndex ? taskCommandLine[index - 1].asByteString : nil
-            if SwiftCompilerSpec.isOutputAgnosticCommandLineArgument(arg, prevArgument: prevArg) {
-                return nil
-            }
-            return arg
+            return SwiftCompilerSpec.isOutputAgnosticCommandLineArgument(arg, prevArgument: prevArg)
         }
     }
 
@@ -2152,7 +2149,9 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
                     // Compilation Verification — verifies emitted .swiftinterface files.
                     // Scheduled after SwiftMergeGeneratedHeaders so the merged -Swift.h
                     // is available at the installed framework path. rdar://100987466
-                    if moduleInterfaceFilePath != nil || privateModuleInterfaceFilePath != nil || packageModuleInterfaceFilePath != nil {
+                    // Skipped in the index build arena, where the verification doesn't contribute to indexing.
+                    if moduleInterfaceFilePath != nil || privateModuleInterfaceFilePath != nil || packageModuleInterfaceFilePath != nil,
+                       !cbc.scope.evaluate(BuiltinMacros.INDEX_ENABLE_BUILD_ARENA) {
                         let compilationVerificationFinishedNode = delegate.createNode(objectFileDir.join("\(targetName) Swift Compilation Verification Finished").appendingFileNameSuffix(compilationMode.moduleBaseNameSuffix))
                         var verificationInputNodes = compilationRequirementOutputs.filter {
                             $0.path.fileSuffix == ".swiftinterface"

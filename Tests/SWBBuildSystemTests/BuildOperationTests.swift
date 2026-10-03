@@ -703,6 +703,7 @@ fileprivate struct BuildOperationTests: CoreBasedTests {
 
             let destination: RunDestinationInfo = .host
             try await tester.checkBuild(runDestination: destination, persistent: true) { results in
+                results.checkWindowsSDKWCharContextChangeWarnings()
                 results.checkNoErrors()
 
                 let environment = try destination.hostRuntimeEnvironment(core)
@@ -832,6 +833,7 @@ fileprivate struct BuildOperationTests: CoreBasedTests {
 
             let destination: RunDestinationInfo = .host
             try await tester.checkBuild(runDestination: destination, persistent: true) { results in
+                results.checkWindowsSDKWCharContextChangeWarnings()
                 results.checkWarning(.prefix("Skipping XCTest discovery for 'MyTests' because it was not built for testing"))
                 results.checkNoErrors()
 
@@ -970,6 +972,7 @@ fileprivate struct BuildOperationTests: CoreBasedTests {
 
             let destination: RunDestinationInfo = .host
             try await tester.checkBuild(runDestination: destination, persistent: true) { results in
+                results.checkWindowsSDKWCharContextChangeWarnings()
                 results.checkNoErrors()
 
                 try results.checkTask(.matchRuleType("GenerateTestEntryPoint")) { task in
@@ -2708,7 +2711,7 @@ That command depends on command in Target 'agg2' (project \'aProject\'): script 
 
             try await tester.checkNullBuild(parameters: BuildParameters(configuration: "Debug", commandLineOverrides: ["OTHER_CFLAGS": "-index-store-path \"\(tmpDirPath.join("IndexDataStore"))\""]), runDestination: .macOS, persistent: true, excludedTasks: ["ClangStatCache"])
 
-            try await tester.checkNullBuild(parameters: BuildParameters(configuration: "Debug", commandLineOverrides: ["OTHER_CFLAGS": "-v", "OTHER_SWIFT_FLAGS": "-v"]), runDestination: .macOS, persistent: true, excludedTasks: ["ClangStatCache"])
+            try await tester.checkNullBuild(parameters: BuildParameters(configuration: "Debug", commandLineOverrides: ["OTHER_CFLAGS": "-v", "OTHER_SWIFT_FLAGS": "-v", "OTHER_LDFLAGS": "-v"]), runDestination: .macOS, persistent: true, excludedTasks: ["ClangStatCache"])
 
             // Check that the next build is NOT null.
             try await tester.checkBuild(parameters: BuildParameters(configuration: "Debug", commandLineOverrides: ["OTHER_CFLAGS": "-DFOO=\"删除所有的\""]), runDestination: .macOS, persistent: true) { results in
@@ -8160,5 +8163,13 @@ That command depends on command in Target 'agg2' (project \'aProject\'): script 
                 }
             }
         }
+    }
+}
+
+extension BuildOperationTester.BuildResults {
+    /// Consumes a warning that current Windows SDKs emit when loading `WinSDK.swiftmodule`, which is unrelated to what the tests check.
+    fileprivate func checkWindowsSDKWCharContextChangeWarnings() {
+        guard core.hostOperatingSystem == .windows else { return }
+        while checkWarning(.contains("reference to type 'wchar_t' broken by a context change"), failIfNotFound: false) {}
     }
 }
