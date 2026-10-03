@@ -226,6 +226,14 @@ class BuildTests(unittest.TestCase):
             "developer dependency pins\n",
         )
 
+    def test_homebrew_build_avoids_a_nested_sandbox_for_both_packages(self):
+        self.arguments.disable_sandbox = True
+        self.build()
+        builds = [command for command, _ in self.commands
+                  if command[:3] == ["/usr/bin/xcrun", "swift", "build"]]
+        self.assertEqual(len(builds), 4)
+        self.assertTrue(all("--disable-sandbox" in command for command in builds))
+
     def test_resolved_file_formatting_does_not_stop_cli_or_staging(self):
         self.reformat_pins = True
         self.build()
@@ -516,6 +524,18 @@ class DistributionTests(unittest.TestCase):
         ):
             with self.assertRaises(subprocess.CalledProcessError):
                 release.verify(argparse.Namespace(release_dir=directory))
+
+    def test_installed_verification_uses_the_installed_fixture_and_homebrew_sandbox(self):
+        fixture = self.root / "share/CommandLineTool"
+        with patch.object(release, "check_binary"), patch.object(
+            release, "smoke_build"
+        ) as smoke_build, patch.object(release, "smoke_swift") as smoke_swift:
+            release.verify_payload(argparse.Namespace(
+                payload=self.payload, fixture_dir=fixture, disable_sandbox=True,
+            ))
+        self.assertEqual(smoke_build.call_args.args[0], self.payload.resolve())
+        self.assertEqual(smoke_build.call_args.args[3], fixture)
+        self.assertTrue(smoke_swift.call_args.args[3])
 
     def test_dependency_requires_license_and_unique_revision_entry(self):
         self.manifest["dependencies"].append(
