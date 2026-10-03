@@ -48,7 +48,7 @@ func repairingServiceEnvironmentRequestsClientRestart(command: String) throws {
 @Test func reloadReportsPartiallyCompletedStops() throws {
     let fixture = try Fixture()
     _ = try fixture.enable( fixture.package("v1.0.0"))
-    let installed = try #require(try fixture.store.selectedPackage())
+    let installed = try #require(try fixture.store.packagedRelease())
     fixture.runner.processes = "20 \(installed.service.path)\n21 \(installed.service.path)\n"
     fixture.runner.killFailures = ["21"]
     do {
@@ -59,7 +59,7 @@ func repairingServiceEnvironmentRequestsClientRestart(command: String) throws {
         #expect(error.description.contains("Stopping service 21"))
     }
     #expect(fixture.runner.killedPIDs == ["20"])
-    #expect(try fixture.store.selectedPackage()?.manifest.version == "v1.0.0")
+    #expect(try fixture.store.packagedRelease()?.manifest.version == "v1.0.0")
 }
 
 @Test(arguments: ["XCBBUILDSERVICE_PATH", "SWBBUILDSERVICE_PATH", "DisableConcurrentDependencyResolution"])
@@ -93,7 +93,7 @@ func refusesForeignEnvironment(key: String) throws {
 @Test func statusDistinguishesSelectedAndRunningServices() throws {
     let fixture = try Fixture()
     _ = try fixture.enable( fixture.package("v1.0.0"))
-    let selected = try #require(try fixture.store.selectedPackage())
+    let selected = try #require(try fixture.store.packagedRelease())
     fixture.runner.processes = "123 /Applications/Xcode.app/Contents/SharedFrameworks/XCBuild.framework/Versions/A/PlugIns/XCBBuildService.bundle/Contents/MacOS/XCBBuildService\n456 \(selected.service.path)\n789 /bin/zsh\n"
     let status = try fixture.manager.status()
     #expect(status.contains("custom release selected for future processes"))
@@ -216,7 +216,7 @@ func refusesForeignEnvironment(key: String) throws {
 @Test func switchesServicesWithoutRemovingReleasesOrStoppingBuilds() throws {
     let fixture = try Fixture()
     _ = try fixture.enable( fixture.package("v1.0.0"))
-    let installed = try #require(try fixture.store.selectedPackage())
+    let installed = try #require(try fixture.store.packagedRelease())
     fixture.runner.processes = "123 /Applications/Xcode.app/Contents/MacOS/Xcode\n456 \(installed.service.path)\n"
 
     _ = try fixture.manager.use(.bundled)
@@ -225,7 +225,7 @@ func refusesForeignEnvironment(key: String) throws {
     #expect(fixture.runner.settings.isEmpty)
     #expect(!fixture.runner.loaded)
     #expect(try !fixture.store.exists(fixture.store.agent))
-    #expect(try fixture.store.selectedPackage()?.directory == installed.directory)
+    #expect(try fixture.store.packagedRelease()?.directory == installed.directory)
     #expect(FileManager.default.isExecutableFile(atPath: fixture.store.persistentExecutable.path))
     let status = try fixture.manager.status()
     #expect(status.contains("Installed: v1.0.0"))
@@ -419,7 +419,7 @@ final class FakeRunner: ProcessRunning {
     #expect(agent["ProgramArguments"] as? [String] == [fixture.store.persistentExecutable.path, "activate"])
     _ = try fixture.manager.uninstall()
     #expect(try fixture.store.exists(package.appendingPathComponent("manifest.json")))
-    #expect(try fixture.store.selectedPackage()?.manifest.version == "v0.3.0")
+    #expect(try fixture.store.packagedRelease()?.manifest.version == "v0.3.0")
     #expect(fixture.runner.settings.isEmpty)
 }
 
@@ -439,7 +439,7 @@ func homebrewUpgradePreservesSelectionAndReloadRecognizesTheOldCellar(selected: 
     _ = try fixture.manager.reload()
     #expect(fixture.runner.killedPIDs == (selected == .custom ? ["20"] : []))
     try FileManager.default.removeItem(at: old.deletingLastPathComponent())
-    #expect(try fixture.store.selectedPackage()?.manifest.version == "v0.3.1")
+    #expect(try fixture.store.packagedRelease()?.manifest.version == "v0.3.1")
     #expect(try fixture.store.service.resolvingSymlinksInPath() == ReleasePackage(directory: new).service)
 }
 
@@ -465,7 +465,7 @@ func homebrewUpgradePreservesSelectionAndReloadRecognizesTheOldCellar(selected: 
     #expect(try fixture.store.exists(new))
     #expect(fixture.runner.settings.isEmpty)
     _ = try fixture.manager.use(.custom)
-    #expect(try fixture.store.selectedPackage()?.manifest.version == "v0.3.0")
+    #expect(try fixture.store.packagedRelease()?.manifest.version == "v0.3.0")
 }
 
 @Test func bundledRecoveryDoesNotRequireAnIntactHomebrewPackage() throws {
@@ -490,7 +490,7 @@ func homebrewUpgradePreservesSelectionAndReloadRecognizesTheOldCellar(selected: 
 func statusReportsLiveSettingsWhenInstalledStateIsDamaged(damage: String) throws {
     let fixture = try Fixture()
     _ = try fixture.enable( fixture.package("v1.0.0"))
-    let installed = try #require(try fixture.store.selectedPackage())
+    let installed = try #require(try fixture.store.packagedRelease())
     fixture.runner.processes = "123 \(installed.service.path)\n"
     let settings = fixture.runner.settings
     let mutations = fixture.runner.launchctlMutations
@@ -536,7 +536,7 @@ func statusReportsLiveSettingsWhenInstalledStateIsDamaged(damage: String) throws
 func statusPreservesOtherObservationsWhenOneSourceFails(failure: String) throws {
     let fixture = try Fixture()
     _ = try fixture.enable( fixture.package("v1.0.0"))
-    let installed = try #require(try fixture.store.selectedPackage())
+    let installed = try #require(try fixture.store.packagedRelease())
     fixture.runner.processes = "123 \(installed.service.path)\n"
     let mutations = fixture.runner.launchctlMutations
     switch failure {
@@ -671,4 +671,31 @@ func attachedProcessPreservesFailureStatus(terminated: Bool) throws {
     try data.write(to: fixture.store.agent)
     #expect(throws: ServiceError.self) { try fixture.manager.use(.bundled) }
     #expect(try Data(contentsOf: fixture.store.agent) == data)
+}
+
+@Test(arguments: ["reload", "activate"])
+func anotherCLIReappliesTheSavedPackageWithoutChangingSelection(command: String) throws {
+    let fixture = try Fixture()
+    _ = try fixture.enable(fixture.package("v0.3.0"))
+    let local = try fixture.package("v0.0.0-local")
+    let localStore = InstallationStore(home: fixture.store.home, packageDirectory: local)
+    let localManager = InstallationManager(store: localStore, environment: fixture.manager.environment)
+    _ = try localManager.use(.custom)
+    let agent = try Data(contentsOf: fixture.store.agent)
+    let localService = try ReleasePackage(directory: local).service
+    fixture.runner.processes = "20 \(localService.path)\n"
+    if command == "reload" {
+        _ = try fixture.manager.reload()
+        #expect(fixture.runner.killedPIDs == ["20"])
+    } else {
+        fixture.runner.settings = [:]
+        _ = try fixture.manager.activate()
+        #expect(fixture.runner.killedPIDs.isEmpty)
+    }
+    #expect(try Data(contentsOf: fixture.store.agent) == agent)
+    #expect(fixture.store.service.resolvingSymlinksInPath() == localService)
+    #expect(try fixture.store.selectedPackage()?.manifest.version == "v0.0.0-local")
+    let status = try fixture.manager.status()
+    #expect(status.contains("Installed: v0.3.0"))
+    #expect(status.contains("Selected custom package: v0.0.0-local"))
 }

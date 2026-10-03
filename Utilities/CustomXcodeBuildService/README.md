@@ -35,9 +35,9 @@ Start terminal-based agents from the restarted terminal.
 
 | Command | What it does |
 | --- | --- |
-| `use custom` | Select this Homebrew service and restore it at login. |
+| `use custom` | Select the payload packaged with this CLI and restore it at login. |
 | `use bundled` | Restore Xcode's service and remove the login helper and overrides. |
-| `status` | Show the packaged version, saved selection, launchd settings, and running services. |
+| `status` | Show this CLI's packaged version, the selected custom payload, launchd settings, and running services. |
 | `--version` | Print the packaged release version without accessing GUI settings. |
 | `reload` | Restart this user's managed custom build services after an upgrade. |
 | `uninstall` | Remove user settings and old standalone files; keep Homebrew files. |
@@ -58,11 +58,14 @@ brew upgrade custom-xcode-build-service
 custom-xcode-build-service reload
 ```
 
-The CLI and service bundle use Homebrew's stable `opt` path. The next launch uses
-the upgraded service; already running services keep their loaded code until
-reloaded. `reload` stops only this user's managed custom service processes, not
-Xcode or MCP clients. Interrupted requests may need to be retried. If bundled is
-selected, an upgrade preserves that selection and `reload` leaves it alone.
+When the Homebrew payload is selected, its stable `opt` path follows upgrades
+without another `use custom`. The next launch uses the upgraded service; already
+running services keep their loaded code until reloaded. `reload` and `activate`
+preserve the saved custom payload selection, including a local build; only
+`use custom` selects the payload packaged with the CLI you invoke. `reload` stops
+only this user's managed custom service processes, not Xcode or MCP clients.
+Interrupted requests may need to be retried. If bundled is selected, an upgrade
+preserves that selection and `reload` leaves it alone.
 
 ## Migrate a standalone installation
 
@@ -104,11 +107,13 @@ While custom is selected, the CLI manages these launchd environment settings:
 | `XCBBUILDSERVICE_PATH` | `~/Library/Developer/CustomXcodeBuildService/SWBBuildService.bundle/SWBBuildServiceBundle`, expanded to an absolute path. |
 | `DisableConcurrentDependencyResolution` | `0` (parallel dependency resolution). |
 
-The per-user bundle link points to the whole Homebrew bundle, keeping resources
+The per-user bundle link points to the whole selected bundle, keeping resources
 and plugins together. The CLI does not copy or remove the Homebrew payload.
 A helper in `~/Library/LaunchAgents` reapplies custom at login. Its presence is
-the saved selection; there is no second settings file. If macOS restores Xcode
-before the helper runs, check `status` and restart Xcode.
+the saved custom selection, and its executable path records the selected payload;
+there is no second settings file. In `status`, `Installed` describes this CLI's
+payload and `Selected custom package` describes that saved selection. If macOS
+restores Xcode before the helper runs, check `status` and restart Xcode.
 
 SwiftPM's Swift Build backend continues to use its in-process engine. The host
 plugin loads platform plugins from that engine's own Xcode installation. Changing

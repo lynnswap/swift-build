@@ -48,7 +48,7 @@ struct CustomXcodeBuildService {
         switch command {
         case .use(let service): return try manager.use(service)
         case .version:
-            guard let package = try manager.store.selectedPackage() else {
+            guard let package = try manager.store.packagedRelease() else {
                 throw ServiceError("No packaged service is available. Reinstall with Homebrew.")
             }
             return package.manifest.version

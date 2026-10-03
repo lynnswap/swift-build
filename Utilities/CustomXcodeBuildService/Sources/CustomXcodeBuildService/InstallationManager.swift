@@ -59,7 +59,7 @@ struct InstallationManager {
         try requireUser()
         try environment.requireGUI()
         if service == .custom {
-            guard let package = try store.selectedPackage() else {
+            guard let package = try store.packagedRelease() else {
                 throw ServiceError("No packaged service is available. Reinstall with Homebrew.")
             }
             try package.validateForUse()
@@ -76,7 +76,7 @@ struct InstallationManager {
         let customPackage: ReleasePackage?
         switch service {
         case .custom:
-            guard let installed = try store.selectedPackage() else {
+            guard let installed = try store.packagedRelease() else {
                 throw ServiceError("No custom build service is installed. Reinstall with Homebrew.")
             }
             try installed.validateForUse()
@@ -145,17 +145,23 @@ struct InstallationManager {
 
     func status() throws -> String {
         // Homebrew owns the payload; our lock only protects per-user selection.
-        let installed = Result { try store.selectedPackage() }
+        let installed = Result { try store.packagedRelease() }
         let selection: Result<BuildService, any Error>
+        let selectedPackage: Result<ReleasePackage?, any Error>
         do {
-            selection = .success(try store.withExistingLock(access: .read) {
-                try store.selectedService()
-            } ?? store.selectedService())
-        } catch { selection = .failure(error) }
-        return try statusReport(installed: installed, selection: selection)
+            let snapshot = try store.withExistingLock(access: .read) {
+                (Result { try store.selectedService() }, Result { try store.selectedPackage() })
+            }
+            selection = snapshot?.0 ?? Result { try store.selectedService() }
+            selectedPackage = snapshot?.1 ?? Result { try store.selectedPackage() }
+        } catch {
+            selection = .failure(error)
+            selectedPackage = .failure(error)
+        }
+        return try statusReport(installed: installed, selection: selection, selectedPackage: selectedPackage)
     }
 
-    private func statusReport(installed: Result<ReleasePackage?, any Error>, selection: Result<BuildService, any Error>) throws -> String {
+    private func statusReport(installed: Result<ReleasePackage?, any Error>, selection: Result<BuildService, any Error>, selectedPackage: Result<ReleasePackage?, any Error>) throws -> String {
         var lines: [String] = []
         var issues: [String] = []
         let package: ReleasePackage?
@@ -178,6 +184,20 @@ struct InstallationManager {
             lines.append("Selected service: unavailable")
             issues.append("Selection error: \(error)")
         }
+        let selected: ReleasePackage?
+        switch selectedPackage {
+        case .success(let value):
+            selected = value
+            if let value {
+                lines.append("Selected custom package: \(value.manifest.version) (\(value.directory.path))")
+                do { try value.validateForUse() }
+                catch { issues.append("Selected package error: \(error)") }
+            }
+        case .failure(let error):
+            selected = nil
+            lines.append("Selected custom package: unavailable")
+            issues.append("Selected package error: \(error)")
+        }
         if let package {
             lines.append("Source: \(package.manifest.sourceRevision)")
             lines.append("Built with Xcode: \(package.manifest.xcodeVersion) (\(package.manifest.xcodeBuildVersion))")
@@ -193,7 +213,7 @@ struct InstallationManager {
         do {
             try environment.requireGUI()
             let settings = try environment.settings()
-            let active = package != nil && settings.service == store.service.path && settings.concurrentResolution == "0" && settings.legacyService == nil
+            let active = selected != nil && settings.service == store.service.path && settings.concurrentResolution == "0" && settings.legacyService == nil
             let noOverrides = settings.service == nil && settings.concurrentResolution == nil && settings.legacyService == nil
             let applied: String
             if noOverrides {

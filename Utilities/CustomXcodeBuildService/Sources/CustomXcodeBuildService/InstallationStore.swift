@@ -92,7 +92,7 @@ struct InstallationStore {
         }
     }
 
-    func selectedPackage() throws -> ReleasePackage? {
+    func packagedRelease() throws -> ReleasePackage? {
         guard try exists(packageDirectory.appendingPathComponent("manifest.json")) else { return nil }
         return try ReleasePackage(directory: packageDirectory)
     }
@@ -115,27 +115,29 @@ struct InstallationStore {
     }
 
     func selectedService() throws -> BuildService {
-        try validateAgent()
-        // The owned login configuration is the persistent custom selection.
-        // Its absence selects bundled without duplicating that state in a settings file.
-        return try exists(agent) ? .custom : .bundled
+        try selectedExecutable() == nil ? .bundled : .custom
     }
 
-    private func validateAgent() throws {
+    func selectedPackage() throws -> ReleasePackage? {
+        guard let executable = try selectedExecutable() else { return nil }
+        return try ReleasePackage(directory: executable.deletingLastPathComponent().deletingLastPathComponent())
+    }
+
+    private func selectedExecutable() throws -> URL? {
+        guard try exists(agent) else { return nil }
         // The owned label and activation command survive moving between Homebrew
         // and local builds; the previous executable path need not equal this one.
-        if try exists(agent) {
-            guard try files.attributesOfItem(atPath: agent.path)[.type] as? FileAttributeType == .typeRegular,
-                  let actual = try PropertyListSerialization.propertyList(from: Data(contentsOf: agent), format: nil) as? [String: Any],
-                  actual["Label"] as? String == Self.label,
-                  let arguments = actual["ProgramArguments"] as? [String],
-                  arguments.count == 2, arguments[1] == "activate",
-                  URL(fileURLWithPath: arguments[0]).lastPathComponent == "custom-xcode-build-service",
-                  (actual["Program"] == nil || actual["Program"] as? String == arguments.first),
-                  actual["BundleProgram"] == nil else {
-                throw ServiceError("Refusing to overwrite an unrelated LaunchAgent: \(agent.path)")
-            }
+        guard try files.attributesOfItem(atPath: agent.path)[.type] as? FileAttributeType == .typeRegular,
+              let actual = try PropertyListSerialization.propertyList(from: Data(contentsOf: agent), format: nil) as? [String: Any],
+              actual["Label"] as? String == Self.label,
+              let arguments = actual["ProgramArguments"] as? [String],
+              arguments.count == 2, arguments[1] == "activate",
+              URL(fileURLWithPath: arguments[0]).lastPathComponent == "custom-xcode-build-service",
+              (actual["Program"] == nil || actual["Program"] as? String == arguments.first),
+              actual["BundleProgram"] == nil else {
+            throw ServiceError("Refusing to overwrite an unrelated LaunchAgent: \(agent.path)")
         }
+        return URL(fileURLWithPath: arguments[0])
     }
 
     var agentProperties: [String: Any] {
@@ -194,9 +196,15 @@ struct InstallationStore {
 
     func ownsService(at path: String) -> Bool {
         if path == service.path { return true }
-        for schema in [1, 2] {
-            let executable = packageDirectory.appendingPathComponent(ReleasePackage.servicePath(schemaVersion: schema))
-            if path == executable.path || path == executable.resolvingSymlinksInPath().path { return true }
+        var packages = [packageDirectory]
+        if let selected = try? selectedExecutable() {
+            packages.append(selected.deletingLastPathComponent().deletingLastPathComponent())
+        }
+        for package in packages {
+            for schema in [1, 2] {
+                let executable = package.appendingPathComponent(ReleasePackage.servicePath(schemaVersion: schema))
+                if path == executable.path || path == executable.resolvingSymlinksInPath().path { return true }
+            }
         }
         let service = URL(fileURLWithPath: path).standardizedFileURL
         let package = packageDirectory.resolvingSymlinksInPath()

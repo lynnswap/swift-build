@@ -60,7 +60,7 @@ func installationStillRequiresBundlePropertyLists(path: String) throws {
         try fixture.write("Finder metadata", to: package.appendingPathComponent(path))
     }
     _ = try fixture.enable( package)
-    let installed = try #require(try fixture.store.selectedPackage())
+    let installed = try #require(try fixture.store.packagedRelease())
     #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == fixture.store.service.path)
     #expect(fixture.runner.loaded)
 }

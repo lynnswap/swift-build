@@ -67,7 +67,7 @@ import Testing
     let abandoned = fixture.store.root.deletingLastPathComponent().appendingPathComponent(".CustomXcodeBuildService-initializing-abandoned")
     try fixture.write("incomplete initialization", to: abandoned.appendingPathComponent(".owner"))
     _ = try fixture.enable( fixture.package("v1.0.0"))
-    #expect(try fixture.store.selectedPackage()?.manifest.version == "v1.0.0")
+    #expect(try fixture.store.packagedRelease()?.manifest.version == "v1.0.0")
     #expect(try fixture.store.exists(fixture.store.root.appendingPathComponent(".lock")))
 }
 
