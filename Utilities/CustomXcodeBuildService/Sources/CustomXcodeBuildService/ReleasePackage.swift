@@ -86,25 +86,8 @@ struct ReleasePackage {
         }
     }
 
-    func validateForInstallation() throws {
-        try validateForUse()
-        try Self.validateTree(directory)
-    }
-
     private static func matches(_ value: String, _ pattern: String) -> Bool {
         value.range(of: pattern, options: .regularExpression) == value.startIndex..<value.endIndex
     }
 
-    private static func validateTree(_ directory: URL) throws {
-        let files = FileManager.default
-        for name in try files.contentsOfDirectory(atPath: directory.path) {
-            let child = directory.appendingPathComponent(name)
-            let attributes = try files.attributesOfItem(atPath: child.path)
-            switch attributes[.type] as? FileAttributeType {
-            case .typeDirectory: try validateTree(child)
-            case .typeRegular: break
-            default: throw ServiceError("Release packages must contain only regular files and directories (no symbolic links): \(child.path)")
-            }
-        }
-    }
 }

@@ -22,6 +22,7 @@ struct InstallationStore {
     static let label = "io.github.lynnswap.custom-xcode-build-service"
     private static let owner = "lynnswap/swift-build custom-xcode-build-service schema 1\n"
     let home: URL
+    let packageDirectory: URL
     private let files = FileManager.default
     var root: URL { home.appendingPathComponent("Library/Developer/CustomXcodeBuildService") }
     var versions: URL { root.appendingPathComponent("versions") }
@@ -31,7 +32,7 @@ struct InstallationStore {
     var service: URL { serviceBundle.appendingPathComponent("SWBBuildServiceBundle") }
     var command: URL { home.appendingPathComponent(".local/bin/custom-xcode-build-service") }
     var agent: URL { home.appendingPathComponent("Library/LaunchAgents/\(Self.label).plist") }
-    var persistentExecutable: URL { current.appendingPathComponent("bin/custom-xcode-build-service") }
+    var persistentExecutable: URL { packageDirectory.appendingPathComponent("bin/custom-xcode-build-service") }
 
     func exists(_ url: URL) throws -> Bool {
         do { _ = try files.attributesOfItem(atPath: url.path); return true }
@@ -91,22 +92,9 @@ struct InstallationStore {
         }
     }
 
-    func selectedDirectory() throws -> URL? {
-        guard try exists(current) else { return nil }
-        if try files.attributesOfItem(atPath: current.path)[.type] as? FileAttributeType == .typeDirectory {
-            return current
-        }
-        let destination = try files.destinationOfSymbolicLink(atPath: current.path)
-        let selected = (destination.hasPrefix("/") ? URL(fileURLWithPath: destination) : root.appendingPathComponent(destination)).standardizedFileURL
-        guard selected.deletingLastPathComponent().path == versions.path else {
-            throw ServiceError("The current link points outside the installation's versions directory.")
-        }
-        return selected
-    }
-
-    func selectedPackage() throws -> ReleasePackage? {
-        guard let selected = try selectedDirectory() else { return nil }
-        return try ReleasePackage(directory: selected)
+    func packagedRelease() throws -> ReleasePackage? {
+        guard try exists(packageDirectory.appendingPathComponent("manifest.json")) else { return nil }
+        return try ReleasePackage(directory: packageDirectory)
     }
 
     func validateCommand() throws {
@@ -127,23 +115,29 @@ struct InstallationStore {
     }
 
     func selectedService() throws -> BuildService {
-        try validateAgent()
-        // The owned login configuration is the persistent custom selection.
-        // Its absence selects bundled without duplicating that state in a settings file.
-        return try exists(agent) ? .custom : .bundled
+        try selectedExecutable() == nil ? .bundled : .custom
     }
 
-    private func validateAgent() throws {
-        if try exists(agent) {
-            guard try files.attributesOfItem(atPath: agent.path)[.type] as? FileAttributeType == .typeRegular,
-                  let actual = try PropertyListSerialization.propertyList(from: Data(contentsOf: agent), format: nil) as? [String: Any],
-                  actual["Label"] as? String == Self.label,
-                  actual["ProgramArguments"] as? [String] == [persistentExecutable.path, "activate"],
-                  (actual["Program"] == nil || actual["Program"] as? String == persistentExecutable.path),
-                  actual["BundleProgram"] == nil else {
-                throw ServiceError("Refusing to overwrite an unrelated LaunchAgent: \(agent.path)")
-            }
+    func selectedPackage() throws -> ReleasePackage? {
+        guard let executable = try selectedExecutable() else { return nil }
+        return try ReleasePackage(directory: executable.deletingLastPathComponent().deletingLastPathComponent())
+    }
+
+    private func selectedExecutable() throws -> URL? {
+        guard try exists(agent) else { return nil }
+        // The owned label and activation command survive moving between Homebrew
+        // and local builds; the previous executable path need not equal this one.
+        guard try files.attributesOfItem(atPath: agent.path)[.type] as? FileAttributeType == .typeRegular,
+              let actual = try PropertyListSerialization.propertyList(from: Data(contentsOf: agent), format: nil) as? [String: Any],
+              actual["Label"] as? String == Self.label,
+              let arguments = actual["ProgramArguments"] as? [String],
+              arguments.count == 2, arguments[1] == "activate",
+              URL(fileURLWithPath: arguments[0]).lastPathComponent == "custom-xcode-build-service",
+              (actual["Program"] == nil || actual["Program"] as? String == arguments.first),
+              actual["BundleProgram"] == nil else {
+            throw ServiceError("Refusing to overwrite an unrelated LaunchAgent: \(agent.path)")
         }
+        return URL(fileURLWithPath: arguments[0])
     }
 
     var agentProperties: [String: Any] {
@@ -155,26 +149,6 @@ struct InstallationStore {
             "StandardOutPath": root.appendingPathComponent("activation.log").path,
             "StandardErrorPath": root.appendingPathComponent("activation.log").path,
         ]
-    }
-
-    func stage(_ package: ReleasePackage) throws -> ReleasePackage {
-        try discardStaging()
-        try ensureDirectory(staging)
-        let stagedPackage = staging.appendingPathComponent("package-\(UUID().uuidString)")
-        do {
-            try files.copyItem(at: package.directory, to: stagedPackage)
-        } catch {
-            try removeAfterFailure(stagedPackage, error: error)
-        }
-        return try ReleasePackage(directory: stagedPackage)
-    }
-
-    func publish(_ staged: URL, replacingExisting: Bool) throws {
-        // The same swap restores the old directory (or legacy current symlink) on rollback.
-        let flags = replacingExisting ? RENAME_SWAP : RENAME_EXCL
-        guard Darwin.renamex_np(staged.path, current.path, UInt32(flags)) == 0 else {
-            throw ServiceError("Cannot replace installed service: \(String(cString: strerror(errno))). Staged files: \(staged.path)")
-        }
     }
 
     func serviceBundleLink() throws -> String? {
@@ -196,43 +170,6 @@ struct InstallationStore {
         } catch {
             try removeAfterFailure(temporary, error: error)
         }
-    }
-
-    func redirectLegacyVersions(to package: ReleasePackage) throws {
-        guard try exists(versions) else { return }
-        try ensureDirectory(versions)
-        try discardStaging()
-        try ensureDirectory(staging)
-        // Existing Xcode processes keep versioned paths in their environment. Keep
-        // only forwarding links until those clients are retired or the tool is uninstalled.
-        for version in try files.contentsOfDirectory(at: versions, includingPropertiesForKeys: nil) {
-            let redirect = staging.appendingPathComponent("redirect-\(UUID().uuidString)")
-            var destinations = [
-                ReleasePackage.servicePath(schemaVersion: 1): service,
-                "libexec/swift-build/SWBBuildService.bundle": serviceBundle,
-                "bin/custom-xcode-build-service": persistentExecutable,
-            ]
-            // Legacy flat executables also locate resources beside their launch path.
-            for name in package.manifest.resourceBundles + ["Info.plist", "PlugIns"] {
-                if try exists(package.resources.appendingPathComponent(name)) {
-                    destinations["libexec/swift-build/\(name)"] = serviceBundle.appendingPathComponent(name)
-                }
-            }
-            for (path, destination) in destinations {
-                let link = redirect.appendingPathComponent(path)
-                try files.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try files.createSymbolicLink(at: link, withDestinationURL: destination)
-            }
-            guard Darwin.renamex_np(redirect.path, version.path, UInt32(RENAME_SWAP)) == 0 else {
-                throw ServiceError("Cannot redirect legacy installation \(version.path): \(String(cString: strerror(errno)))")
-            }
-            try remove(redirect)
-        }
-    }
-
-    func writeCommand() throws {
-        try ensureDirectory(command.deletingLastPathComponent())
-        try files.createSymbolicLink(atPath: command.path, withDestinationPath: persistentExecutable.path)
     }
 
     func writeAgent(preserving previous: Data?) throws -> Bool {
@@ -259,7 +196,27 @@ struct InstallationStore {
 
     func ownsService(at path: String) -> Bool {
         if path == service.path { return true }
+        var packages = [packageDirectory]
+        if let selected = try? selectedExecutable() {
+            packages.append(selected.deletingLastPathComponent().deletingLastPathComponent())
+        }
         let service = URL(fileURLWithPath: path).standardizedFileURL
+        for package in packages {
+            for schema in [1, 2] {
+                let executable = package.appendingPathComponent(ReleasePackage.servicePath(schemaVersion: schema))
+                if path == executable.path || path == executable.resolvingSymlinksInPath().path { return true }
+            }
+            let rack = package.resolvingSymlinksInPath().deletingLastPathComponent().deletingLastPathComponent()
+            // An already running process can retain an older Cellar path after opt moves.
+            if rack.lastPathComponent == "custom-xcode-build-service", rack.deletingLastPathComponent().lastPathComponent == "Cellar" {
+                let components = service.pathComponents
+                let prefix = rack.pathComponents
+                let suffix = ["libexec"] + ReleasePackage.servicePath(schemaVersion: 2).split(separator: "/").map(String.init)
+                if components.count == prefix.count + 1 + suffix.count,
+                   Array(components.prefix(prefix.count)) == prefix,
+                   Array(components.suffix(suffix.count)) == suffix { return true }
+            }
+        }
         return [1, 2].contains { schemaVersion in
             let relativePath = ReleasePackage.servicePath(schemaVersion: schemaVersion)
             var version = service
@@ -275,13 +232,6 @@ struct InstallationStore {
         }
         // Keep the lock inode and its owner marker: a waiting invocation may
         // already hold this inode open when uninstall finishes.
-    }
-
-    func discardStaging() throws {
-        guard try exists(staging) else { return }
-        // Only the lock holder writes here; after an interruption these bytes
-        // are disposable and must never be interpreted as installed versions.
-        try files.removeItem(at: staging)
     }
 
     private func removeAfterFailure(_ url: URL, error: any Error) throws -> Never {

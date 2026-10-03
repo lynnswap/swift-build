@@ -1,201 +1,151 @@
 # Custom Xcode Build Service
 
-Use this fork's prebuilt Swift Build service with Xcode. Install it once, then
-open workspaces from Finder or Xcode as usual. The selection applies to all
-projects for your macOS user account and is restored at login.
+Use this fork's Swift Build service with Xcode. Homebrew manages the CLI, service
+bundle, resources, and upgrades. The CLI selects which service your macOS user
+account uses, including after login.
 
-## Commands
+## Install
 
-Use `custom-xcode-build-service <command>`:
-
-| Command | What it does |
-| --- | --- |
-| `install [--package DIR]` | Install or update an extracted release package. |
-| `use custom` | Select the installed custom service, including after login. |
-| `use bundled` | Select Xcode's bundled service, keeping the CLI and installed payload. |
-| `status` | Show the installed release, selected service, and running services. |
-| `uninstall` | Remove the tool and restore Xcode's bundled service. |
-| `activate` | Reapply custom if selected; the login helper runs this automatically. |
-| `reload` | Restart managed build services for open Xcode clients after an update. |
-| `--help` | Show usage and options. |
-
-## Requirements
-
-- Apple silicon and macOS 26+.
-- Xcode selected in **Settings > Locations > Command Line Tools** for builds.
-- A logged-in macOS desktop session for your user account.
-- Administrator authentication through `sudo` when the terminal runs in a
-  Background session. An Aqua desktop session does not require it.
-
-## Install or Update
+Homebrew distribution is being introduced. These commands become available after
+the first `v*` release and its Formula are published in the tap.
 
 ```sh
-curl -fsSL https://github.com/lynnswap/swift-build/releases/latest/download/install.sh | sh
-```
-
-Run this from your own user account. The installer downloads and verifies the
-prebuilt release. In an Aqua session it installs directly. In a Background
-session it asks for administrator authentication to enter your desktop session,
-then drops administrator privileges before installing it for your user account.
-Installation selects the custom service. Run the same command to update it.
-The installer uses the previous selection to decide whether to reload build
-services or ask you to restart clients.
-
-The CLI is installed in `~/.local/bin`. If that directory is not on your `PATH`,
-add the following to your shell configuration (`~/.zshrc` for zsh):
-
-```sh
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-When custom was already selected, installation automatically reloads only this
-user's managed custom build-service processes. Keep Xcode and Xcode MCP clients
-open; they start the updated service on their next request. In-flight requests
-may fail and need to be retried, so finish explicit builds before updating.
-
-On the first installation or when switching from bundled to custom, the installer
-instead tells you to restart **Xcode, the Xcode Service used by MCP, your terminal
-application, and AI agent applications** so they inherit the new service selection.
-Xcode Service can outlive the Xcode or AI application's UI process; restarting
-those applications alone does not necessarily restart it. Start terminal-based
-agents from the restarted terminal. The same rules apply to local builds.
-
-<details>
-<summary>Install a downloaded archive</summary>
-
-For a downloaded and verified archive, extract it and run from its root:
-
-```sh
-./bin/custom-xcode-build-service install
-```
-
-Without `--package`, `install` uses the package containing that executable.
-Keep the extracted directory structure intact.
-
-</details>
-
-## Select a Service
-
-Commands that change the GUI settings request administrator authentication when
-needed to enter your desktop session. `status` reports what it can read without
-authentication; to also read GUI settings from a Background session, run
-`sudo ~/.local/bin/custom-xcode-build-service status`.
-
-Switch to Xcode's bundled service while keeping the custom service installed:
-
-```sh
-custom-xcode-build-service use bundled
-```
-
-Switch back to the installed custom service:
-
-```sh
+brew install lynnswap/tap/custom-xcode-build-service
 custom-xcode-build-service use custom
 ```
 
-Your choice applies to all projects for your macOS user account and persists
-across logins. Installing an update selects custom. Repeating either command succeeds. Selecting custom
-requires an installed release. Xcode updates do not change your selection.
-The Xcode version recorded in a release identifies its build toolchain; it does
-not restrict which Xcode can use it. Compatibility depends on the client/service
-protocol and the selected SDK and tools.
+Requires Apple silicon and macOS 26 or later. The tap builds bottles with Xcode 27
+on the `xcode-27` runner (macOS 27). On macOS 26, Homebrew builds from source and
+requires Xcode 27 or later. Xcode is also needed to run builds and the Formula test.
+The Xcode version recorded in the manifest describes the build toolchain; it does
+not restrict which client Xcode can use the service.
 
-SwiftPM's Swift Build backend continues to use its in-process engine while custom
-is selected. The service bundle loads platform plugins from that engine's own
-Xcode installation, so changing `DEVELOPER_DIR` or `xcode-select` does not require
-reinstalling the custom service. Xcode and `xcodebuild` use the custom executable.
+Installing or upgrading the Formula does not change your service selection.
+`use custom` requires a logged-in desktop session. In an Aqua session it needs no
+administrator authentication. From a Background session it requests `sudo` to
+enter your desktop session, then drops administrator privileges before applying
+your settings.
 
-After switching, quit and reopen **Xcode, the Xcode Service used by MCP, your
-terminal application, and AI agent applications**. Start terminal-based agents
-from the restarted terminal.
-Existing processes retain their previous environment. The command does not
-close applications or stop builds.
+After first selecting custom, or switching between custom and bundled, restart
+**Xcode, Xcode Service (for MCP), terminal applications, and AI agent applications**
+so they inherit the selection. Xcode Service can outlive the Xcode or AI app UI.
+Start terminal-based agents from the restarted terminal.
 
-Check the saved selection and the current environment:
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `use custom` | Select the payload packaged with this CLI and restore it at login. |
+| `use bundled` | Restore Xcode's service and remove the login helper and overrides. |
+| `status` | Show this CLI's packaged version, the selected custom payload, launchd settings, and running services. |
+| `--version` | Print the packaged release version without accessing GUI settings. |
+| `reload` | Restart this user's managed custom build services after an upgrade. |
+| `uninstall` | Remove user settings and old standalone files; keep Homebrew files. |
+| `activate` | Reapply custom at login if it is still selected. |
+
+`status` reports the information it can read without requesting authentication.
+From a Background session, use `sudo` with the full CLI path to also read GUI
+settings. Partial inspection failures preserve the readable information and
+produce a nonzero exit status. A missing payload does not prevent `use bundled`
+or cleanup of owned settings.
+
+## Upgrade
+
+Finish builds before upgrading, then run:
 
 ```sh
-custom-xcode-build-service status
+brew upgrade custom-xcode-build-service
+custom-xcode-build-service reload
 ```
 
-Status shows the installed release, the selected service (`custom` or `bundled`),
-the launchd settings for future processes, and the build services actually
-running. The displayed Xcode version records which Xcode built the release.
-A running service can show an old versioned launch path inherited from its
-client. After migration, that path forwards to `current`; the path text alone
-does not identify the loaded binary version. Service selection changes take
-effect in clients after they are restarted. If the launchd settings differ from the saved
-selection, status reports the mismatch and the command to reapply your choice.
-If an inspection fails, status shows the information it could read alongside
-the error and exits with failure. Missing service files do not hide readable
-release metadata, and a launchd error does not hide the installed release or
-running processes.
+When the Homebrew payload is selected, its stable `opt` path follows upgrades
+without another `use custom`. The next launch uses the upgraded service; already
+running services keep their loaded code until reloaded. `reload` and `activate`
+preserve the saved custom payload selection, including a local build; only
+`use custom` selects the payload packaged with the CLI you invoke. `reload` stops
+only this user's managed custom service processes, not Xcode or MCP clients.
+Interrupted requests may need to be retried. If bundled is selected, an upgrade
+preserves that selection and `reload` leaves it alone.
+
+## Migrate a standalone installation
+
+Older `custom-v*` releases installed a separate payload under your home directory.
+Finish builds and quit Xcode and other build clients, then install the Formula and
+invoke its CLI by full path to avoid an older command earlier on `PATH`:
+
+```sh
+brew install lynnswap/tap/custom-xcode-build-service
+"$(brew --prefix custom-xcode-build-service)/bin/custom-xcode-build-service" uninstall
+"$(brew --prefix custom-xcode-build-service)/bin/custom-xcode-build-service" use custom
+```
+
+Cleanup removes only the owned standalone payload, its `~/.local/bin` link, and
+user settings. It preserves the Homebrew package. Restart clients afterward;
+clients from the standalone installation can still retain old versioned paths.
+New releases use tags such as `v0.3.0`; existing `custom-v*` tags remain unchanged.
 
 ## Uninstall
 
-Quit Xcode and let command-line builds finish, then run:
+Finish builds and quit Xcode and other build clients, then restore the bundled
+service before removing the Formula:
 
 ```sh
-custom-xcode-build-service uninstall
+custom-xcode-build-service use bundled
+brew uninstall custom-xcode-build-service
 ```
 
-Restart terminal and AI agent applications afterward to use Xcode's bundled
-service in new builds.
+Restart clients after switching. For complete removal of per-user links and old
+standalone files, quit Xcode and finish command-line builds, then run the CLI's
+`uninstall` command **before** `brew uninstall`.
 
 ## Configuration
 
-While custom is selected, the tool manages these settings through `launchctl`:
+While custom is selected, the CLI manages these launchd environment settings:
 
 | Setting | Value |
 | --- | --- |
-| `XCBBUILDSERVICE_PATH` | `~/Library/Developer/CustomXcodeBuildService/SWBBuildService.bundle/SWBBuildServiceBundle` (expanded to an absolute path). |
+| `XCBBUILDSERVICE_PATH` | `~/Library/Developer/CustomXcodeBuildService/SWBBuildService.bundle/SWBBuildServiceBundle`, expanded to an absolute path. |
 | `DisableConcurrentDependencyResolution` | `0` (parallel dependency resolution). |
 
-The payload is replaced at `~/Library/Developer/CustomXcodeBuildService/current`.
-The fixed `SWBBuildService.bundle` link points to the installed service and its
-resources together, so clients can locate both the executable and its plugins. The manifest
-records the installed version; new updates do not create version directories.
+The per-user bundle link points to the whole selected bundle, keeping resources
+and plugins together. The CLI does not copy or remove the Homebrew payload.
+A helper in `~/Library/LaunchAgents` reapplies custom at login. Its presence is
+the saved custom selection, and its executable path records the selected payload;
+there is no second settings file. In `status`, `Installed` describes this CLI's
+payload and `Selected custom package` describes that saved selection. If macOS
+restores Xcode before the helper runs, check `status` and restart Xcode.
 
-When upgrading an older installation, `reload` replaces old version payloads with
-forwarding links. These small compatibility directories let already open clients
-continue using the old paths in their environment. They are removed by uninstall;
-after all clients from before migration have been restarted, they are no longer
-needed. No new legacy paths are added by subsequent updates.
+SwiftPM's Swift Build backend continues to use its in-process engine. The host
+plugin loads platform plugins from that engine's own Xcode installation. Changing
+`DEVELOPER_DIR` or `xcode-select` does not require reinstalling the Formula.
 
-When custom is selected, a helper in `~/Library/LaunchAgents` reapplies it at login.
-Selecting bundled removes that helper and the tool's environment overrides while
-keeping the installed payload and CLI. If macOS restores Xcode before the custom helper
-runs, restart Xcode after checking `status`.
+## Development and verification
 
-## Development
-
-### Build and install locally
-
-From the repository root, build and install the committed `HEAD`:
+Select Xcode 27 with `xcode-select` or `DEVELOPER_DIR`, then build the committed
+`HEAD` into a new output directory. Finish builds and quit Xcode and other build
+clients before selecting the local payload:
 
 ```sh
-python3 Utilities/CustomXcodeBuildService/Distribution/release.py install
+python3 Utilities/CustomXcodeBuildService/Distribution/release.py build \
+  --version v0.0.0-local --output-dir /path/to/build
+/path/to/build/payload/bin/custom-xcode-build-service use custom
 ```
 
-The command builds in a temporary directory and invokes the same installer used
-by downloaded releases. It selects custom and automatically reloads an already
-selected custom service; when switching from bundled, it reports that clients
-must restart. It does not run tests. A local version is recorded in the manifest,
-and the temporary build directory is removed afterward.
-Commit source changes before running it; uncommitted changes are not included.
-The build isolates inherited service overrides, so it can run while an older
-custom service is selected. Installation copies the payload into the managed
-installation directory; no GitHub release is needed.
-With `--revision`, both the service and installer come from that revision;
-older revisions follow their own installation and restart behavior.
+The build does not select or install the service. Keep the payload directory while
+it is selected, including across logins, and restart clients after selection. To
+switch back to Homebrew, finish builds and quit clients, then invoke its CLI:
 
-Xcode and Xcode MCP clients which already use custom can remain open during
-updates. Their build services are restarted, so retry any interrupted request.
-The first switch from Xcode's bundled service still requires restarting clients
-to inherit the custom service selection.
+```sh
+"$(brew --prefix custom-xcode-build-service)/bin/custom-xcode-build-service" use custom
+```
 
-### Checks
+Restart clients before resuming builds. To stop using custom altogether, run
+`use bundled` before deleting the selected local payload. Homebrew source builds
+use `--source-dir` and read the commit from the downloaded Git archive, so they do
+not need a `.git` directory.
+Dependencies are pinned in `Distribution/ServiceDependencies.resolved`.
 
-Run checks from the repository root:
+Run the management CLI and distribution tests from the repository root:
 
 ```sh
 (cd Utilities/CustomXcodeBuildService && xcodebuild test \
@@ -204,44 +154,32 @@ Run checks from the repository root:
 python3 -m unittest discover -s Utilities/CustomXcodeBuildService/Distribution/tests -p 'test_*.py'
 ```
 
-This fork's CI tests the installer and Xcode compatibility. It builds one service
-artifact and discovers installed Xcode 26 and 27 releases on the `macos-26` and
-`xcode-27` hosted runners. It tests every stable release and the latest beta across
-both inventories, once per Xcode build, using the runner where it was found.
-The Xcode and macOS versions are printed for each run. This selection defines
-test coverage, not an installation allowlist.
+`brew test custom-xcode-build-service` checks the CLI version, Xcode C builds,
+and SwiftPM build/run/test against the installed payload. Xcode's Swift package
+manifest loader needs its own sandbox, so those Xcode integration tests run
+outside Homebrew's test sandbox. `Distribution/test-homebrew.sh` runs both sets
+of tests after source installation and again after bottle reinstallation.
+All service overrides are limited to test child processes; GUI selection is unchanged.
+The source CI runs this verification script. Its compatibility jobs test
+one service artifact with installed stable Xcode 26/27 releases and the latest beta
+across `macos-26` and `xcode-27`. This matrix describes the tested combinations;
+it does not restrict which client Xcode can use the service.
 
-<details>
-<summary>Build and publish a release</summary>
+## Releases
 
-With the intended `custom-v*` release tag checked out, run from the repository
-root. The version comes from that tag:
+Prepare a Draft Release with reviewed notes, then push its `vX.Y.Z` tag to run the
+[release workflow](../../.github/workflows/custom-xcode-build-service.yml).
+Existing `custom-v*` tags do not trigger the new publication path. Stable tags
+become Latest; prereleases do not replace Latest.
 
-```sh
-custom_release_version="$(git describe --tags --exact-match HEAD)"
-custom_build_dir="$(mktemp -d /tmp/custom-service-build.XXXXXX)"
-custom_release_dir="$(mktemp -d /tmp/custom-service-release.XXXXXX)"
+The workflow checks the public tag archive against the tagged Git commit and
+publishes that source archive, `custom-xcode-build-service.rb`, and `SHA256SUMS.txt`
+after build and compatibility checks. Internal binary archives are CI artifacts.
+The old standalone installer is no longer published.
 
-python3 Utilities/CustomXcodeBuildService/Distribution/release.py build \
-    --version "$custom_release_version" --output-dir "$custom_build_dir" &&
-python3 Utilities/CustomXcodeBuildService/Distribution/release.py package \
-    --build-dir "$custom_build_dir" --output-dir "$custom_release_dir" &&
-python3 Utilities/CustomXcodeBuildService/Distribution/release.py verify \
-    --release-dir "$custom_release_dir"
-```
-
-Builds use committed source and pinned dependencies in an isolated directory.
-The output contains the archive, checksums, and a version-specific installer.
-Verification builds a C project, runs Swift tests through `xcodebuild`, and runs
-`swift build`, `swift run`, and `swift test` with the extracted custom service
-selected. It uses the currently selected Xcode without requiring its build number
-to match the release metadata.
-
-Create a draft GitHub Release for the `custom-v*` tag and write its title and
-release notes there. Then push that tag to run the
-[release workflow](../../.github/workflows/custom-xcode-build-service.yml), which
-uploads the verified assets and publishes the draft without changing its title
-or notes.
-Stable releases become **Latest**; prereleases do not replace it.
-
-</details>
+For the first Homebrew release, submit the generated Formula under `Formula/` in
+[lynnswap/homebrew-tap](https://github.com/lynnswap/homebrew-tap). The public tag
+archive must exist before bottle CI runs. The tap owns bottle builds and protected
+publication; approve the tested Formula through its existing `homebrew-publish`
+Environment. Its scoped Renovate configuration proposes later stable `v*` updates.
+Changes to installation or tests require updating the recipe from this repository.

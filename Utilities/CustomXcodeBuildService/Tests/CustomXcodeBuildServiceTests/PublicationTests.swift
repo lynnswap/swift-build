@@ -38,7 +38,7 @@ import Testing
     try fixture.write("0", to: counter)
 
     DispatchQueue.concurrentPerform(iterations: 16) { _ in
-        let store = InstallationStore(home: home)
+        let store = InstallationStore(home: home, packageDirectory: home.appendingPathComponent("unused-package"))
         do {
             try store.withInstallationLock {
                 try store.requireOwnership()
@@ -66,55 +66,9 @@ import Testing
     let fixture = try Fixture()
     let abandoned = fixture.store.root.deletingLastPathComponent().appendingPathComponent(".CustomXcodeBuildService-initializing-abandoned")
     try fixture.write("incomplete initialization", to: abandoned.appendingPathComponent(".owner"))
-    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
-    #expect(try fixture.store.selectedPackage()?.manifest.version == "custom-v1.0.0")
+    _ = try fixture.enable( fixture.package("v1.0.0"))
+    #expect(try fixture.store.packagedRelease()?.manifest.version == "v1.0.0")
     #expect(try fixture.store.exists(fixture.store.root.appendingPathComponent(".lock")))
-}
-
-@Test(arguments: ["install", "activate", "uninstall"])
-func interruptedStagingDoesNotBecomeAnInstalledVersion(command: String) throws {
-    let fixture = try Fixture()
-    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
-    let selected = try #require(try fixture.store.selectedPackage())
-    let partial = fixture.store.staging.appendingPathComponent("package-interrupted/manifest.json")
-    try fixture.write("{partial", to: partial)
-    let external = fixture.directory.appendingPathComponent("unrelated.txt")
-    try fixture.write("preserve", to: external)
-    try FileManager.default.createSymbolicLink(at: fixture.store.staging.appendingPathComponent("current-interrupted"), withDestinationURL: external)
-
-    #expect(try fixture.manager.status().contains("Installed: custom-v1.0.0"))
-    #expect(try fixture.store.exists(partial))
-
-    switch command {
-    case "install":
-        _ = try fixture.manager.install(from: fixture.package("custom-v1.0.1"))
-        #expect(try fixture.store.selectedPackage()?.manifest.version == "custom-v1.0.1")
-    case "activate":
-        fixture.runner.settings = [:]
-        _ = try fixture.manager.activate()
-        #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == fixture.store.service.path)
-    default:
-        _ = try fixture.manager.uninstall()
-        #expect(try fixture.store.selectedPackage() == nil)
-        #expect(fixture.runner.settings.isEmpty)
-    }
-
-    #expect(try fixture.store.exists(partial) == (command == "activate"))
-    #expect(try String(contentsOf: external, encoding: .utf8) == "preserve")
-}
-
-@Test func uninstallRemovesStagingLinkWithoutDeletingItsDestination() throws {
-    let fixture = try Fixture()
-    _ = try fixture.manager.install(from: fixture.package("custom-v1.0.0"))
-    if try fixture.store.exists(fixture.store.staging) { try FileManager.default.removeItem(at: fixture.store.staging) }
-    let external = fixture.directory.appendingPathComponent("unrelated")
-    try fixture.write("preserve", to: external.appendingPathComponent("file"))
-    try FileManager.default.createSymbolicLink(at: fixture.store.staging, withDestinationURL: external)
-    _ = try fixture.manager.uninstall()
-    #expect(try String(contentsOf: external.appendingPathComponent("file"), encoding: .utf8) == "preserve")
-    #expect(fixture.runner.settings.isEmpty)
-    #expect(!fixture.runner.loaded)
-    #expect(try !fixture.store.exists(fixture.store.staging))
 }
 
 @Test(arguments: ["read", "modify"])
@@ -138,7 +92,7 @@ func absentInstallationDoesNotInvokeUnlockedCallback(access: String) throws {
     try fixture.write("0", to: counter)
 
     DispatchQueue.concurrentPerform(iterations: 32) { index in
-        let store = InstallationStore(home: home)
+        let store = InstallationStore(home: home, packageDirectory: home.appendingPathComponent("unused-package"))
         let mutation = {
             let descriptor = Darwin.open(store.root.appendingPathComponent(".lock").path, O_RDWR)
             guard descriptor >= 0 else { throw ServiceError("Mutation ran before a lock was published.") }
