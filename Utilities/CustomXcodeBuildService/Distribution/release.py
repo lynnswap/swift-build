@@ -649,7 +649,7 @@ def run_xcodebuild(command, environment, service, cwd=None):
     require(observed_service, "Xcode did not invoke the relocated custom service.")
 
 
-def smoke_swift(payload, temporary, manifest, disable_sandbox=False):
+def smoke_swift(payload, temporary, manifest, disable_sandbox=False, xcode_package_tests=True):
     package = temporary / "SwiftPMSmoke"
     (package / "Sources/Smoke").mkdir(parents=True)
     (package / "Tests/SmokeTests").mkdir(parents=True)
@@ -677,6 +677,8 @@ let package = Package(name: "Smoke", targets: [
              *( ["--disable-sandbox"] if disable_sandbox else []), "--package-path", str(package)],
             env=environment, check=True, timeout=600,
         )
+    if not xcode_package_tests:
+        return
     run_xcodebuild(
         ["/usr/bin/xcrun", "xcodebuild", "-scheme", "Smoke", "-testPlan", "Smoke",
          "-destination", "platform=macOS,arch=arm64",
@@ -858,7 +860,11 @@ def verify_payload(args):
     with tempfile.TemporaryDirectory(prefix="custom-service-bottle-test-") as directory:
         temporary = Path(directory)
         smoke_build(payload, temporary, manifest, args.fixture_dir)
-        smoke_swift(payload, temporary, manifest, args.disable_sandbox)
+        smoke_swift(payload, temporary, manifest, args.disable_sandbox,
+                    xcode_package_tests=not args.skip_xcode_package_tests)
+    print("Verified installed payload: signatures, Xcode C build, and SwiftPM build/run/test.")
+    print("Xcode Swift package tests were skipped." if args.skip_xcode_package_tests
+          else "Xcode Swift package tests passed.")
 
 
 def main():
@@ -903,6 +909,8 @@ def main():
     installed = commands.add_parser("verify-payload", help="Run build smoke tests with an installed Homebrew payload")
     installed.add_argument("--payload", type=Path, required=True)
     installed.add_argument("--disable-sandbox", action="store_true")
+    installed.add_argument("--skip-xcode-package-tests", action="store_true",
+                           help="Skip Xcode package manifests, which require their own sandbox")
     installed.add_argument("--fixture-dir", type=Path, default=REPOSITORY_ROOT / "Tests/SwiftBuildTests/TestData/CommandLineTool")
     args = parser.parse_args()
     try:

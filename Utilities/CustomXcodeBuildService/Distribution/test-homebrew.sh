@@ -46,12 +46,23 @@ if version != sys.argv[1]:
 ' "$expected_version"
 cp "$release_dir/$source_archive" "$cache"
 brew install --build-bottle "$formula"
-brew test "$formula"
 cd "$work"
+# Keep a candidate bottle for diagnosis if a subsequent installed test fails.
 brew bottle --json --root-url=https://example.invalid/custom-xcode-build-service-verification "$formula"
 brew bottle --merge --write --no-commit "$work"/*.bottle.json
 bottle_cache="$(brew --cache --force-bottle "$formula")"
 cp "$work"/*.bottle.tar.gz "$bottle_cache"
+verify_installed_payload() {
+  local prefix
+  prefix="$(brew --prefix "$formula")"
+  # Run Xcode's package tests outside Homebrew's sandbox; its manifest loader
+  # creates its own sandbox. The regular Formula test covers C and SwiftPM here.
+  python3 "$prefix/share/custom-xcode-build-service/verify.py" verify-payload \
+    --payload "$prefix/libexec" \
+    --fixture-dir "$prefix/share/custom-xcode-build-service/CommandLineTool"
+}
+brew test "$formula"
+verify_installed_payload
 brew uninstall "$formula"
 brew install --force-bottle "$formula"
 brew info --json=v2 "$formula" | python3 -c '
@@ -61,3 +72,4 @@ if not installed["poured_from_bottle"]:
     sys.exit("Homebrew verification expected a bottle installation.")
 '
 brew test "$formula"
+verify_installed_payload

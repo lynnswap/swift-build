@@ -40,7 +40,8 @@ class CustomXcodeBuildService < Formula
 
   test do
     assert_equal "v#{version}", shell_output("#{bin}/custom-xcode-build-service --version").strip
+    # Xcode's package manifest sandbox cannot nest inside Homebrew's test sandbox.
     system "python3", pkgshare/"verify.py", "verify-payload", "--disable-sandbox", "--payload", libexec,
-           "--fixture-dir", pkgshare/"CommandLineTool"
+           "--fixture-dir", pkgshare/"CommandLineTool", "--skip-xcode-package-tests"
   end
 end

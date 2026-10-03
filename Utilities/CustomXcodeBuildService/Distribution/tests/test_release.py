@@ -537,10 +537,24 @@ class DistributionTests(unittest.TestCase):
         ) as smoke_build, patch.object(release, "smoke_swift") as smoke_swift:
             release.verify_payload(argparse.Namespace(
                 payload=self.payload, fixture_dir=fixture, disable_sandbox=True,
+                skip_xcode_package_tests=True,
             ))
         self.assertEqual(smoke_build.call_args.args[0], self.payload.resolve())
         self.assertEqual(smoke_build.call_args.args[3], fixture)
         self.assertTrue(smoke_swift.call_args.args[3])
+        self.assertFalse(smoke_swift.call_args.kwargs["xcode_package_tests"])
+
+    def test_homebrew_swift_smoke_runs_swiftpm_without_nesting_xcode_sandboxes(self):
+        with patch.object(release.subprocess, "run") as run, patch.object(
+            release, "run_xcodebuild"
+        ) as xcodebuild, patch.object(release, "smoke_system_library") as system_library:
+            release.smoke_swift(self.payload, self.root / "smoke", self.manifest,
+                                disable_sandbox=True, xcode_package_tests=False)
+        self.assertEqual([call.args[0][2] for call in run.call_args_list],
+                         ["build", "run", "test"])
+        self.assertTrue(all("--disable-sandbox" in call.args[0] for call in run.call_args_list))
+        xcodebuild.assert_not_called()
+        system_library.assert_not_called()
 
     def test_dependency_requires_license_and_unique_revision_entry(self):
         self.manifest["dependencies"].append(
