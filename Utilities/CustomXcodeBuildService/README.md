@@ -6,17 +6,17 @@ account uses, including after login.
 
 ## Install
 
-Homebrew distribution is being introduced. These commands become available after
-the first `v*` release and its Formula are published in the tap.
+Install the CLI and service bundle through Homebrew:
 
 ```sh
 brew install lynnswap/tap/custom-xcode-build-service
 custom-xcode-build-service use custom
 ```
 
-Requires Apple silicon and macOS 26 or later. The tap builds bottles with Xcode 27
-on the `xcode-27` runner (macOS 27). On macOS 26, Homebrew builds from source and
-requires Xcode 27 or later. Xcode is also needed to run builds and the Formula test.
+Requires Apple silicon and macOS 26 or later. Homebrew installs a prebuilt bottle
+on macOS 26 and later. The tap builds it with Xcode 27 on the `xcode-27` runner
+(macOS 27), targeting macOS 26. Xcode 27 or later is required to build from source
+and run the Formula test. Xcode is also needed to run builds using the service.
 The Xcode version recorded in the manifest describes the build toolchain; it does
 not restrict which client Xcode can use the service.
 
