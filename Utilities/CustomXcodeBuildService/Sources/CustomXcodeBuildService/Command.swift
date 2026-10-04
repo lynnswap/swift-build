@@ -52,9 +52,17 @@ enum Command: Equatable {
       custom-xcode-build-service uninstall
       custom-xcode-build-service activate
 
-    Homebrew installs and updates the CLI and service together:
+    Homebrew installs the CLI and service together:
       brew install lynnswap/tap/custom-xcode-build-service
-      brew upgrade custom-xcode-build-service
+
+    Set up this packaged service using the Homebrew CLI:
+      "$(brew --prefix lynnswap/tap/custom-xcode-build-service)/bin/custom-xcode-build-service" use custom
+    Setup migrates this tool's old standalone CLI link and settings.
+
+    To upgrade, finish builds and run:
+      brew update
+      brew upgrade lynnswap/tap/custom-xcode-build-service
+      custom-xcode-build-service reload
 
     use custom   Select this packaged service, including after login.
     use bundled  Restore Xcode's bundled service and remove the login helper.
@@ -69,8 +77,8 @@ enum Command: Equatable {
     Status never requests authentication. Use sudo with its full path for GUI status.
     After switching services, restart Xcode, Xcode Service (for MCP), terminal
     applications, and AI agents so they inherit the new selection.
-    Finish builds before upgrading. Run reload afterward; interrupted requests
-    may need to be retried. Installing or upgrading does not change your selection.
+    Interrupted requests may need to be retried. Installing or upgrading does
+    not change your selection.
     """
 }
 

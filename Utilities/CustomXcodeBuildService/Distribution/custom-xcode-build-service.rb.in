@@ -27,7 +27,8 @@ class CustomXcodeBuildService < Formula
   def caveats
     <<~EOS
       Select the service for your macOS user account:
-        custom-xcode-build-service use custom
+        "#{opt_bin}/custom-xcode-build-service" use custom
+      Setup also migrates this tool's old standalone CLI link and settings.
       Restart Xcode, Xcode Service (for MCP), terminals, and AI agents afterward.
 
       Finish builds before upgrading; then run:

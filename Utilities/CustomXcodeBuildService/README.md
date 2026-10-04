@@ -10,7 +10,7 @@ Install the CLI and service bundle through Homebrew:
 
 ```sh
 brew install lynnswap/tap/custom-xcode-build-service
-custom-xcode-build-service use custom
+"$(brew --prefix lynnswap/tap/custom-xcode-build-service)/bin/custom-xcode-build-service" use custom
 ```
 
 Requires Apple silicon and macOS 26 or later. Homebrew installs a prebuilt bottle
@@ -21,6 +21,10 @@ The Xcode version recorded in the manifest describes the build toolchain; it doe
 not restrict which client Xcode can use the service.
 
 Installing or upgrading the Formula does not change your service selection.
+Run setup with the Homebrew CLI's full path so an older command on `PATH` cannot
+intercept it. `use custom` migrates the login helper and service settings and
+removes this tool's old standalone CLI link. Existing standalone payloads remain
+available to already running services.
 `use custom` requires a logged-in desktop session. In an Aqua session it needs no
 administrator authentication. From a Background session it requests `sudo` to
 enter your desktop session, then drops administrator privileges before applying
@@ -51,12 +55,19 @@ or cleanup of owned settings.
 
 ## Upgrade
 
+For a `custom-v*` standalone installation, run
+[setup with the Homebrew CLI](#migrate-a-standalone-installation) first.
+
 Finish builds before upgrading, then run:
 
 ```sh
-brew upgrade custom-xcode-build-service
+brew update
+brew upgrade lynnswap/tap/custom-xcode-build-service
 custom-xcode-build-service reload
 ```
+
+`brew update` refreshes the tap's Formula definitions. Homebrew offers a new
+version after its Formula update is published in the tap.
 
 When the Homebrew payload is selected, its stable `opt` path follows upgrades
 without another `use custom`. The next launch uses the upgraded service; already
@@ -69,19 +80,21 @@ preserves that selection and `reload` leaves it alone.
 
 ## Migrate a standalone installation
 
-Older `custom-v*` releases installed a separate payload under your home directory.
-Finish builds and quit Xcode and other build clients, then install the Formula and
-invoke its CLI by full path to avoid an older command earlier on `PATH`:
+Older `custom-v*` releases installed a separate payload and a CLI link under your
+home directory. Finish builds, then install the Formula and select its service
+using the Homebrew CLI's full path:
 
 ```sh
+brew update
 brew install lynnswap/tap/custom-xcode-build-service
-"$(brew --prefix custom-xcode-build-service)/bin/custom-xcode-build-service" uninstall
-"$(brew --prefix custom-xcode-build-service)/bin/custom-xcode-build-service" use custom
+"$(brew --prefix lynnswap/tap/custom-xcode-build-service)/bin/custom-xcode-build-service" use custom
 ```
 
-Cleanup removes only the owned standalone payload, its `~/.local/bin` link, and
-user settings. It preserves the Homebrew package. Restart clients afterward;
-clients from the standalone installation can still retain old versioned paths.
+Setup migrates the selection and removes the owned `~/.local/bin` CLI link. There
+is no separate `uninstall` step. Restart Xcode, Xcode Service (for MCP), terminals,
+and AI agents afterward; older clients can still retain the standalone paths.
+The old payloads are retained for running services and can be removed with
+`uninstall` after switching to bundled and quitting build clients.
 New releases use tags such as `v0.3.0`; existing `custom-v*` tags remain unchanged.
 
 ## Uninstall

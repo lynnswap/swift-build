@@ -103,15 +103,26 @@ struct InstallationStore {
                 throw ServiceError("Refusing to replace an unrelated command: \(command.path)")
             }
             let destination = try files.destinationOfSymbolicLink(atPath: command.path)
-            // Keep current in the target: a link to one release would not follow updates.
-            let parent = command.deletingLastPathComponent().resolvingSymlinksInPath()
-            let target = destination.hasPrefix("/") ? URL(fileURLWithPath: destination) : parent.appendingPathComponent(destination)
-            let installation = target.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            guard target.path == installation.appendingPathComponent("current/bin/custom-xcode-build-service").path,
-                  installation.resolvingSymlinksInPath().path == root.resolvingSymlinksInPath().path else {
+            guard isLegacyCommandTarget(destination) else {
                 throw ServiceError("Refusing to overwrite an unrelated command: \(command.path)")
             }
         }
+    }
+
+    func legacyCommandTarget() throws -> String? {
+        guard try exists(command),
+              try files.attributesOfItem(atPath: command.path)[.type] as? FileAttributeType == .typeSymbolicLink else { return nil }
+        let destination = try files.destinationOfSymbolicLink(atPath: command.path)
+        return isLegacyCommandTarget(destination) ? destination : nil
+    }
+
+    private func isLegacyCommandTarget(_ destination: String) -> Bool {
+        // The standalone installer linked through current, rather than one version.
+        let parent = command.deletingLastPathComponent().resolvingSymlinksInPath()
+        let target = destination.hasPrefix("/") ? URL(fileURLWithPath: destination) : parent.appendingPathComponent(destination)
+        let installation = target.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        return target.path == installation.appendingPathComponent("current/bin/custom-xcode-build-service").path
+            && installation.resolvingSymlinksInPath().path == root.resolvingSymlinksInPath().path
     }
 
     func selectedService() throws -> BuildService {

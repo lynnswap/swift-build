@@ -84,11 +84,24 @@ struct InstallationManager {
         case .bundled:
             customPackage = nil
         }
+        let legacyCommandTarget: String?
+        if service == .custom {
+            legacyCommandTarget = try store.legacyCommandTarget()
+        } else {
+            legacyCommandTarget = nil
+        }
         try Transaction.perform { transaction in
             try configure(customPackage: customPackage, previous: previous, transaction: transaction)
+            if let legacyCommandTarget {
+                try store.remove(store.command)
+                transaction.undo {
+                    try FileManager.default.createSymbolicLink(atPath: store.command.path, withDestinationPath: legacyCommandTarget)
+                }
+            }
         }
         let report = "Selected service: \(service.rawValue)"
-        let selectionChanged = previous.selection != service || (previous.settings.service != nil) != (service == .custom)
+        let selectedServicePath = service == .custom ? store.service.path : nil
+        let selectionChanged = previous.selection != service || previous.settings.service != selectedServicePath || legacyCommandTarget != nil
         return selectionChanged ? report + "\n" + Self.clientRestartInstructions : report
     }
 

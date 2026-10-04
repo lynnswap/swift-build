@@ -322,6 +322,29 @@ final class Fixture {
         return try manager.use(.custom)
     }
 
+    func standaloneInstallation(relativeCommandLink: Bool = false) throws -> URL {
+        let source = try package("custom-v0.2.6")
+        try store.initializeRoot()
+        let legacy = store.versions.appendingPathComponent("custom-v0.2.6")
+        try FileManager.default.createDirectory(at: store.versions, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: source, to: legacy)
+        try FileManager.default.createSymbolicLink(at: store.current, withDestinationURL: legacy)
+        let command = store.current.appendingPathComponent("bin/custom-xcode-build-service")
+        try FileManager.default.createDirectory(at: store.command.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let destination = relativeCommandLink
+            ? "../../Library/Developer/CustomXcodeBuildService/current/bin/custom-xcode-build-service"
+            : command.path
+        try FileManager.default.createSymbolicLink(atPath: store.command.path, withDestinationPath: destination)
+        var properties = store.agentProperties
+        properties["ProgramArguments"] = [command.path, "activate"]
+        try FileManager.default.createDirectory(at: store.agent.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try PropertyListSerialization.data(fromPropertyList: properties, format: .xml, options: 0).write(to: store.agent)
+        runner.loaded = true
+        runner.loadedAgent = properties as NSDictionary
+        runner.settings = ["XCBBUILDSERVICE_PATH": try ReleasePackage(directory: legacy).service.path, "DisableConcurrentDependencyResolution": "0"]
+        return legacy
+    }
+
     func write(_ text: String, to url: URL) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data(text.utf8).write(to: url)
@@ -441,6 +464,67 @@ func homebrewUpgradePreservesSelectionAndReloadRecognizesTheOldCellar(selected: 
     try FileManager.default.removeItem(at: old.deletingLastPathComponent())
     #expect(try fixture.store.packagedRelease()?.manifest.version == "v0.3.1")
     #expect(try fixture.store.service.resolvingSymlinksInPath() == ReleasePackage(directory: new).service)
+}
+
+@Test(arguments: [false, true])
+func setupMigratesStandaloneSelectionAndCommand(relativeCommandLink: Bool) throws {
+    let fixture = try Fixture()
+    let legacy = try fixture.standaloneInstallation(relativeCommandLink: relativeCommandLink)
+    fixture.runner.processes = "20 \(try ReleasePackage(directory: legacy).service.path)\n"
+    let package = try fixture.package("v0.3.3")
+
+    let output = try fixture.enable(package)
+
+    #expect(try !fixture.store.exists(fixture.store.command))
+    #expect(try fixture.store.exists(legacy))
+    #expect(try fixture.store.selectedPackage()?.manifest.version == "v0.3.3")
+    #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == fixture.store.service.path)
+    #expect(fixture.runner.loaded)
+    #expect(fixture.runner.killedPIDs.isEmpty)
+    #expect(output.contains("Restart Xcode"))
+    #expect(try !fixture.manager.use(.custom).contains("Restart Xcode"))
+}
+
+@Test(arguments: [false, true])
+func setupPreservesUnrelatedCommand(symbolicLink: Bool) throws {
+    let fixture = try Fixture()
+    let target = fixture.directory.appendingPathComponent("other-command")
+    if symbolicLink {
+        try fixture.write("unrelated", to: target)
+        try FileManager.default.createDirectory(at: fixture.store.command.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: fixture.store.command, withDestinationURL: target)
+    } else {
+        try fixture.write("unrelated", to: fixture.store.command)
+    }
+
+    _ = try fixture.enable(fixture.package("v0.3.3"))
+
+    #expect(try String(contentsOf: fixture.store.command, encoding: .utf8) == "unrelated")
+    if symbolicLink {
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: fixture.store.command.path) == target.path)
+    }
+    #expect(try fixture.store.selectedPackage()?.manifest.version == "v0.3.3")
+}
+
+@Test func failedLegacyCommandRemovalRestoresStandaloneSelection() throws {
+    let fixture = try Fixture()
+    let legacy = try fixture.standaloneInstallation()
+    let settings = fixture.runner.settings
+    let agent = try Data(contentsOf: fixture.store.agent)
+    let commandTarget = try FileManager.default.destinationOfSymbolicLink(atPath: fixture.store.command.path)
+    let directory = fixture.store.command.deletingLastPathComponent()
+    try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: directory.path)
+    defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path) }
+    try fixture.link(fixture.package("v0.3.3"))
+
+    #expect(throws: (any Error).self) { try fixture.manager.use(.custom) }
+
+    #expect(fixture.runner.settings == settings)
+    #expect(fixture.runner.loaded)
+    #expect(try Data(contentsOf: fixture.store.agent) == agent)
+    #expect(try FileManager.default.destinationOfSymbolicLink(atPath: fixture.store.command.path) == commandTarget)
+    #expect(try fixture.store.exists(legacy))
+    #expect(try !fixture.store.exists(fixture.store.serviceBundle))
 }
 
 @Test func legacyCleanupUsesTheNewCLIWithoutDeletingHomebrewFiles() throws {
