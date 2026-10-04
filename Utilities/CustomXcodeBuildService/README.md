@@ -180,19 +180,43 @@ it does not restrict which client Xcode can use the service.
 
 ## Releases
 
-Prepare a Draft Release with reviewed notes, then push its `vX.Y.Z` tag to run the
-[release workflow](../../.github/workflows/custom-xcode-build-service.yml).
-Existing `custom-v*` tags do not trigger the new publication path. Stable tags
-become Latest; prereleases do not replace Latest.
+Review the version, full commit SHA, title, and release notes, then start the
+approved release from the repository root:
 
-The workflow checks the public tag archive against the tagged Git commit and
-publishes that source archive, `custom-xcode-build-service.rb`, and `SHA256SUMS.txt`
-after build and compatibility checks. Internal binary archives are CI artifacts.
-The old standalone installer is no longer published.
+```sh
+python3 Utilities/CustomXcodeBuildService/Distribution/publish_release.py start vX.Y.Z \
+  --repo lynnswap/swift-build --target FULL_COMMIT_SHA --notes-file /path/to/notes.md
+```
 
-For the first Homebrew release, submit the generated Formula under `Formula/` in
-[lynnswap/homebrew-tap](https://github.com/lynnswap/homebrew-tap). The public tag
-archive must exist before bottle CI runs. The tap owns bottle builds and protected
-publication; approve the tested Formula through its existing `homebrew-publish`
-Environment. Its scoped Renovate configuration proposes later stable `v*` updates.
-Changes to installation or tests require updating the recipe from this repository.
+This creates or reuses the matching Draft and dispatches the
+[release workflow](../../.github/workflows/custom-xcode-build-service-release.yml)
+from the default branch. The workflow runs the distribution, CLI, and Xcode
+compatibility checks against the approved commit. Approve `release-publish` to
+let CI create the public source tag and subsequently publish the unchanged Draft
+when verification succeeds. The tag gives the tap access to the source while the
+Release remains a Draft. Local tag pushes do not start publication.
+
+For a stable release, the matching Formula and bottle must be public in
+[lynnswap/homebrew-tap](https://github.com/lynnswap/homebrew-tap). The tap owns bottle
+builds and its protected `homebrew-publish` approval. Its Renovate configuration
+proposes stable source-tag updates; installation, caveat, dependency, and test
+changes also require syncing the generated recipe. Let the protected tap
+publisher finish the Formula PR instead of merging it before bottle publication.
+
+The source workflow installs the published bottle on macOS 26, checks its version
+and source commit, and runs Xcode and SwiftPM smoke builds with that installed
+payload. It then rechecks the tested Formula and bottle before publishing the
+source archive, `custom-xcode-build-service.rb`, and `SHA256SUMS.txt`. Stable
+releases become Latest. Prereleases use isolated Formula/bottle checks and do not
+require delivery through the stable tap or replace Latest. Binary archives remain
+internal CI artifacts.
+
+While tap delivery is pending, CI keeps the Draft and an immutable preparation
+receipt. The
+[resume workflow](../../.github/workflows/custom-xcode-build-service-resume.yml)
+checks every 15 minutes and reruns delivery verification and its dependent jobs
+after the matching bottle is public. It reuses completed build and compatibility
+checks. You can also dispatch that workflow manually. Changed approval content,
+failed installation checks, expired artifacts, and runs older than 30 days require
+attention; the resume
+workflow does not bypass them. Prepared artifacts are retained for 35 days.

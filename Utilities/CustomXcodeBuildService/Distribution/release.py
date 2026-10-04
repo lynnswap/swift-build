@@ -822,7 +822,8 @@ def verify(args):
 
 def source_package(args):
     require(re.fullmatch(VERSION_PATTERN, args.version), "Use a vX.Y.Z release tag.")
-    revision = output(["git", "-C", str(REPOSITORY_ROOT), "rev-parse", "--verify", "--end-of-options", f"{args.revision}^{{commit}}"])
+    source_root = getattr(args, "source_root", None) or REPOSITORY_ROOT
+    revision = output(["git", "-C", str(source_root), "rev-parse", "--verify", "--end-of-options", f"{args.revision}^{{commit}}"])
     # Compare source entries, since GitHub controls the public archive's compression.
     def contents(archive):
         entries = archive.getmembers()
@@ -831,7 +832,7 @@ def source_package(args):
                        entry.linkname, archive.extractfile(entry).read() if entry.isfile() else b"")
                       for entry in entries if entry.name.rstrip("/") != root)
     with tempfile.TemporaryFile() as source:
-        subprocess.run(["git", "-C", str(REPOSITORY_ROOT), "archive", "--prefix=source/", revision], stdout=source, check=True)
+        subprocess.run(["git", "-C", str(source_root), "archive", "--prefix=source/", revision], stdout=source, check=True)
         source.seek(0)
         with tarfile.open(fileobj=source) as expected, tarfile.open(args.source_archive) as downloaded:
             require(contents(expected) == contents(downloaded), "Public source archive differs from the selected commit.")
@@ -839,7 +840,7 @@ def source_package(args):
     archive_name = f"custom-xcode-build-service-{args.version.removeprefix('v')}.tar.gz"
     shutil.copyfile(args.source_archive, args.output_dir / archive_name)
     digest = hashlib.sha256(args.source_archive.read_bytes()).hexdigest()
-    template = (REPOSITORY_ROOT / DISTRIBUTION_PATH / "custom-xcode-build-service.rb.in").read_text()
+    template = (source_root / DISTRIBUTION_PATH / "custom-xcode-build-service.rb.in").read_text()
     version = args.version.removeprefix("v")
     # Homebrew's URL parser drops some prerelease suffixes. Stable versions stay
     # inferred so updating the URL cannot leave a stale explicit version behind.
@@ -904,6 +905,7 @@ def main():
     sources = commands.add_parser("source", help="Prepare a source archive and Formula for a tagged release")
     sources.add_argument("--version", required=True)
     sources.add_argument("--revision", default="HEAD")
+    sources.add_argument("--source-root", type=Path, help="Git checkout containing the approved source")
     sources.add_argument("--source-archive", type=Path, required=True)
     sources.add_argument("--output-dir", type=Path, required=True)
     installed = commands.add_parser("verify-payload", help="Run build smoke tests with an installed Homebrew payload")

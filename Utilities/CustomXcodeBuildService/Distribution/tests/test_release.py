@@ -295,8 +295,10 @@ class SourceBuildTests(BuildTests):
         subprocess.run(["git", "-C", str(self.repository), "archive", "--format=tar.gz", "--prefix=swift-build-v1.2.3/", "HEAD", "--output", str(source)], check=True)
         for version in ("1.2.3", "1.2.3-dev.1", "0.0.0-validation"):
             with self.subTest(version=version):
-                args = argparse.Namespace(version=f"v{version}", revision="HEAD", source_archive=source, output_dir=self.root / version)
-                with patch.object(release, "REPOSITORY_ROOT", self.repository):
+                args = argparse.Namespace(version=f"v{version}", revision="HEAD", source_archive=source,
+                                          source_root=self.repository, output_dir=self.root / version)
+                # The trusted workflow checkout is independent of the approved source checkout.
+                with patch.object(release, "REPOSITORY_ROOT", self.root / "workflow checkout"):
                     release.source_package(args)
                 recipe = (args.output_dir / "custom-xcode-build-service.rb").read_text()
                 self.assertIn(f"/archive/refs/tags/v{version}.tar.gz", recipe)

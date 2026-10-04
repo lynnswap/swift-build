@@ -9,9 +9,16 @@ on:
       - 'Utilities/CustomXcodeBuildService/**'
       - '.github/actionlint.yaml'
       - '.github/workflows/custom-xcode-build-service*.yml'
-  push:
-    tags:
-      - 'v*'
+  workflow_call:
+    inputs:
+      revision:
+        description: Approved commit to build and test
+        required: true
+        type: string
+      version:
+        description: Approved release version
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       version:
@@ -24,7 +31,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: custom-xcode-build-service-${{ github.ref }}
+  group: custom-xcode-build-service-${{ inputs.revision || github.ref }}-${{ inputs.version }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
@@ -40,11 +47,13 @@ jobs:
     timeout-minutes: 180
     outputs:
       xcodes: ${{ steps.xcodes.outputs.xcodes }}
+      artifact_id: ${{ steps.binary.outputs.artifact-id }}
     env:
-      RELEASE_VERSION: ${{ github.event_name == 'push' && github.ref_name || inputs.version || 'v0.0.0-validation' }}
+      RELEASE_VERSION: ${{ inputs.version || 'v0.0.0-validation' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          ref: ${{ inputs.revision || github.sha }}
           persist-credentials: false
       - name: Discover Xcodes on the preview runner
         id: xcodes
@@ -65,9 +74,10 @@ jobs:
         run: |
           python3 Utilities/CustomXcodeBuildService/Distribution/release.py package \
             --build-dir "$RUNNER_TEMP/custom-service-build" --output-dir "$RUNNER_TEMP/custom-service-release"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      - id: binary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: custom-xcode-build-service-release
+          name: custom-xcode-build-service-release-${{ github.run_attempt }}
           path: ${{ runner.temp }}/custom-service-release/*
           if-no-files-found: error
           compression-level: 0
@@ -82,6 +92,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          ref: ${{ inputs.revision || github.sha }}
           persist-credentials: false
       - name: Discover installed Xcodes
         id: xcodes
@@ -99,6 +110,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          ref: ${{ inputs.revision || github.sha }}
           persist-credentials: false
       - name: Select compatibility targets
         id: select
@@ -123,10 +135,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          ref: ${{ inputs.revision || github.sha }}
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
-          name: custom-xcode-build-service-release
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          digest-mismatch: error
           path: ${{ runner.temp }}/custom-service-release
       - name: Test Xcode IPC and SwiftPM compatibility
         run: |
@@ -136,15 +150,19 @@ jobs:
             --release-dir "$RUNNER_TEMP/custom-service-release"
 
   homebrew:
+    # Stable release source/bottle builds belong to the tap; PRs and prereleases
+    # still exercise the recipe in an isolated tap.
+    if: github.event_name != 'workflow_dispatch' || inputs.revision == '' || contains(inputs.version, '-')
     name: Test source Formula and installed bottle
     runs-on: xcode-27
     timeout-minutes: 180
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
-      RELEASE_VERSION: ${{ github.event_name == 'push' && github.ref_name || inputs.version || 'v0.0.0-validation' }}
+      RELEASE_VERSION: ${{ inputs.version || 'v0.0.0-validation' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.revision || github.sha }}
           persist-credentials: false
       - uses: Homebrew/actions/setup-homebrew@e99025eb970cfa124b8284a35463d87426917478 # 2026.09.28.1
         with:
@@ -158,69 +176,25 @@ jobs:
       - name: Build, bottle, reinstall, and test
         run: bash Utilities/CustomXcodeBuildService/Distribution/test-homebrew.sh "$RUNNER_TEMP/homebrew-verification"
 
-  source:
-    name: Prepare Homebrew source and Formula
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+  checks:
+    name: Required distribution checks
+    needs: [build, compatibility, homebrew]
+    if: always()
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Verify public source and generate Formula
+      - name: Require all applicable checks
         env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          COMPATIBILITY_RESULT: ${{ needs.compatibility.result }}
+          HOMEBREW_RESULT: ${{ needs.homebrew.result }}
+          REVISION: ${{ inputs.revision }}
+          VERSION: ${{ inputs.version }}
         run: |
-          gh api "https://github.com/lynnswap/swift-build/archive/refs/tags/$RELEASE_TAG.tar.gz" > "$RUNNER_TEMP/source.tar.gz"
-          python3 Utilities/CustomXcodeBuildService/Distribution/release.py source \
-            --version "$RELEASE_TAG" --source-archive "$RUNNER_TEMP/source.tar.gz" \
-            --output-dir "$RUNNER_TEMP/homebrew-release"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: custom-xcode-build-service-source
-          path: ${{ runner.temp }}/homebrew-release/*
-          if-no-files-found: error
-          retention-days: 14
-
-  publish:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'lynnswap/swift-build'
-    needs: [build, compatibility, homebrew, source]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: custom-xcode-build-service-source
-          path: assets
-      - name: Publish verified custom release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]
-          cd assets
-          shasum -a 256 -c SHA256SUMS.txt
-          gh release view "$RELEASE_TAG" --json isDraft,body > release.json
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          release = json.loads(Path('release.json').read_text())
-          if not release['isDraft']:
-              raise SystemExit('Prepare a draft GitHub Release before pushing the release tag.')
-          if not release['body'].strip():
-              raise SystemExit('The draft GitHub Release must contain release notes.')
-          PY
-          release_args=(--verify-tag --draft=false)
-          if [[ "${RELEASE_TAG#v}" == *-* ]]; then
-            release_args+=(--prerelease --latest=false)
+          test "$BUILD_RESULT" = success
+          test "$COMPATIBILITY_RESULT" = success
+          if [[ -n "$REVISION" && "$VERSION" != *-* ]]; then
+            test "$HOMEBREW_RESULT" = skipped
           else
-            release_args+=(--prerelease=false --latest)
+            test "$HOMEBREW_RESULT" = success
           fi
-          gh release upload "$RELEASE_TAG" \
-            "custom-xcode-build-service-${RELEASE_TAG#v}.tar.gz" custom-xcode-build-service.rb SHA256SUMS.txt
-          gh release edit "$RELEASE_TAG" "${release_args[@]}"
