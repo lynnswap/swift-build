@@ -191,15 +191,18 @@ python3 Utilities/CustomXcodeBuildService/Distribution/publish_release.py start 
 This creates or reuses the matching Draft and dispatches the
 [release workflow](../../.github/workflows/custom-xcode-build-service-release.yml)
 from the default branch. The workflow runs the distribution, CLI, and Xcode
-compatibility checks against the approved commit. Approve `release-publish` to
-let CI create the public source tag and subsequently publish the unchanged Draft
-when verification succeeds. The tag gives the tap access to the source while the
-Release remains a Draft. Local tag pushes do not start publication.
+compatibility checks against the approved commit, then prepares the public source
+tag and assets automatically while the Release remains a Draft. Review the pinned
+workflow code and prepared assets in the summary, then approve `release-publish`
+for the job that uses the GitHub App private key to dispatch the tap update.
+This is the only deployment approval. The tap's Formula PR, bottle CI, publication,
+and the source Release's installation checks then proceed automatically.
+Local tag pushes do not start publication.
 
 For a stable release, the matching Formula and bottle must be public in
 [lynnswap/homebrew-tap](https://github.com/lynnswap/homebrew-tap). The tap owns bottle
-builds and its protected `homebrew-publish` approval. Its Renovate configuration
-proposes stable source-tag updates; installation, caveat, dependency, and test
+builds and automatic publication after successful CI. Its Renovate configuration
+proposes stable source-tag updates from that notification; installation, caveat, dependency, and test
 changes also require syncing the generated recipe. Let the protected tap
 publisher finish the Formula PR instead of merging it before bottle publication.
 
@@ -220,3 +223,32 @@ checks. You can also dispatch that workflow manually. Changed approval content,
 failed installation checks, expired artifacts, and runs older than 30 days require
 attention; the resume
 workflow does not bypass them. Prepared artifacts are retained for 35 days.
+
+### One-time tap dispatch setup
+
+Register a private GitHub App under `lynnswap` with the repository permission
+**Actions: read and write**, and install it on `homebrew-tap` only. Webhooks and
+user authorization are not needed. The App only starts the tap's existing update
+workflow; the tap uses its own token for PR creation and protected bottle
+publication.
+
+In swift-build's `release-publish` Environment, register the App's Client ID as the
+variable `TAP_DISPATCH_APP_CLIENT_ID` and its PEM private key as the secret
+`TAP_DISPATCH_APP_PRIVATE_KEY`:
+
+```sh
+gh variable set TAP_DISPATCH_APP_CLIENT_ID --repo lynnswap/swift-build \
+  --env release-publish --body APP_CLIENT_ID
+gh secret set TAP_DISPATCH_APP_PRIVATE_KEY --repo lynnswap/swift-build \
+  --env release-publish < /path/to/app.private-key.pem
+```
+
+Only the approved tap-dispatch job receives the App private key. It checks out
+trusted code from the workflow's immutable commit, revalidates the approved Draft,
+and requests a short-lived token restricted to `homebrew-tap` and `Actions: write`.
+The token is revoked when the job ends. Authentication or notification failure
+leaves the public source tag and prepared assets and reports the failed dispatch;
+inspect tap Actions before retrying, since acceptance may be uncertain. Periodic
+discovery remains a recovery path. Bottle publication revalidates the same-repository
+maintainer/bot PR, its successful CI, and the exact tested artifact before updating
+the tap.
