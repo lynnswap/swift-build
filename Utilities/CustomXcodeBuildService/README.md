@@ -195,7 +195,8 @@ compatibility checks against the approved commit, then prepares the public sourc
 tag and assets automatically while the Release remains a Draft. Review the pinned
 workflow code and prepared assets in the summary, then approve `release-publish`
 for the job that uses the GitHub App private key to dispatch the tap update.
-This is the only deployment approval. The tap's Formula PR, bottle CI, publication,
+Tap notification and source publication each require approval before using their
+App private key. The tap's Formula PR, bottle CI, publication,
 and the source Release's installation checks then proceed automatically.
 Local tag pushes do not start publication.
 
@@ -243,7 +244,7 @@ gh secret set TAP_DISPATCH_APP_PRIVATE_KEY --repo lynnswap/swift-build \
   --env release-publish < /path/to/app.private-key.pem
 ```
 
-Only the approved tap-dispatch job receives the App private key. It checks out
+Only the approved tap-dispatch job receives the tap-dispatch App private key. It checks out
 trusted code from the workflow's immutable commit, revalidates the approved Draft,
 and requests a short-lived token restricted to `homebrew-tap` and `Actions: write`.
 The token is revoked when the job ends. Authentication or notification failure
@@ -252,3 +253,34 @@ inspect tap Actions before retrying, since acceptance may be uncertain. Periodic
 discovery remains a recovery path. Bottle publication revalidates the same-repository
 maintainer/bot PR, its successful CI, and the exact tested artifact before updating
 the tap.
+
+If only the final publisher failed after successful preparation and installed
+bottle verification, dispatch
+[Publish prepared custom build service release](../../.github/workflows/custom-xcode-build-service-publish-prepared.yml)
+on `main` with the Draft ID and original preparation run ID. It checks the
+canonical source workflow, successful checks, unchanged approved Draft/tag,
+immutable source artifacts, and the exact Formula/bottle tested by installation.
+After `release-publish` approval, it retries publication without another build or
+changing the release target. Its App token also requests Actions read permission
+to retrieve the original run's checks, artifacts, and installation evidence.
+Changed delivery or a failed build/install check requires fresh verification.
+The publisher reasserts the approved tag, target, and notes in the final API
+request. Permission errors include GitHub's required-permission header when supplied.
+
+### Source publication App permissions
+
+Publishing a release whose target changes workflow files can require
+**Workflows: read and write** in addition to **Contents: read and write**.
+`GITHUB_TOKEN` cannot receive Workflows write permission. Install a private
+GitHub App on `swift-build` with those permissions and **Actions: read** for
+reusing prepared CI/artifacts, then register its Client ID as
+`SOURCE_RELEASE_APP_CLIENT_ID` and its PEM key as `SOURCE_RELEASE_APP_PRIVATE_KEY`
+in the `release-publish` Environment. The existing dispatch App can be used after
+adding these permissions and installing it on this repository; each job requests
+a token restricted to its destination repository and needed permissions.
+
+The source publisher also uses `release-publish` approval before receiving its
+key. It executes pinned trusted workflow code, validates the approved source and
+assets, and requests a short-lived token for `swift-build` with Contents and
+Workflows write permission. It never edits the approval content or executes
+release-target code with that token. The App token is revoked when the job ends.

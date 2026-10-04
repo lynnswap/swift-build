@@ -1,0 +1,60 @@
+name: Publish prepared custom build service release
+
+run-name: Publish prepared release ${{ inputs.release_id }} from run ${{ inputs.preparation_run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_id:
+        description: ID of the unchanged approved Draft
+        required: true
+        type: string
+      preparation_run_id:
+        description: Completed release run with successful build and installed bottle checks
+        required: true
+        type: string
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
+
+concurrency:
+  group: release-${{ inputs.release_id }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: release-publish
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Checkout trusted publisher
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Create a token scoped to source release publication
+        id: release-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SOURCE_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SOURCE_RELEASE_APP_PRIVATE_KEY }}
+          owner: lynnswap
+          repositories: swift-build
+          permission-actions: read
+          permission-contents: write
+          permission-workflows: write
+      - name: Verify the approved preparation and publish its exact assets
+        env:
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          PREPARATION_RUN_ID: ${{ inputs.preparation_run_id }}
+        run: |
+          python3 Utilities/CustomXcodeBuildService/Distribution/release_sync.py publish \
+            --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" --run-id "$PREPARATION_RUN_ID"

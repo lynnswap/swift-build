@@ -69,7 +69,10 @@ class GitHub:
         payload = json.loads(body) if body.strip() else None
         if result.returncode or not 200 <= status < 300:
             message = payload.get("message", body) if isinstance(payload, dict) else body
-            raise APIError(status, f"{method} {path}: {message}")
+            accepted = next((line.partition(":")[2].strip() for line in header.splitlines()
+                             if line.lower().startswith("x-accepted-github-permissions:")), None)
+            detail = f" Required permissions: {accepted}." if accepted else ""
+            raise APIError(status, f"{method} {path}: {message}{detail}")
         return payload
 
     def upload(self, tag, paths):

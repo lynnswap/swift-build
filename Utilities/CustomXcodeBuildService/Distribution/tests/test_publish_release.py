@@ -295,6 +295,16 @@ class ReleaseTests(unittest.TestCase):
         self.assertFalse(github.release["draft"])
         self.assertEqual(github.tag, SHA)
 
+    def test_publication_request_preserves_the_approved_tag_and_target(self):
+        github = FakeGitHub(draft())
+        github.tag = SHA
+        self.publish(github, release.fingerprint(github.release))
+        patch_request = next(call[2] for call in github.writes if call[1] == "PATCH")
+        self.assertEqual(patch_request["tag_name"], "v0.1.0")
+        self.assertEqual(patch_request["target_commitish"], SHA)
+        self.assertEqual(github.release["tag_name"], "v0.1.0")
+        self.assertEqual(github.release["target_commitish"], SHA)
+
     def test_unexpected_assets_stop_publication_without_removing_them(self):
         github = FakeGitHub(draft(assets=[{"id": 91, "name": "unapproved.zip"}]))
         with self.assertRaisesRegex(release.ReleaseError, "Remove unexpected draft assets"):
@@ -457,6 +467,10 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaises(release.APIError) as caught:
                 github.api("releases/42")
             self.assertEqual(caught.exception.status, 404)
+            run.return_value = subprocess.CompletedProcess([], 1,
+                'HTTP/2.0 403 Forbidden\nX-Accepted-GitHub-Permissions: contents=write,workflows=write\n\n{"message":"Resource not accessible by integration"}', "")
+            with self.assertRaisesRegex(release.APIError, "contents=write,workflows=write"):
+                github.api("releases/42", "PATCH", {"draft": False})
             run.return_value = subprocess.CompletedProcess([], 0, "HTTP/2.0 204 No Content\nX: value\n\n", "")
             self.assertIsNone(github.api("actions/workflows/custom-xcode-build-service-release.yml/dispatches", "POST", {}))
             run.return_value = subprocess.CompletedProcess([], 0, 'HTTP/2.0 200 OK\n\n{"default_branch":"main"}', "")

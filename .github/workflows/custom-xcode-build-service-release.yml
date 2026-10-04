@@ -416,6 +416,7 @@ jobs:
       needs.publication-summary.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    environment: release-publish
     permissions:
       contents: write
     steps:
@@ -441,9 +442,19 @@ jobs:
           python3 Utilities/CustomXcodeBuildService/Distribution/publish_release.py verify-assets --version "$VERSION" \
             --release-dir release --checksums-sha256 "$CHECKSUMS_SHA256"
 
+      - name: Create a token scoped to source release publication
+        id: release-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SOURCE_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SOURCE_RELEASE_APP_PRIVATE_KEY }}
+          owner: lynnswap
+          repositories: swift-build
+          permission-contents: write
+          permission-workflows: write
       - name: Upload assets and publish approved draft
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
           RELEASE_ID: ${{ inputs.release_id }}
           TARGET_SHA: ${{ inputs.target_sha }}
           CONTENT_DIGEST: ${{ inputs.content_digest }}

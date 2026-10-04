@@ -63,7 +63,7 @@ def latest_jobs(github, run_id):
     return latest
 
 
-def prepared_candidate(github, draft, run):
+def prepared_candidate(github, draft, run, retry_publication=False, release_dir=None):
     jobs = latest_jobs(github, run["id"])
     required = (APPROVAL_JOB, "Check approved draft", "Package approved source and Formula",
                 "Test approved source / Required distribution checks", RECEIPT_JOB)
@@ -71,11 +71,14 @@ def prepared_candidate(github, draft, run):
     # New workflow runs include the separate tap-key approval job.
     if TAP_APPROVAL_JOB in jobs:
         required += (TAP_APPROVAL_JOB,)
+    if retry_publication:
+        required += ("Verify published tap installation", "Review verified release outputs")
     if RECEIPT_JOB not in jobs:
         return None, "This earlier preparation has no immutable release receipt."
     if jobs.get("Publish verified source release", {}).get("conclusion") == "success":
         return None, "The original run already completed publication."
     failed = [name for name, job in jobs.items() if name != PROBE_JOB
+              and not (retry_publication and name == "Publish verified source release")
               and job["conclusion"] in ("failure", "cancelled", "timed_out", "action_required")]
     if failed:
         raise release.ReleaseError("Verification or publication needs attention: " + ", ".join(failed))
@@ -105,8 +108,66 @@ def prepared_candidate(github, draft, run):
             (root / name).write_bytes(data)
         release.verify_assets(root, draft["tag_name"], receipt["checksums_sha256"])
         evidence = release.verify_homebrew_ready(release.GitHub(release.HOMEBREW_TAP), draft["tag_name"], root)
+        if retry_publication:
+            tested = installed_delivery(github, jobs["Verify published tap installation"]["id"])
+            if any(tested[key] != evidence[key] for key in ("formula_sha256", "bottle_sha256", "bottle_url")):
+                raise release.ReleaseError("Public Formula or bottle changed after successful installation; reverify delivery.")
+        if release_dir is not None:
+            for name, data in files.items():
+                (release_dir / name).write_bytes(data)
     return dict(run_id=run["id"], run_attempt=run["run_attempt"], job_id=probe["id"],
-                release_id=draft["id"], version=draft["tag_name"], delivery=evidence), None
+                release_id=draft["id"], version=draft["tag_name"], delivery=evidence,
+                target=receipt["target"], content_digest=receipt["content_digest"]), None
+
+
+def installed_delivery(github, job_id):
+    help_result = subprocess.run(["gh", "api", "--help"], capture_output=True, text=True, check=False)
+    if help_result.returncode:
+        raise release.ReleaseError(help_result.stderr.strip() or "Cannot inspect gh log options.")
+    command = ["gh", "api"]
+    if "--allow-escape-sequences" in help_result.stdout:
+        command.append("--allow-escape-sequences")
+    command.append(f"repos/{github.repository}/actions/jobs/{job_id}/logs")
+    output = subprocess.run(command, capture_output=True, text=True, check=False)
+    if output.returncode:
+        raise release.ReleaseError(output.stderr.strip() or "Cannot read installed bottle identity.")
+    values = []
+    for line in output.stdout.splitlines():
+        payload = line.partition(" ")[2]
+        try:
+            value = json.loads(payload)
+        except ValueError:
+            continue
+        if isinstance(value, dict) and {"formula_sha256", "bottle_sha256", "bottle_url"} <= value.keys():
+            values.append(value)
+    if len(values) != 1:
+        raise release.ReleaseError("Successful installation has no unique tested delivery identity.")
+    return values[0]
+
+
+def publish_prepared(github, release_id, run_id):
+    draft = github.api(f"releases/{release_id}")
+    if not draft["draft"]:
+        print(f"Already published: {draft['html_url']}")
+        return
+    workflow = github.api(f"actions/workflows/{release.WORKFLOW}")
+    run = github.api(f"actions/runs/{run_id}")
+    branch = github.api("")["default_branch"]
+    if (run["workflow_id"] != workflow["id"] or run["event"] != "workflow_dispatch"
+            or run["head_branch"] != branch
+            or run["display_title"] != f"Release draft {draft['id']} at {draft['target_commitish']}"):
+        raise release.ReleaseError("Select the canonical preparation run for this approved release.")
+    if draft["prerelease"] or run["status"] != "completed":
+        raise release.ReleaseError("Select a completed preparation run for an approved stable release.")
+    with tempfile.TemporaryDirectory(prefix="custom-service-final-publication-") as directory:
+        root = Path(directory)
+        value, reason = prepared_candidate(github, draft, run, retry_publication=True, release_dir=root)
+        if value is None:
+            raise release.ReleaseError(reason)
+        fresh = github.api(f"actions/runs/{run_id}")
+        if fresh["status"] != "completed" or fresh["run_attempt"] != run["run_attempt"]:
+            raise release.ReleaseError("Preparation changed during verification; inspect its latest attempt.")
+        release.publish(github, release_id, value["target"], value["content_digest"], root, value["delivery"])
 
 
 def synchronize(github, dry_run=False):
@@ -170,12 +231,18 @@ def main():
     resume = commands.add_parser("resume")
     resume.add_argument("--repo", required=True)
     resume.add_argument("--dry-run", action="store_true")
+    publish = commands.add_parser("publish", help="Explicitly retry only final publication from passed checks")
+    publish.add_argument("--repo", required=True)
+    publish.add_argument("--release-id", required=True, type=int)
+    publish.add_argument("--run-id", required=True, type=int)
     args = parser.parse_args()
     try:
         if args.command == "record":
             release.check_sha(args.target)
             args.output.write_text(json.dumps({key: getattr(args, key) for key in
                 ("release_id", "version", "target", "content_digest", "source_artifact_id", "checksums_sha256")}) + "\n")
+        elif args.command == "publish":
+            publish_prepared(release.GitHub(args.repo), args.release_id, args.run_id)
         else:
             results = synchronize(release.GitHub(args.repo), args.dry_run)
             print(json.dumps(results, indent=2))

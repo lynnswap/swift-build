@@ -202,6 +202,74 @@ class ReleaseResumptionTests(unittest.TestCase):
         self.assertEqual(self.result(dry_run=True)["status"], "ready")
         self.assert_no_writes()
 
+    def prepare_publication_failure(self):
+        for name, result in (("Verify published tap installation", "success"),
+                             ("Review verified release outputs", "success"),
+                             ("Publish verified source release", "failure")):
+            self.core.jobs.append(dict(name=name, id=200+len(self.core.jobs), run_attempt=1,
+                                       status="completed", conclusion=result))
+        self.core.run["conclusion"] = "failure"
+
+    def test_explicit_publication_retry_reuses_only_passed_preparation_and_tested_assets(self):
+        self.prepare_publication_failure()
+        evidence = release.verify_homebrew_ready(self.tap, self.core.draft["tag_name"], self.write_assets())
+        with patch.object(sync, "installed_delivery", return_value=evidence), patch.object(release, "publish") as publish:
+            sync.publish_prepared(self.core,42,99)
+        self.assertEqual(publish.call_count,1)
+        args=publish.call_args.args
+        self.assertEqual(args[:4],(self.core,42,"a"*40,self.core.receipt["content_digest"]))
+        self.assertEqual(args[5],evidence)
+        self.assert_no_writes()
+
+    def write_assets(self):
+        import tempfile
+        directory=tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root=Path(directory.name)
+        for name,data in self.core.source_files.items():
+            (root/name).write_bytes(data.encode() if isinstance(data,str) else data)
+        return root
+
+    def test_publication_retry_rejects_failed_installation_changed_notes_and_bottle(self):
+        self.prepare_publication_failure()
+        with patch.object(sync,"installed_delivery", return_value=dict(formula_sha256="0"*64,bottle_sha256="b"*64,bottle_url="changed")), patch.object(release,"publish") as publish:
+            with self.assertRaisesRegex(release.ReleaseError,"changed after successful installation"):
+                sync.publish_prepared(self.core,42,99)
+            next(job for job in self.core.jobs if job['name']=="Verify published tap installation")['conclusion']="failure"
+            with self.assertRaisesRegex(release.ReleaseError,"needs attention"):
+                sync.publish_prepared(self.core,42,99)
+            next(job for job in self.core.jobs if job['name']=="Verify published tap installation")['conclusion']="success"
+            self.core.draft['body']='changed'
+            with self.assertRaises(release.ReleaseError):
+                sync.publish_prepared(self.core,42,99)
+            publish.assert_not_called()
+        self.assert_no_writes()
+
+    def test_foreign_or_running_run_cannot_authorize_final_publication(self):
+        self.prepare_publication_failure()
+        for field,value in (("workflow_id",12),("head_branch","feature"),("status","in_progress"),("display_title","foreign")):
+            old=self.core.run[field]
+            self.core.run[field]=value
+            with self.subTest(field=field), patch.object(release,"publish") as publish:
+                with self.assertRaises(release.ReleaseError):
+                    sync.publish_prepared(self.core,42,99)
+                publish.assert_not_called()
+            self.core.run[field]=old
+        self.assert_no_writes()
+
+    def test_installed_delivery_requires_unique_json_identity_and_preserves_transport_errors(self):
+        evidence=dict(formula_sha256="a"*64,bottle_sha256="b"*64,bottle_url="https://example.test/bottle")
+        with patch.object(sync.subprocess,"run") as run:
+            run.return_value=type('Result',(),dict(returncode=0,stdout='2026-10-04T00:00:00Z '+json.dumps(evidence)+'\n',stderr=''))()
+            self.assertEqual(sync.installed_delivery(self.core,7),evidence)
+            run.return_value.stdout += run.return_value.stdout
+            with self.assertRaisesRegex(release.ReleaseError,"unique"):
+                sync.installed_delivery(self.core,7)
+            run.return_value.returncode=1
+            run.return_value.stderr='Forbidden'
+            with self.assertRaisesRegex(release.ReleaseError,"Forbidden"):
+                sync.installed_delivery(self.core,7)
+
     def test_pre_receipt_runs_are_not_adopted_automatically(self):
         self.core.jobs = [job for job in self.core.jobs if job["name"] != sync.RECEIPT_JOB]
         self.assertEqual(self.result()["status"], "waiting")
