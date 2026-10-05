@@ -94,7 +94,7 @@ struct InstallationManager {
             try FileManager.default.createSymbolicLink(atPath: store.command.path, withDestinationPath: previous)
         }
         if preservePath {
-            try FileManager.default.createSymbolicLink(at: store.command, withDestinationURL: store.persistentExecutable)
+            try FileManager.default.createSymbolicLink(at: store.command, withDestinationURL: store.homebrewCommand)
             transaction.undo { try store.remove(store.command) }
         }
     }

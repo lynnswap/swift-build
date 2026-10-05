@@ -32,6 +32,8 @@ struct InstallationStore {
     var service: URL { serviceBundle.appendingPathComponent("SWBBuildServiceBundle") }
     var command: URL { home.appendingPathComponent(".local/bin/custom-xcode-build-service") }
     var agent: URL { home.appendingPathComponent("Library/LaunchAgents/\(Self.label).plist") }
+    // Homebrew's wrapper preserves the opt/libexec executable path in argv[0].
+    var homebrewCommand: URL { packageDirectory.deletingLastPathComponent().appendingPathComponent("bin/custom-xcode-build-service") }
     var persistentExecutable: URL { packageDirectory.appendingPathComponent("bin/custom-xcode-build-service") }
 
     func exists(_ url: URL) throws -> Bool {
@@ -103,7 +105,7 @@ struct InstallationStore {
                 throw ServiceError("Refusing to replace an unrelated command: \(command.path)")
             }
             let destination = try files.destinationOfSymbolicLink(atPath: command.path)
-            guard isLegacyCommandTarget(destination) || destination == persistentExecutable.path else {
+            guard isLegacyCommandTarget(destination) || destination == homebrewCommand.path else {
                 throw ServiceError("Refusing to overwrite an unrelated command: \(command.path)")
             }
         }

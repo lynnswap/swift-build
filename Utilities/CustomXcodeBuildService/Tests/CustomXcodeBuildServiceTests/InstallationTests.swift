@@ -812,7 +812,7 @@ func installerMigratesStandaloneAndPreservesExistingCommandPath(relativeCommandL
     try fixture.link(fixture.package("v0.4.0"))
 
     #expect(try fixture.manager.migrateStandalone().contains("Selected service: custom"))
-    #expect(try FileManager.default.destinationOfSymbolicLink(atPath: fixture.store.command.path) == fixture.store.persistentExecutable.path)
+    #expect(try FileManager.default.destinationOfSymbolicLink(atPath: fixture.store.command.path) == fixture.store.homebrewCommand.path)
     #expect(try fixture.store.selectedPackage()?.manifest.version == "v0.4.0")
     #expect(try fixture.store.exists(legacy))
     #expect(fixture.runner.killedPIDs.isEmpty)
@@ -835,7 +835,7 @@ func installerMigratesStandaloneAndPreservesExistingCommandPath(relativeCommandL
     #expect(fixture.runner.settings.isEmpty)
     #expect(!fixture.runner.loaded)
     #expect(try fixture.store.exists(legacy))
-    #expect(try FileManager.default.destinationOfSymbolicLink(atPath: fixture.store.command.path) == fixture.store.persistentExecutable.path)
+    #expect(try FileManager.default.destinationOfSymbolicLink(atPath: fixture.store.command.path) == fixture.store.homebrewCommand.path)
 }
 
 @Test func installerPreservesLocalCustomSelection() throws {
