@@ -875,11 +875,29 @@ func installerMigratesStandaloneAndPreservesExistingCommandPath(relativeCommandL
     #expect(try FileManager.default.destinationOfSymbolicLink(atPath: fixture.store.command.path) == command)
 }
 
-@Test func installerRecoversStandaloneWithMissingManifest() throws {
+@Test(arguments: ["manifest", "payload", "current"])
+func installerRecoversDamagedStandaloneInstallation(damage: String) throws {
     let fixture = try Fixture()
     let legacy = try fixture.standaloneInstallation()
-    try FileManager.default.removeItem(at: legacy.appendingPathComponent("manifest.json"))
+    let missing = damage == "manifest" ? legacy.appendingPathComponent("manifest.json")
+        : damage == "payload" ? legacy : fixture.store.current
+    try FileManager.default.removeItem(at: missing)
     try fixture.link(fixture.package("v0.4.0"))
     _ = try fixture.manager.migrateStandalone()
     #expect(try fixture.store.selectedPackage()?.manifest.version == "v0.4.0")
+}
+
+@Test func localCLIUninstallRecognizesMigratedHomebrewCommand() throws {
+    let fixture = try Fixture()
+    _ = try fixture.standaloneInstallation()
+    try fixture.link(fixture.package("v0.4.0"))
+    _ = try fixture.manager.migrateStandalone()
+    let localStore = InstallationStore(home: fixture.store.home, packageDirectory: try fixture.package("v0.0.0-local"))
+    let localManager = InstallationManager(store: localStore, environment: fixture.manager.environment)
+    _ = try localManager.use(.custom)
+    _ = try localManager.uninstall()
+    #expect(try !fixture.store.exists(fixture.store.command))
+    #expect(try fixture.store.packagedRelease()?.manifest.version == "v0.4.0")
+    #expect(try localStore.packagedRelease()?.manifest.version == "v0.0.0-local")
+    #expect(fixture.runner.settings.isEmpty)
 }

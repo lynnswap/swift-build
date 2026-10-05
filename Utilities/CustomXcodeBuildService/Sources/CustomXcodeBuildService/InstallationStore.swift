@@ -105,7 +105,7 @@ struct InstallationStore {
                 throw ServiceError("Refusing to replace an unrelated command: \(command.path)")
             }
             let destination = try files.destinationOfSymbolicLink(atPath: command.path)
-            guard isLegacyCommandTarget(destination) || destination == homebrewCommand.path else {
+            guard isLegacyCommandTarget(destination) || isHomebrewCommandTarget(destination) else {
                 throw ServiceError("Refusing to overwrite an unrelated command: \(command.path)")
             }
         }
@@ -127,13 +127,22 @@ struct InstallationStore {
             && installation.resolvingSymlinksInPath().path == root.resolvingSymlinksInPath().path
     }
 
+    private func isHomebrewCommandTarget(_ destination: String) -> Bool {
+        let parent = command.deletingLastPathComponent().resolvingSymlinksInPath()
+        let target = destination.hasPrefix("/") ? URL(fileURLWithPath: destination) : parent.appendingPathComponent(destination)
+        // Cleanup recognizes this tool's opt entry even from a local CLI or after
+        // brew uninstall; the destination's payload need not still exist.
+        return Array(target.standardizedFileURL.pathComponents.suffix(4))
+            == ["opt", "custom-xcode-build-service", "bin", "custom-xcode-build-service"]
+    }
+
     func hasStandaloneSelection() throws -> Bool {
         guard let executable = try selectedExecutable() else { return false }
         let package = executable.deletingLastPathComponent().deletingLastPathComponent()
         // Identify the old installer's locations without opening its manifest;
         // migration must also recover a missing or damaged old payload.
-        return package.standardizedFileURL == current.standardizedFileURL
-            || package.deletingLastPathComponent().resolvingSymlinksInPath() == versions.resolvingSymlinksInPath()
+        return package.standardizedFileURL.path == current.standardizedFileURL.path
+            || package.deletingLastPathComponent().resolvingSymlinksInPath().path == versions.resolvingSymlinksInPath().path
     }
 
     func selectedService() throws -> BuildService {
