@@ -23,6 +23,7 @@ enum Command: Equatable {
     case version
     case uninstall
     case activate
+    case migrateStandalone
     case reload
     case help
 
@@ -34,6 +35,7 @@ enum Command: Equatable {
         case ["status"]: self = .status
         case ["--version"]: self = .version
         case ["uninstall"]: self = .uninstall
+        case ["__migrate-standalone"]: self = .migrateStandalone
         case ["activate"]: self = .activate
         case ["reload"]: self = .reload
         default: throw ServiceError("Invalid arguments. Run custom-xcode-build-service --help.")

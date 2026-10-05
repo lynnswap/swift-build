@@ -19,7 +19,8 @@ WORKFLOW = "custom-xcode-build-service-release.yml"
 def asset_names(tag):
     is_prerelease(tag)
     return (f"custom-xcode-build-service-{tag.removeprefix('v')}.tar.gz",
-            "custom-xcode-build-service.rb", "SHA256SUMS.txt")
+            "custom-xcode-build-service.rb",
+            *(("install.sh",) if not is_prerelease(tag) else ()), "SHA256SUMS.txt")
 
 
 def verify_assets(root, tag, checksums_sha256=None):

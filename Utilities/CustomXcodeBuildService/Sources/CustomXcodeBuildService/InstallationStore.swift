@@ -103,7 +103,7 @@ struct InstallationStore {
                 throw ServiceError("Refusing to replace an unrelated command: \(command.path)")
             }
             let destination = try files.destinationOfSymbolicLink(atPath: command.path)
-            guard isLegacyCommandTarget(destination) else {
+            guard isLegacyCommandTarget(destination) || destination == persistentExecutable.path else {
                 throw ServiceError("Refusing to overwrite an unrelated command: \(command.path)")
             }
         }
@@ -123,6 +123,15 @@ struct InstallationStore {
         let installation = target.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         return target.path == installation.appendingPathComponent("current/bin/custom-xcode-build-service").path
             && installation.resolvingSymlinksInPath().path == root.resolvingSymlinksInPath().path
+    }
+
+    func hasStandaloneSelection() throws -> Bool {
+        guard let executable = try selectedExecutable() else { return false }
+        let package = executable.deletingLastPathComponent().deletingLastPathComponent()
+        // Identify the old installer's locations without opening its manifest;
+        // migration must also recover a missing or damaged old payload.
+        return package.standardizedFileURL == current.standardizedFileURL
+            || package.deletingLastPathComponent().resolvingSymlinksInPath() == versions.resolvingSymlinksInPath()
     }
 
     func selectedService() throws -> BuildService {

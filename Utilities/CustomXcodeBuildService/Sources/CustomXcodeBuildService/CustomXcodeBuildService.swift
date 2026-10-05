@@ -54,6 +54,7 @@ struct CustomXcodeBuildService {
             return package.manifest.version
         case .status: return try manager.status()
         case .uninstall: return try manager.uninstall()
+        case .migrateStandalone: return try manager.migrateStandalone()
         case .activate: return try manager.activate()
         case .reload: return try manager.reload()
         case .help: return Command.helpText

@@ -803,3 +803,83 @@ func anotherCLIReappliesTheSavedPackageWithoutChangingSelection(command: String)
     #expect(try Data(contentsOf: store.agent) == agent)
     #expect(try store.selectedPackage()?.manifest.version == "v0.3.1")
 }
+
+@Test(arguments: [false, true])
+func installerMigratesStandaloneAndPreservesExistingCommandPath(relativeCommandLink: Bool) throws {
+    let fixture = try Fixture()
+    let legacy = try fixture.standaloneInstallation(relativeCommandLink: relativeCommandLink)
+    fixture.runner.processes = "20 \(try ReleasePackage(directory: legacy).service.path)\n"
+    try fixture.link(fixture.package("v0.4.0"))
+
+    #expect(try fixture.manager.migrateStandalone().contains("Selected service: custom"))
+    #expect(try FileManager.default.destinationOfSymbolicLink(atPath: fixture.store.command.path) == fixture.store.persistentExecutable.path)
+    #expect(try fixture.store.selectedPackage()?.manifest.version == "v0.4.0")
+    #expect(try fixture.store.exists(legacy))
+    #expect(fixture.runner.killedPIDs.isEmpty)
+    #expect(try fixture.manager.migrateStandalone().contains("No standalone migration needed"))
+    fixture.runner.processes = ""
+    _ = try fixture.manager.uninstall()
+    #expect(try !fixture.store.exists(fixture.store.command))
+    #expect(try fixture.store.packagedRelease()?.manifest.version == "v0.4.0")
+}
+
+@Test func installerPreservesBundledSelectionWhileMigratingTheCommand() throws {
+    let fixture = try Fixture()
+    let legacy = try fixture.standaloneInstallation()
+    _ = try fixture.manager.use(.bundled)
+    try fixture.link(fixture.package("v0.4.0"))
+    fixture.runner.failOnce = ["managername"]
+
+    _ = try fixture.manager.migrateStandalone()
+    #expect(try fixture.store.selectedService() == .bundled)
+    #expect(fixture.runner.settings.isEmpty)
+    #expect(!fixture.runner.loaded)
+    #expect(try fixture.store.exists(legacy))
+    #expect(try FileManager.default.destinationOfSymbolicLink(atPath: fixture.store.command.path) == fixture.store.persistentExecutable.path)
+}
+
+@Test func installerPreservesLocalCustomSelection() throws {
+    let fixture = try Fixture()
+    let local = try fixture.package("v0.0.0-local")
+    let localStore = InstallationStore(home: fixture.store.home, packageDirectory: local)
+    let localManager = InstallationManager(store: localStore, environment: fixture.manager.environment)
+    _ = try localManager.use(.custom)
+    try fixture.link(fixture.package("v0.4.0"))
+    let agent = try Data(contentsOf: fixture.store.agent)
+    let settings = fixture.runner.settings
+    _ = try fixture.manager.migrateStandalone()
+    #expect(try Data(contentsOf: fixture.store.agent) == agent)
+    #expect(fixture.runner.settings == settings)
+    #expect(try !fixture.store.exists(fixture.store.command))
+}
+
+@Test func installerWithoutStandaloneDoesNotCreateUserSettings() throws {
+    let fixture = try Fixture()
+    try fixture.link(fixture.package("v0.4.0"))
+    _ = try fixture.manager.migrateStandalone()
+    #expect(try !fixture.store.exists(fixture.store.root))
+    #expect(fixture.runner.settings.isEmpty)
+}
+
+@Test func failedInstallerMigrationRestoresStandaloneSelectionAndCommand() throws {
+    let fixture = try Fixture()
+    _ = try fixture.standaloneInstallation()
+    try fixture.link(fixture.package("v0.4.0"))
+    let agent = try Data(contentsOf: fixture.store.agent)
+    let settings = fixture.runner.settings
+    let command = try FileManager.default.destinationOfSymbolicLink(atPath: fixture.store.command.path)
+    fixture.runner.failOnce = ["setenv", "DisableConcurrentDependencyResolution", "0"]
+    #expect(throws: ServiceError.self) { try fixture.manager.migrateStandalone() }
+    #expect(try Data(contentsOf: fixture.store.agent) == agent)
+    #expect(fixture.runner.settings == settings)
+    #expect(try FileManager.default.destinationOfSymbolicLink(atPath: fixture.store.command.path) == command)
+}
+
+@Test func installerRecoversStandaloneWithMissingManifest() throws {
+    let fixture = try Fixture()
+    let legacy = try fixture.standaloneInstallation()
+    try FileManager.default.removeItem(at: legacy.appendingPathComponent("manifest.json"))
+    try fixture.link(fixture.package("v0.4.0"))
+    _ = try fixture.manager.migrateStandalone()
+    #expect(try fixture.store.selectedPackage()?.manifest.version == "v0.4.0")
+}
