@@ -289,6 +289,10 @@ class SourceBuildTests(BuildTests):
         template = release.REPOSITORY_ROOT / release.DISTRIBUTION_PATH / "custom-xcode-build-service.rb.in"
         destination = self.repository / release.DISTRIBUTION_PATH / template.name
         shutil.copyfile(template, destination)
+        engine = b'printf "fixture: %s\\n" "$@"\n'
+        pin = self.repository / release.DISTRIBUTION_PATH / "installer.json"
+        pin.write_text(json.dumps({"revision": "a" * 40, "sha256": release.hashlib.sha256(engine).hexdigest()}))
+        subprocess.run(["git", "-C", str(self.repository), "add", str(pin)], check=True)
         subprocess.run(["git", "-C", str(self.repository), "add", str(destination)], check=True)
         subprocess.run(["git", "-C", str(self.repository), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "Recipe"], check=True)
         source = self.root / "public.tar.gz"
@@ -298,8 +302,17 @@ class SourceBuildTests(BuildTests):
                 args = argparse.Namespace(version=f"v{version}", revision="HEAD", source_archive=source,
                                           source_root=self.repository, output_dir=self.root / version)
                 # The trusted workflow checkout is independent of the approved source checkout.
-                with patch.object(release, "REPOSITORY_ROOT", self.root / "workflow checkout"):
+                with patch.object(release, "REPOSITORY_ROOT", self.root / "workflow checkout"), patch.object(
+                        release.urllib.request, "urlopen", side_effect=lambda *a, **kw: io.BytesIO(engine)):
                     release.source_package(args)
+                installer = args.output_dir / "install.sh"
+                self.assertEqual(installer.exists(), "-" not in version)
+                if installer.exists():
+                    run = subprocess.run(["/bin/sh", "-s", "--", "--dry-run"], input=installer.read_text(),
+                                         text=True, capture_output=True, check=True)
+                    self.assertIn("custom-xcode-build-service", run.stdout)
+                    self.assertIn("--dry-run", run.stdout)
+                    self.assertIn("  install.sh", (args.output_dir / "SHA256SUMS.txt").read_text())
                 recipe = (args.output_dir / "custom-xcode-build-service.rb").read_text()
                 self.assertIn(f"/archive/refs/tags/v{version}.tar.gz", recipe)
                 self.assertIn(release.hashlib.sha256(source.read_bytes()).hexdigest(), recipe)
@@ -569,6 +582,16 @@ class DistributionTests(unittest.TestCase):
         (self.payload / "manifest.json").write_text(json.dumps(self.manifest))
         with self.assertRaisesRegex(ValueError, "Duplicate dependency"):
             release.validate_payload(self.payload)
+
+
+class InstallerAssetTests(unittest.TestCase):
+    def test_pinned_download_must_match_checksum(self):
+        pin = json.dumps({"revision": "a" * 40, "sha256": "b" * 64})
+        with patch.object(release.subprocess, "check_output", return_value=pin), patch.object(
+                release.urllib.request, "urlopen", return_value=io.BytesIO(b"substituted code")) as download:
+            with self.assertRaisesRegex(ValueError, "installer checksum mismatch"):
+                release.render_installer(Path("approved source"), "c" * 40)
+            self.assertIn("/" + "a" * 40 + "/", download.call_args.args[0])
 
 
 if __name__ == "__main__":

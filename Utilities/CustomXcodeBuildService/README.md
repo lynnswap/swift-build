@@ -56,7 +56,7 @@ or cleanup of owned settings.
 ## Upgrade
 
 For a `custom-v*` standalone installation, run
-[setup with the Homebrew CLI](#migrate-a-standalone-installation) first.
+[the release installer](#migrate-a-standalone-installation) first.
 
 Finish builds before upgrading, then run:
 
@@ -80,21 +80,24 @@ preserves that selection and `reload` leaves it alone.
 
 ## Migrate a standalone installation
 
-Older `custom-v*` releases installed a separate payload and a CLI link under your
-home directory. Finish builds, then install the Formula and select its service
-using the Homebrew CLI's full path:
+Run the familiar installer once to switch an old `custom-v*` installation to
+Homebrew:
 
 ```sh
-brew update
-brew install lynnswap/tap/custom-xcode-build-service
-"$(brew --prefix lynnswap/tap/custom-xcode-build-service)/bin/custom-xcode-build-service" use custom
+curl -fsSL https://github.com/lynnswap/swift-build/releases/latest/download/install.sh | sh
 ```
 
-Setup migrates the selection and removes the owned `~/.local/bin` CLI link. There
-is no separate `uninstall` step. Restart Xcode, Xcode Service (for MCP), terminals,
-and AI agents afterward; older clients can still retain the standalone paths.
-The old payloads are retained for running services and can be removed with
-`uninstall` after switching to bundled and quitting build clients.
+The installer checks the new CLI and migrates an owned standalone selection to
+the Homebrew payload. If bundled or a separate local build is selected, it keeps
+that selection. The existing `~/.local/bin/custom-xcode-build-service` link now
+follows Homebrew upgrades, so absolute command paths keep working. Fresh
+installations still use `use custom` to select the service.
+
+`--dry-run` reports the migration scope without running Homebrew or changing
+files. Migration uses the existing installation lock and rollback transaction.
+Old payloads remain available to running services; no build or service process
+is stopped. Restart Xcode, Xcode Service (for MCP), terminals, and AI agents to
+inherit a changed selection. No separate cleanup command is needed.
 New releases use tags such as `v0.3.0`; existing `custom-v*` tags remain unchanged.
 
 ## Uninstall
@@ -210,7 +213,7 @@ publisher finish the Formula PR instead of merging it before bottle publication.
 The source workflow installs the published bottle on macOS 26, checks its version
 and source commit, and runs Xcode and SwiftPM smoke builds with that installed
 payload. It then rechecks the tested Formula and bottle before publishing the
-source archive, `custom-xcode-build-service.rb`, and `SHA256SUMS.txt`. Stable
+source archive, `custom-xcode-build-service.rb`, stable `install.sh`, and `SHA256SUMS.txt`. Stable
 releases become Latest. Prereleases use isolated Formula/bottle checks and do not
 require delivery through the stable tap or replace Latest. Binary archives remain
 internal CI artifacts.
@@ -284,3 +287,12 @@ key. It executes pinned trusted workflow code, validates the approved source and
 assets, and requests a short-lived token for `swift-build` with Contents and
 Workflows write permission. It never edits the approval content or executes
 release-target code with that token. The App token is revoked when the job ends.
+
+The source packager reads `Distribution/installer.json` from the approved source
+commit, fetches the shared installer at its full homebrew-tap revision, verifies
+its SHA-256, and embeds it in `install.sh`. The generated installer uses macOS
+Bash and downloads no extra migration code. Update the pin deliberately when
+adopting shared changes. Stable publication requires the matching Homebrew
+release, including this CLI's internal `__migrate-standalone` hook, before the
+installer becomes public. Prereleases omit `install.sh` because they do not update
+the stable tap.

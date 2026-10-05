@@ -71,7 +71,35 @@ struct InstallationManager {
         return try store.withInstallationLock { try select(service) }
     }
 
-    private func select(_ service: BuildService) throws -> String {
+    func migrateStandalone() throws -> String {
+        try requireUser()
+        return try store.withExistingLock(access: .modify) {
+            if try store.hasStandaloneSelection() {
+                try environment.requireGUI()
+                return try select(.custom, preserveCommandPath: true)
+            }
+            guard let previous = try store.legacyCommandTarget() else {
+                return "No standalone migration needed. The selected service is unchanged."
+            }
+            try Transaction.perform { transaction in
+                try retireLegacyCommand(previous, preservePath: true, transaction: transaction)
+            }
+            return "The old command path now follows Homebrew. The selected service and legacy payloads are unchanged."
+        } ?? "No standalone installation found. Run custom-xcode-build-service use custom to select this service."
+    }
+
+    private func retireLegacyCommand(_ previous: String, preservePath: Bool, transaction: Transaction) throws {
+        try store.remove(store.command)
+        transaction.undo {
+            try FileManager.default.createSymbolicLink(atPath: store.command.path, withDestinationPath: previous)
+        }
+        if preservePath {
+            try FileManager.default.createSymbolicLink(at: store.command, withDestinationURL: store.homebrewCommand)
+            transaction.undo { try store.remove(store.command) }
+        }
+    }
+
+    private func select(_ service: BuildService, preserveCommandPath: Bool = false) throws -> String {
         let previous = try readLaunchState()
         let customPackage: ReleasePackage?
         switch service {
@@ -93,10 +121,7 @@ struct InstallationManager {
         try Transaction.perform { transaction in
             try configure(customPackage: customPackage, previous: previous, transaction: transaction)
             if let legacyCommandTarget {
-                try store.remove(store.command)
-                transaction.undo {
-                    try FileManager.default.createSymbolicLink(atPath: store.command.path, withDestinationPath: legacyCommandTarget)
-                }
+                try retireLegacyCommand(legacyCommandTarget, preservePath: preserveCommandPath, transaction: transaction)
             }
         }
         let report = "Selected service: \(service.rawValue)"

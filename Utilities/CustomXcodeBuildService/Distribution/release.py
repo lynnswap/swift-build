@@ -22,6 +22,8 @@ import platform
 import plistlib
 import re
 import shutil
+import shlex
+import urllib.request
 import stat
 import subprocess
 import sys
@@ -820,6 +822,22 @@ def verify(args):
     )
 
 
+def render_installer(source, commit):
+    pin = json.loads(subprocess.check_output([
+        "git", "-C", str(source), "show", f"{commit}:{DISTRIBUTION_PATH}/installer.json",
+    ], text=True))
+    if not re.fullmatch(r"[0-9a-f]{40}", pin["revision"]) or not re.fullmatch(r"[0-9a-f]{64}", pin["sha256"]):
+        raise ValueError("The installer requires an immutable tap revision and SHA-256.")
+    url = f"https://raw.githubusercontent.com/lynnswap/homebrew-tap/{pin['revision']}/scripts/install-homebrew.sh"
+    with urllib.request.urlopen(url, timeout=30) as response:
+        engine = response.read()
+    if hashlib.sha256(engine).hexdigest() != pin["sha256"]:
+        raise ValueError("Shared installer checksum mismatch.")
+    return (f"#!/bin/sh\n# Shared installer: lynnswap/homebrew-tap@{pin['revision']}\n"
+            + "exec /bin/bash -c " + shlex.quote(engine.decode("utf-8"))
+            + ' install.sh custom-xcode-build-service "$@"\n')
+
+
 def source_package(args):
     require(re.fullmatch(VERSION_PATTERN, args.version), "Use a vX.Y.Z release tag.")
     source_root = getattr(args, "source_root", None) or REPOSITORY_ROOT
@@ -848,7 +866,11 @@ def source_package(args):
     formula = (template.replace("@EXPLICIT_VERSION@\n", explicit_version)
                .replace("@VERSION@", version).replace("@SHA256@", digest))
     (args.output_dir / "custom-xcode-build-service.rb").write_text(formula)
-    names = (archive_name, "custom-xcode-build-service.rb")
+    names = [archive_name, "custom-xcode-build-service.rb"]
+    if "-" not in version:
+        (args.output_dir / "install.sh").write_text(render_installer(source_root, revision))
+        (args.output_dir / "install.sh").chmod(0o755)
+        names.append("install.sh")
     (args.output_dir / "SHA256SUMS.txt").write_text("".join(
         f"{hashlib.sha256((args.output_dir / name).read_bytes()).hexdigest()}  {name}\n" for name in names))
 
