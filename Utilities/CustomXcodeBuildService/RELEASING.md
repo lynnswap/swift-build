@@ -4,6 +4,11 @@
 
 ## Publish a release
 
+Before the first binary release, deploy the tap receiver and installation workflow
+from [homebrew-tap #47](https://github.com/lynnswap/homebrew-tap/issues/47). The
+currently published source recipe stays in place until this repository publishes
+the binary release; its notification then proposes the replacement recipe.
+
 Review the version, full commit SHA, title, and release notes, then start the
 approved release from the repository root:
 
