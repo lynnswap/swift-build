@@ -4,9 +4,9 @@
 
 ## Installation requirements
 
-Homebrew provides a prebuilt bottle for macOS 26 and later. Source builds and
-`brew test` require Xcode 27 or later. The tap builds the bottle with Xcode 27 on
-the `xcode-27` runner (macOS 27), targeting macOS 26.
+Homebrew and mise install the same prebuilt archive for Apple silicon and macOS
+26 or later. Building the service from source requires Xcode 27 or later. The
+release workflow builds once, then tests that artifact with multiple client Xcodes.
 
 The Xcode version in the package manifest records the build toolchain. It does
 not restrict which client Xcode can use the service.
@@ -26,8 +26,8 @@ custom-xcode-build-service status
 | `Launchd selection` | Service settings for newly started apps. |
 | `Running build services` | This user's running build services. Managed processes have a `[managed custom service]` label. |
 
-`Installed` and `Selected custom package` can differ when you use both Homebrew
-and local builds. `Launchd selection` alone does not show which service an
+`Installed` and `Selected custom package` can differ when you use multiple mise versions, Homebrew,
+or local builds. `Launchd selection` alone does not show which service an
 already running Xcode uses.
 
 If part of the inspection fails, `status` still reports the readable information,
@@ -64,34 +64,23 @@ retry any requests interrupted by the reload.
 Installing or upgrading the Formula does not change the saved selection.
 `reload` and `activate` also preserve it, including a selected local build.
 To select another package, invoke that package's CLI with `use custom`.
+Use `use custom --reload` to select it and stop the previously selected services
+in one operation. If a stop fails, the new selection remains and the error reports
+which processes could not be stopped. A failed selection does not stop services.
 If bundled is selected, `reload` leaves it alone.
 
 ## Migrate a standalone installation
 
-For an older `custom-v*` installation, run the release installer once:
+Install the desired release with Homebrew or mise, then invoke that package's
+CLI with `use custom`. It migrates an owned standalone selection and removes
+this tool's old `~/.local/bin/custom-xcode-build-service` link. Existing standalone
+payloads remain available to running services. Finish builds before adding
+`--reload` to stop those services after switching.
 
-```sh
-curl -fsSL https://github.com/lynnswap/swift-build/releases/latest/download/install.sh | sh
-```
-
-The installer checks the new CLI and moves an owned standalone selection to
-Homebrew. It preserves bundled or separate local-build selections. The old
-`~/.local/bin/custom-xcode-build-service` link follows the Homebrew launcher,
-so existing absolute command paths keep working.
-
-Migration keeps old payloads available to running services and does not stop
-builds or service processes. No separate cleanup command is needed. Restart
-Xcode, Xcode Service (for MCP), terminals, and AI agents if the selection changes.
-On a fresh installation, select the service with `use custom`.
-
-The installer's `--dry-run` reports the migration scope without running Homebrew
-or changing files. Migration uses the existing installation lock and rollback
-transaction. New releases use `v*` tags; existing `custom-v*` tags remain unchanged.
-
-When setting up Homebrew directly, use the full CLI path shown in the README to
-avoid an older command on `PATH`. That `use custom` call migrates the settings
-and removes this tool's old standalone CLI link. Existing standalone payloads
-remain available to running services.
+Use the full Homebrew CLI path from the README or `mise exec --` to avoid invoking
+an older command through `PATH`. Restart clients if the selection changes from
+bundled to custom. The migration uses the existing installation lock and rollback
+transaction; it does not remove unrelated commands or configurations.
 
 ## Configuration
 
@@ -103,8 +92,8 @@ Selecting custom sets these environment variables through `launchd`:
 | `DisableConcurrentDependencyResolution` | `0`, enabling parallel dependency resolution. |
 
 The per-user bundle link points to the entire selected bundle, including its
-resources and plugins. Homebrew owns the packaged files; the CLI does not copy
-or remove them.
+resources and plugins. Homebrew or mise owns the packaged files; the CLI does
+not copy or remove them.
 
 The login helper is stored at
 `~/Library/LaunchAgents/io.github.lynnswap.custom-xcode-build-service.plist`.
@@ -113,7 +102,7 @@ selected package. There is no separate selection file.
 
 `use bundled` removes the service overrides and login helper. It works even when
 the custom payload is missing. `uninstall` also removes owned user links and old
-standalone files, while leaving the Homebrew package for `brew uninstall`.
+standalone files, while leaving package removal to Homebrew or mise.
 
 ## Try a local build
 
@@ -147,16 +136,13 @@ To return to Homebrew, invoke its CLI and restart clients:
 Run `use bundled` before deleting a selected local payload if you want to stop
 using custom altogether.
 
-Homebrew source builds use `--source-dir` and read the commit from the downloaded
-Git archive, so they do not need a `.git` directory.
-
 ## SwiftPM
 
 SwiftPM's Swift Build backend runs inside the SwiftPM process. Selecting Xcode's
 build service does not replace that engine.
 
 Platform plugins are loaded from the engine's own Xcode installation. Changing
-`DEVELOPER_DIR` or `xcode-select` does not require reinstalling the Homebrew package.
+`DEVELOPER_DIR` or `xcode-select` does not require reinstalling the package.
 
 ## Tests
 
@@ -169,19 +155,24 @@ Run the management CLI and distribution tests from the repository root:
 python3 -m unittest discover -s Utilities/CustomXcodeBuildService/Distribution/tests -p 'test_*.py'
 ```
 
-To verify the installed package, select Xcode 27 or later and run:
+`brew test custom-xcode-build-service` checks CLI version and help output. To run
+Xcode C builds and SwiftPM build/run/test against an installed payload, use:
 
 ```sh
-brew test custom-xcode-build-service
+python3 Utilities/CustomXcodeBuildService/Distribution/release.py verify-payload \
+  --payload /path/to/package
 ```
 
-This checks the CLI version, Xcode C builds, and SwiftPM build/run/test.
-Xcode's Swift package manifest loader needs its own sandbox, so the Xcode package
+For Homebrew, the payload is `$(brew --prefix custom-xcode-build-service)/libexec`;
+for mise it is the directory reported by `mise where github:lynnswap/swift-build`.
+Xcode's Swift package manifest loader needs its own sandbox, so these integration
 tests run outside Homebrew's test sandbox.
 
-`Distribution/test-homebrew.sh` runs both test sets after source installation
-and again after bottle reinstallation. Service overrides are limited to test
-child processes; the desktop selection is unchanged.
+`Distribution/test-homebrew.sh` and `Distribution/test-mise.py` install a candidate
+archive and run the same payload checks. The Homebrew check requires a clean
+Homebrew installation; it refuses to replace an existing keg. The mise check uses
+temporary configuration and data directories. Service overrides are limited to
+child processes, and neither check changes the desktop selection.
 
 The compatibility CI tests one service artifact with installed stable Xcode 26/27
 releases and the latest beta across `macos-26` and `xcode-27`. These are tested

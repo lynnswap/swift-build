@@ -285,46 +285,6 @@ class SourceBuildTests(BuildTests):
         self.assertFalse(any(command[0] == "git" for command, _ in self.commands))
         self.assertEqual((self.arguments.output_dir / "source/Package.resolved").read_text(), self.committed_pins)
 
-    def test_public_source_recipe_uses_the_archive_checksum_and_plain_version_tag(self):
-        template = release.REPOSITORY_ROOT / release.DISTRIBUTION_PATH / "custom-xcode-build-service.rb.in"
-        destination = self.repository / release.DISTRIBUTION_PATH / template.name
-        shutil.copyfile(template, destination)
-        engine = b'printf "fixture: %s\\n" "$@"\n'
-        pin = self.repository / release.DISTRIBUTION_PATH / "installer.json"
-        pin.write_text(json.dumps({"revision": "a" * 40, "sha256": release.hashlib.sha256(engine).hexdigest()}))
-        subprocess.run(["git", "-C", str(self.repository), "add", str(pin)], check=True)
-        subprocess.run(["git", "-C", str(self.repository), "add", str(destination)], check=True)
-        subprocess.run(["git", "-C", str(self.repository), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "Recipe"], check=True)
-        source = self.root / "public.tar.gz"
-        subprocess.run(["git", "-C", str(self.repository), "archive", "--format=tar.gz", "--prefix=swift-build-v1.2.3/", "HEAD", "--output", str(source)], check=True)
-        for version in ("1.2.3", "1.2.3-dev.1", "0.0.0-validation"):
-            with self.subTest(version=version):
-                args = argparse.Namespace(version=f"v{version}", revision="HEAD", source_archive=source,
-                                          source_root=self.repository, output_dir=self.root / version)
-                # The trusted workflow checkout is independent of the approved source checkout.
-                with patch.object(release, "REPOSITORY_ROOT", self.root / "workflow checkout"), patch.object(
-                        release.urllib.request, "urlopen", side_effect=lambda *a, **kw: io.BytesIO(engine)):
-                    release.source_package(args)
-                installer = args.output_dir / "install.sh"
-                self.assertEqual(installer.exists(), "-" not in version)
-                if installer.exists():
-                    run = subprocess.run(["/bin/sh", "-s", "--", "--dry-run"], input=installer.read_text(),
-                                         text=True, capture_output=True, check=True)
-                    self.assertIn("custom-xcode-build-service", run.stdout)
-                    self.assertIn("--dry-run", run.stdout)
-                    self.assertIn("  install.sh", (args.output_dir / "SHA256SUMS.txt").read_text())
-                recipe = (args.output_dir / "custom-xcode-build-service.rb").read_text()
-                self.assertIn(f"/archive/refs/tags/v{version}.tar.gz", recipe)
-                self.assertIn(release.hashlib.sha256(source.read_bytes()).hexdigest(), recipe)
-                self.assertIn('"--source-archive", cached_download', recipe)
-                self.assertNotIn("@EXPLICIT_VERSION@", recipe)
-                self.assertEqual('  version "' in recipe, "-" in version)
-                if "-" in version:
-                    self.assertIn(f'  version "{version}"', recipe)
-                self.assertEqual((args.output_dir / f"custom-xcode-build-service-{version}.tar.gz").read_bytes(), source.read_bytes())
-
-
-
 class XcodeInvocationTests(unittest.TestCase):
     def test_child_service_can_be_reported_through_a_filesystem_alias(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -403,6 +363,10 @@ class DistributionTests(unittest.TestCase):
             dependencies=[dict(identity="swift-driver", revision="b" * 40)],
         )
         (self.payload / "manifest.json").write_text(json.dumps(self.manifest))
+        source = self.build / "source" / release.DISTRIBUTION_PATH
+        source.mkdir(parents=True)
+        shutil.copyfile(release.REPOSITORY_ROOT / release.DISTRIBUTION_PATH / "custom-xcode-build-service.rb.in",
+                        source / "custom-xcode-build-service.rb.in")
     def package(self, name="release"):
         destination = self.root / name
         release.package(
@@ -583,15 +547,17 @@ class DistributionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Duplicate dependency"):
             release.validate_payload(self.payload)
 
-
-class InstallerAssetTests(unittest.TestCase):
-    def test_pinned_download_must_match_checksum(self):
-        pin = json.dumps({"revision": "a" * 40, "sha256": "b" * 64})
-        with patch.object(release.subprocess, "check_output", return_value=pin), patch.object(
-                release.urllib.request, "urlopen", return_value=io.BytesIO(b"substituted code")) as download:
-            with self.assertRaisesRegex(ValueError, "installer checksum mismatch"):
-                release.render_installer(Path("approved source"), "c" * 40)
-            self.assertIn("/" + "a" * 40 + "/", download.call_args.args[0])
+    def test_archive_recipe_uses_the_built_version_and_binary_checksum(self):
+        for version in ("v1.2.3", "v1.2.3-rc.1"):
+            self.manifest["version"] = version
+            (self.payload / "manifest.json").write_text(json.dumps(self.manifest))
+            directory = self.package(version)
+            formula = (directory / "custom-xcode-build-service.rb").read_text()
+            self.assertIn(f'/releases/download/{version}/' + release.ARCHIVE, formula)
+            self.assertIn(f'version "{version.removeprefix("v")}"', formula)
+            self.assertIn(release.hashlib.sha256((directory / release.ARCHIVE).read_bytes()).hexdigest(), formula)
+            self.assertNotIn('release.py', formula)
+            self.assertEqual(set(path.name for path in directory.iterdir()), set(release.asset_names(version)))
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ enum BuildService: String {
 }
 
 enum Command: Equatable {
-    case use(BuildService)
+    case use(BuildService, reload: Bool = false)
     case status
     case version
     case uninstall
@@ -31,6 +31,7 @@ enum Command: Equatable {
         switch arguments {
         case [], ["--help"], ["-h"], ["help"]: self = .help
         case ["use", "custom"]: self = .use(.custom)
+        case ["use", "custom", "--reload"]: self = .use(.custom, reload: true)
         case ["use", "bundled"]: self = .use(.bundled)
         case ["status"]: self = .status
         case ["--version"]: self = .version
@@ -46,7 +47,7 @@ enum Command: Equatable {
     Select the custom Xcode build service from lynnswap/swift-build.
 
     Usage:
-      custom-xcode-build-service use custom
+      custom-xcode-build-service use custom [--reload]
       custom-xcode-build-service use bundled
       custom-xcode-build-service status
       custom-xcode-build-service --version
@@ -54,24 +55,27 @@ enum Command: Equatable {
       custom-xcode-build-service uninstall
       custom-xcode-build-service activate
 
-    Homebrew installs the CLI and service together:
+    Homebrew and mise install the CLI and service together.
+    Homebrew:
       brew install lynnswap/tap/custom-xcode-build-service
 
-    Set up this packaged service using the Homebrew CLI:
-      "$(brew --prefix lynnswap/tap/custom-xcode-build-service)/bin/custom-xcode-build-service" use custom
+    mise (use the version pinned in your project's mise.toml and mise.lock):
+      mise install --locked github:lynnswap/swift-build
+      mise exec -- custom-xcode-build-service use custom
+
+    Invoke the CLI from the package you want to select.
     Setup migrates this tool's old standalone CLI link and settings.
 
-    To upgrade, finish builds and run:
-      brew update
-      brew upgrade lynnswap/tap/custom-xcode-build-service
-      custom-xcode-build-service reload
+    After installing another version, finish builds and run its CLI with:
+      custom-xcode-build-service use custom --reload
 
     use custom   Select this packaged service, including after login.
+    --reload     Also stop previously selected custom services after switching.
     use bundled  Restore Xcode's bundled service and remove the login helper.
     status       Show the packaged release, selection, and running services.
-    reload       Restart this user's custom services after a Homebrew upgrade.
+    reload       Restart this user's managed custom services without changing selection.
     uninstall    Remove user settings and legacy standalone files. Quit Xcode first.
-                 Homebrew files remain; remove them with brew uninstall.
+                 Packaged files remain; remove them with Homebrew or mise.
     activate     Reapply the saved custom selection at login.
 
     Selection requires a desktop login. From a Background session, the command

@@ -3,7 +3,7 @@ Swift Build
 
 Swift Build is a high-level build system based on [llbuild](https://github.com/swiftlang/swift-llbuild) with great support for building Swift. It is used by SwiftPM, Xcode, and Swift Playground.
 
-For this fork's optional service, management command, and Homebrew distribution, see [Custom Xcode Build Service](Utilities/CustomXcodeBuildService/README.md).
+For this fork's optional service, management command, and Homebrew/mise distribution, see [Custom Xcode Build Service](Utilities/CustomXcodeBuildService/README.md).
 
 Usage
 -----

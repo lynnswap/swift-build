@@ -901,3 +901,68 @@ func installerRecoversDamagedStandaloneInstallation(damage: String) throws {
     #expect(try localStore.packagedRelease()?.manifest.version == "v0.0.0-local")
     #expect(fixture.runner.settings.isEmpty)
 }
+
+@Test(arguments: [false, true])
+func selectingAnotherMiseVersionOptionallyReloadsThePreviousPackage(reload: Bool) throws {
+    let fixture = try Fixture()
+    func package(_ version: String) throws -> URL {
+        let directory = fixture.directory.appendingPathComponent("mise/installs/github-lynnswap-swift-build/" + version)
+        try FileManager.default.createDirectory(at: directory.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: fixture.package(version), to: directory)
+        return directory
+    }
+    let old = try package("v0.4.0")
+    let oldStore = InstallationStore(home: fixture.store.home, packageDirectory: old)
+    let oldManager = InstallationManager(store: oldStore, environment: fixture.manager.environment)
+    _ = try oldManager.use(.custom)
+    let oldService = try ReleasePackage(directory: old).service
+    let unrelated = try ReleasePackage(directory: fixture.package("v0.0.0-local")).service
+    fixture.runner.processes = "20 \(oldService.path)\n30 \(unrelated.path)\n"
+    let new = try package("v0.4.1")
+    let newStore = InstallationStore(home: fixture.store.home, packageDirectory: new)
+    let manager = InstallationManager(store: newStore, environment: fixture.manager.environment)
+    _ = try manager.use(.custom, reload: reload)
+    #expect(try newStore.selectedPackage()?.manifest.version == "v0.4.1")
+    #expect(newStore.service.resolvingSymlinksInPath() == (try ReleasePackage(directory: new).service))
+    #expect(fixture.runner.killedPIDs == (reload ? ["20"] : []))
+    #expect(try newStore.exists(old))
+}
+
+@Test func failedSelectionDoesNotStopThePreviousService() throws {
+    let fixture = try Fixture()
+    let old = try fixture.package("v0.4.0")
+    _ = try fixture.enable(old)
+    fixture.runner.processes = "20 \(try ReleasePackage(directory: old).service.path)\n"
+    fixture.runner.settings["XCBBUILDSERVICE_PATH"] = "/unrelated/service"
+    let next = try fixture.package("v0.4.1")
+    let store = InstallationStore(home: fixture.store.home, packageDirectory: next)
+    let manager = InstallationManager(store: store, environment: fixture.manager.environment)
+    #expect(throws: ServiceError.self) { try manager.use(.custom, reload: true) }
+    #expect(fixture.runner.killedPIDs.isEmpty)
+    #expect(try store.selectedPackage()?.manifest.version == "v0.4.0")
+}
+
+@Test func selectingWithReloadReportsTheNewSelectionWhenStoppingFails() throws {
+    let fixture = try Fixture()
+    let old = try fixture.package("v0.4.0")
+    _ = try fixture.enable(old)
+    fixture.runner.processes = "20 \(try ReleasePackage(directory: old).service.path)\n"
+    fixture.runner.killFailures = ["20"]
+    let next = try fixture.package("v0.4.1")
+    let store = InstallationStore(home: fixture.store.home, packageDirectory: next)
+    let manager = InstallationManager(store: store, environment: fixture.manager.environment)
+    do {
+        _ = try manager.use(.custom, reload: true)
+        Issue.record("The failed termination must be reported.")
+    } catch let error as ServiceError {
+        #expect(error.description.contains("Selected package: v0.4.1"))
+        #expect(error.description.contains("Stopping service 20"))
+    }
+    #expect(try store.selectedPackage()?.manifest.version == "v0.4.1")
+    #expect(fixture.runner.killedPIDs.isEmpty)
+}
+
+@Test func parserSupportsExplicitReloadWhileSelectingCustom() throws {
+    #expect(try Command(arguments: ["use", "custom", "--reload"]) == .use(.custom, reload: true))
+    #expect(throws: ServiceError.self) { try Command(arguments: ["use", "bundled", "--reload"]) }
+}
