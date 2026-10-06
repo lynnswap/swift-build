@@ -221,9 +221,12 @@ internal CI artifacts.
 While tap delivery is pending, CI keeps the Draft and an immutable preparation
 receipt. The
 [resume workflow](../../.github/workflows/custom-xcode-build-service-resume.yml)
-checks every 15 minutes and reruns delivery verification and its dependent jobs
-after the matching bottle is public. It reuses completed build and compatibility
-checks. You can also dispatch that workflow manually. Changed approval content,
+runs when the tap publishes the bottle and updates its Formula on `main`.
+Successful source-release completion also triggers the check, covering a tap
+notification that arrives before source preparation finishes. There is no
+scheduled polling. The workflow reruns delivery verification and its dependent
+jobs after the matching bottle is public, reusing completed build and compatibility
+checks. You can also dispatch it manually. Changed approval content,
 failed installation checks, expired artifacts, and runs older than 30 days require
 attention; the resume
 workflow does not bypass them. Prepared artifacts are retained for 35 days.
@@ -252,8 +255,8 @@ trusted code from the workflow's immutable commit, revalidates the approved Draf
 and requests a short-lived token restricted to `homebrew-tap` and `Actions: write`.
 The token is revoked when the job ends. Authentication or notification failure
 leaves the public source tag and prepared assets and reports the failed dispatch;
-inspect tap Actions before retrying, since acceptance may be uncertain. Periodic
-discovery remains a recovery path. Bottle publication revalidates the same-repository
+inspect tap Actions before retrying, since acceptance may be uncertain. Daily or
+manual tap maintenance remains a recovery path. Bottle publication revalidates the same-repository
 maintainer/bot PR, its successful CI, and the exact tested artifact before updating
 the tap.
 
