@@ -221,7 +221,9 @@ internal CI artifacts.
 While tap delivery is pending, CI keeps the Draft and an immutable preparation
 receipt. The
 [resume workflow](../../.github/workflows/custom-xcode-build-service-resume.yml)
-runs when the tap publishes the bottle and updates its Formula on `main`.
+runs after the tap publishes the bottle and updates its Formula on `main`. The
+tap's notification job requires `source-notification` approval before using its
+dedicated App key to start this workflow.
 Successful source-release completion also triggers the check, covering a tap
 notification that arrives before source preparation finishes. There is no
 scheduled polling. The workflow reruns delivery verification and its dependent
