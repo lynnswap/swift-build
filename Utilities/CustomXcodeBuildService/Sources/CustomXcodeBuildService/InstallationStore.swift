@@ -154,7 +154,7 @@ struct InstallationStore {
         return try ReleasePackage(directory: executable.deletingLastPathComponent().deletingLastPathComponent())
     }
 
-    private func selectedExecutable() throws -> URL? {
+    func selectedExecutable() throws -> URL? {
         guard try exists(agent) else { return nil }
         // The owned label and activation command survive moving between Homebrew
         // and local builds; the previous executable path need not equal this one.

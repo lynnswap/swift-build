@@ -926,6 +926,9 @@ func selectingAnotherMiseVersionOptionallyReloadsThePreviousPackage(reload: Bool
     #expect(newStore.service.resolvingSymlinksInPath() == (try ReleasePackage(directory: new).service))
     #expect(fixture.runner.killedPIDs == (reload ? ["20"] : []))
     #expect(try newStore.exists(old))
+    fixture.runner.killedPIDs = []
+    _ = try manager.use(.custom, reload: true)
+    #expect(fixture.runner.killedPIDs.isEmpty)
 }
 
 @Test func failedSelectionDoesNotStopThePreviousService() throws {

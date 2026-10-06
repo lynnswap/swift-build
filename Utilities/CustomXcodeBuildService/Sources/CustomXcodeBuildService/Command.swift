@@ -70,7 +70,7 @@ enum Command: Equatable {
       custom-xcode-build-service use custom --reload
 
     use custom   Select this packaged service, including after login.
-    --reload     Also stop previously selected custom services after switching.
+    --reload     Also stop previous custom services when selecting a different package.
     use bundled  Restore Xcode's bundled service and remove the login helper.
     status       Show the packaged release, selection, and running services.
     reload       Restart this user's managed custom services without changing selection.

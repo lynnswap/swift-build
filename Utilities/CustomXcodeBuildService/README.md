@@ -65,7 +65,8 @@ custom-xcode-build-service reload
 ```
 
 `use custom --reload` selects the invoked CLI's package and stops the previously
-selected custom services. `reload` alone preserves the saved selection. Installing
+selected custom services when changing packages. Selecting the same package again
+does not stop builds. `reload` alone preserves the saved selection. Installing
 or upgrading a package does not select it.
 
 ## Status

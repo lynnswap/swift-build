@@ -68,12 +68,15 @@ struct InstallationManager {
             }
             try package.validateForUse()
             return try store.withInstallationLock {
+                let previous = try store.selectedExecutable()
+                // The saved launch path defines selection, including opt versus a fixed version.
+                let shouldReload = reload && previous != nil && previous != store.persistentExecutable
                 // Capture the previous package's processes before replacing its saved path.
-                let running = reload ? try runningProcesses().filter {
+                let running = shouldReload ? try runningProcesses().filter {
                     Self.serviceNames.contains($0.name) && store.ownsService(at: $0.path)
                 } : []
                 let report = try select(service)
-                return reload ? report + "\n" + (try stopServices(running, version: package.manifest.version)) : report
+                return shouldReload ? report + "\n" + (try stopServices(running, version: package.manifest.version)) : report
             }
         }
         if let result = try store.withExistingLock(access: .modify, { try select(service) }) { return result }

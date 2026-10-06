@@ -11,10 +11,9 @@ import sys
 import tarfile
 from urllib.parse import quote
 
-from release import ARCHIVE, asset_names
+from release import ARCHIVE, VERSION_PATTERN, asset_names
 
 
-VERSION_PATTERN = r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?"
 WORKFLOW = "custom-xcode-build-service-release.yml"
 
 

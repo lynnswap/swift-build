@@ -65,7 +65,9 @@ Installing or upgrading the Formula does not change the saved selection.
 `reload` and `activate` also preserve it, including a selected local build.
 To select another package, invoke that package's CLI with `use custom`.
 Use `use custom --reload` to select it and stop the previously selected services
-in one operation. If a stop fails, the new selection remains and the error reports
+in one operation. Selecting the same package path again does not stop services;
+use `reload` explicitly after replacing a local build or upgrading a Homebrew keg
+behind the same `opt` path. If a stop fails, the new selection remains and the error reports
 which processes could not be stopped. A failed selection does not stop services.
 If bundled is selected, `reload` leaves it alone.
 
