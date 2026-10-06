@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import json
 import subprocess
+import tarfile
 import unittest
 from unittest.mock import patch
 
@@ -75,7 +76,7 @@ class FakeGitHub:
             self.release = dict(data, id=42, assets=[], html_url="https://github.com/example/project/releases/42")
             return copy.deepcopy(self.release)
         if path in ("actions/workflows/custom-xcode-build-service-release.yml/dispatches",
-                    "actions/workflows/renovate.yml/dispatches"):
+                    "actions/workflows/update-formula.yml/dispatches"):
             if self.dispatch_error:
                 raise release.APIError(503, "Dispatch response unavailable")
             return None
@@ -86,6 +87,8 @@ class FakeGitHub:
             if self.after_tag:
                 self.after_tag(self)
             return {"ref": data["ref"]}
+        if path.startswith("releases/tags/"):
+            return copy.deepcopy(self.release)
         if path == "releases/42":
             if method == "PATCH":
                 if self.publish_error:
@@ -99,22 +102,35 @@ class FakeGitHub:
 
 class ReleaseTests(unittest.TestCase):
     def setUp(self):
-        self.tested_delivery = dict(formula_sha256="a" * 64, bottle_sha256="b" * 64, bottle_url="https://example.test/verified.bottle.tar.gz")
-        readiness = patch("publish_release.verify_homebrew_ready", return_value=self.tested_delivery.copy())
-        self.readiness = readiness.start()
-        self.addCleanup(readiness.stop)
         self.output = io.StringIO()
         self.redirect = contextlib.redirect_stdout(self.output)
         self.redirect.__enter__()
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.release_dir = Path(directory.name)
-        names = release.asset_names("v0.1.0")
+        self.write_release()
+
+    def write_release(self, tag="v0.1.0", sha=SHA):
+        for path in self.release_dir.iterdir():
+            path.unlink()
+        names = release.asset_names(tag)
         for name in names[:-1]:
             (self.release_dir / name).write_text("verified " + name)
+        with tarfile.open(self.release_dir / release.ARCHIVE, "w:gz") as archive:
+            data = json.dumps(dict(version=tag, sourceRevision=sha)).encode()
+            info = tarfile.TarInfo("manifest.json")
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
         (self.release_dir / names[-1]).write_text("".join(
             f"{hashlib.sha256((self.release_dir / name).read_bytes()).hexdigest()}  {name}\n"
             for name in names[:-1]))
+        self.checksums_sha256 = hashlib.sha256((self.release_dir / names[-1]).read_bytes()).hexdigest()
+
+    def published_source(self):
+        source = FakeGitHub(draft())
+        source.repository = "lynnswap/swift-build"
+        self.publish(source, release.fingerprint(source.release))
+        return source
 
     def tearDown(self):
         self.redirect.__exit__(None, None, None)
@@ -126,15 +142,30 @@ class ReleaseTests(unittest.TestCase):
         release.start(github, **values)
 
     def publish(self, github, digest):
-        release.publish(github, 42, SHA, digest, self.release_dir, self.tested_delivery)
+        release.publish(github, 42, SHA, digest, self.release_dir, self.checksums_sha256)
 
-    def test_stable_tag_notification_starts_only_the_main_tap_workflow(self):
+    def test_stable_release_notification_sends_the_published_binary_and_recipe_digests(self):
         github = FakeGitHub()
-        release.dispatch_tap(github, "lynnswap/swift-build", "v0.3.4")
-        self.assertEqual(github.writes, [("actions/workflows/renovate.yml/dispatches", "POST",
-            dict(ref="main", inputs=dict(source_repository="lynnswap/swift-build", source_tag="v0.3.4")))])
+        source = self.published_source()
+        with patch("publish_release.GitHub", return_value=source):
+            release.dispatch_tap(github, source.repository, "v0.1.0")
+        self.assertEqual(github.writes, [("actions/workflows/update-formula.yml/dispatches", "POST",
+            dict(ref="main", inputs=dict(source_repository=source.repository, source_tag="v0.1.0",
+                source_sha=SHA, source_sha256=hashlib.sha256((self.release_dir / release.ARCHIVE).read_bytes()).hexdigest(),
+                formula_sha256=hashlib.sha256((self.release_dir / "custom-xcode-build-service.rb").read_bytes()).hexdigest())))])
         self.assertIsNone(github.tag)
         self.assertIsNone(github.release)
+
+    def test_unpublished_or_replaced_source_cannot_start_a_tap_update(self):
+        for mutation in (lambda g: g.release.update(draft=True),
+                         lambda g: setattr(g, "tag", OTHER),
+                         lambda g: g.release["assets"].pop(0)):
+            source = self.published_source()
+            mutation(source)
+            github = FakeGitHub()
+            with patch("publish_release.GitHub", return_value=source), self.assertRaises(release.ReleaseError):
+                release.dispatch_tap(github, source.repository, "v0.1.0")
+            self.assertEqual(github.writes, [])
 
     def test_prereleases_and_invalid_tags_do_not_notify_the_stable_tap(self):
         github = FakeGitHub()
@@ -144,12 +175,15 @@ class ReleaseTests(unittest.TestCase):
                 release.dispatch_tap(github, "lynnswap/swift-build", tag)
         self.assertEqual(github.calls, [])
 
-    def test_failed_notification_reports_the_remaining_tag_without_retrying(self):
+    def test_failed_notification_preserves_the_public_release_without_retrying(self):
+        source = self.published_source()
         github = FakeGitHub()
         github.dispatch_error = True
-        with self.assertRaisesRegex(release.ReleaseError, "Public source tag v0.3.4 remains"):
-            release.dispatch_tap(github, "lynnswap/swift-build", "v0.3.4")
+        with patch("publish_release.GitHub", return_value=source), self.assertRaisesRegex(
+                release.ReleaseError, "Release v0.1.0 remains published"):
+            release.dispatch_tap(github, source.repository, "v0.1.0")
         self.assertEqual(len(github.writes), 1)
+        self.assertFalse(source.release["draft"])
 
     def test_start_keeps_notes_and_pins_dispatch_without_creating_tag(self):
         github = FakeGitHub()
@@ -232,46 +266,10 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(github.writes, [])
         self.assertTrue(github.release["draft"])
 
-    def test_source_preparation_creates_only_the_approved_tag_and_keeps_release_draft(self):
-        github = FakeGitHub(draft())
-        digest = release.fingerprint(github.release)
-        prepared = release.prepare_source(github, 42, SHA, digest)
-        self.assertTrue(prepared["draft"])
-        self.assertEqual(github.tag, SHA)
-        self.assertEqual(github.writes, [("git/refs", "POST", dict(ref="refs/tags/v0.1.0", sha=SHA))])
-        github.calls.clear()
-        release.prepare_source(github, 42, SHA, digest)
-        self.assertEqual(github.writes, [])
-
-    def test_source_preparation_stops_for_changed_draft_tag_or_tag_permissions(self):
-        for mutation in (lambda g: g.release.update(body="unapproved"),
-                         lambda g: setattr(g, "tag", OTHER),
-                         lambda g: setattr(g, "tag_error", True)):
-            with self.subTest(mutation=mutation):
-                github = FakeGitHub(draft())
-                mutation(github)
-                with self.assertRaises(release.ReleaseError):
-                    release.prepare_source(github, 42, SHA, release.fingerprint(draft()))
-                self.assertTrue(github.release["draft"])
-                self.assertFalse(any(call[0] == "upload" or call[1] == "PATCH" for call in github.writes))
-
-    def test_draft_change_during_source_tag_creation_stops_preparation(self):
-        github = FakeGitHub(draft())
-        github.after_tag = lambda g: g.release.update(body="edited")
-        with self.assertRaises(release.ReleaseError):
-            release.prepare_source(github, 42, SHA, release.fingerprint(draft()))
-        self.assertTrue(github.release["draft"])
-        self.assertEqual(github.tag, SHA)
-
     def test_publish_creates_exact_tag_and_preserves_stable_or_prerelease_content(self):
         for prerelease in (False, True):
             tag = "v0.1.0-rc.1" if prerelease else "v0.1.0"
-            names = release.asset_names(tag)
-            for name in names[:-1]:
-                (self.release_dir / name).write_text("verified " + name)
-            (self.release_dir / names[-1]).write_text("".join(
-                f"{hashlib.sha256((self.release_dir / name).read_bytes()).hexdigest()}  {name}\n"
-                for name in names[:-1]))
+            self.write_release(tag)
             github = FakeGitHub(draft(tag_name=tag, prerelease=prerelease))
             digest = release.fingerprint(github.release)
             self.publish(github, digest)
@@ -368,57 +366,27 @@ class ReleaseTests(unittest.TestCase):
         self.publish(github, digest)
         self.assertEqual(github.writes, [])
 
-    def test_changed_tap_after_approval_blocks_stable_publication_and_can_resume(self):
+    def test_publication_is_independent_of_tap_availability(self):
         github = FakeGitHub(draft())
-        digest = release.fingerprint(github.release)
-        self.readiness.side_effect = release.ReleaseError("Homebrew is not ready")
-        with self.assertRaisesRegex(release.ReleaseError, "Homebrew is not ready"):
-            self.publish(github, digest)
-        self.assertTrue(github.release["draft"])
-        self.assertFalse(any(call[1] == "PATCH" for call in github.writes))
-        self.readiness.side_effect = None
-        self.publish(github, digest)
+        with patch("publish_release.GitHub", side_effect=AssertionError("No tap lookup during publication")):
+            self.publish(github, release.fingerprint(github.release))
         self.assertFalse(github.release["draft"])
-        github.calls.clear()
-        self.readiness.reset_mock()
-        self.readiness.side_effect = release.ReleaseError("Tap now has a newer version")
-        self.publish(github, digest)
-        self.assertEqual(github.writes, [])
-        self.readiness.assert_not_called()
 
-    def test_prerelease_publication_does_not_require_a_stable_tap_update(self):
-        tag = "v0.1.0-rc.1"
-        names = release.asset_names(tag)
-        for name in names[:-1]:
-            (self.release_dir / name).write_text("verified " + name)
-        (self.release_dir / names[-1]).write_text("".join(
-            f"{hashlib.sha256((self.release_dir / name).read_bytes()).hexdigest()}  {name}\n"
-            for name in names[:-1]))
-        github = FakeGitHub(draft(tag_name=tag, prerelease=True))
-        self.readiness.side_effect = release.ReleaseError("Stable tap not updated")
-        self.publish(github, release.fingerprint(github.release))
-        self.assertFalse(github.release["draft"])
-        self.readiness.assert_not_called()
-
-    def test_changed_installed_bottle_identity_blocks_publication_until_reverified(self):
-        for key, value in (("formula_sha256", "d" * 64), ("bottle_sha256", "c" * 64), ("bottle_url", "https://example.test/rebuilt.bottle.tar.gz")):
-            with self.subTest(key=key):
-                github = FakeGitHub(draft())
-                current = dict(self.tested_delivery, **{key: value})
-                self.readiness.return_value = current
-                digest = release.fingerprint(github.release)
-                with self.assertRaisesRegex(release.ReleaseError, "Re-run Verify published tap installation"):
-                    self.publish(github, digest)
-                self.assertTrue(github.release["draft"])
-                self.assertFalse(any(call[1] == "PATCH" for call in github.writes))
-                release.publish(github, 42, SHA, digest, self.release_dir, current)
-                self.assertFalse(github.release["draft"])
-
-    def test_stable_publication_requires_installed_bottle_evidence_before_writes(self):
+    def test_changed_checked_artifact_stops_publication_before_writes(self):
+        checked = self.checksums_sha256
+        self.write_release(sha=OTHER)
         github = FakeGitHub(draft())
-        with self.assertRaisesRegex(release.ReleaseError, "installed and verified"):
-            release.publish(github, 42, SHA, release.fingerprint(github.release), self.release_dir)
+        with self.assertRaisesRegex(release.ReleaseError, "checksums file changed"):
+            release.publish(github, 42, SHA, release.fingerprint(github.release), self.release_dir, checked)
         self.assertEqual(github.writes, [])
+
+    def test_other_commit_or_version_cannot_be_published_as_the_approved_release(self):
+        for tag, sha in (("v0.1.0", OTHER), ("v0.2.0", SHA)):
+            self.write_release(tag, sha)
+            github = FakeGitHub(draft())
+            with self.assertRaisesRegex(release.ReleaseError, "approved version and commit"):
+                self.publish(github, release.fingerprint(github.release))
+            self.assertEqual(github.writes, [])
 
     def test_change_during_tag_creation_stops_publication(self):
         github = FakeGitHub(draft())

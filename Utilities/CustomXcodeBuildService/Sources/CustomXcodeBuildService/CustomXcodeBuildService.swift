@@ -46,10 +46,10 @@ struct CustomXcodeBuildService {
 
     private static func run(_ command: Command, manager: InstallationManager) throws -> String {
         switch command {
-        case .use(let service): return try manager.use(service)
+        case .use(let service, let reload): return try manager.use(service, reload: reload)
         case .version:
             guard let package = try manager.store.packagedRelease() else {
-                throw ServiceError("No packaged service is available. Reinstall with Homebrew.")
+                throw ServiceError("No packaged service is available. Reinstall this package with Homebrew or mise.")
             }
             return package.manifest.version
         case .status: return try manager.status()

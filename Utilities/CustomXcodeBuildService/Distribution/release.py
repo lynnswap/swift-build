@@ -11,7 +11,7 @@
 ##
 ##===----------------------------------------------------------------------===##
 
-"""Release builds, Homebrew source packaging, and relocation checks."""
+"""Build, package, and verify the shared Homebrew and mise distribution."""
 
 import argparse
 import gzip
@@ -22,8 +22,6 @@ import platform
 import plistlib
 import re
 import shutil
-import shlex
-import urllib.request
 import stat
 import subprocess
 import sys
@@ -35,7 +33,7 @@ from pathlib import Path, PurePosixPath
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 DISTRIBUTION_PATH = Path("Utilities/CustomXcodeBuildService/Distribution")
 ARCHIVE = "custom-xcode-build-service-darwin-arm64.tar.gz"
-ASSETS = (ARCHIVE,)
+ASSETS = (ARCHIVE, "custom-xcode-build-service.rb")
 SERVICE_BUNDLE = Path("libexec/swift-build/SWBBuildService.bundle")
 SERVICE_BINARY = SERVICE_BUNDLE / "SWBBuildServiceBundle"
 HOST_PLUGIN = SERVICE_BUNDLE / "PlugIns/HostPlatformPlugins.bundle"
@@ -513,6 +511,11 @@ def stage(args):
     validate_payload(payload)
 
 
+def asset_names(version):
+    require(re.fullmatch(VERSION_PATTERN, version), "Use a vX.Y.Z release tag.")
+    return (*ASSETS, "SHA256SUMS.txt")
+
+
 def checksum_file(directory):
     return "".join(
         f"{hashlib.sha256((directory / name).read_bytes()).hexdigest()}  {name}\n"
@@ -545,6 +548,12 @@ def package(args):
                             archive.addfile(info, contents)
                     else:
                         archive.addfile(info)
+    source = args.build_dir / "source"
+    template = (source / DISTRIBUTION_PATH / "custom-xcode-build-service.rb.in").read_text()
+    digest = hashlib.sha256((args.output_dir / ARCHIVE).read_bytes()).hexdigest()
+    formula = (template.replace("@VERSION@", manifest["version"].removeprefix("v"))
+               .replace("@SHA256@", digest))
+    (args.output_dir / "custom-xcode-build-service.rb").write_text(formula)
     (args.output_dir / "SHA256SUMS.txt").write_text(checksum_file(args.output_dir))
     print(f"Created release assets: {args.output_dir}")
 
@@ -822,65 +831,12 @@ def verify(args):
     )
 
 
-def render_installer(source, commit):
-    pin = json.loads(subprocess.check_output([
-        "git", "-C", str(source), "show", f"{commit}:{DISTRIBUTION_PATH}/installer.json",
-    ], text=True))
-    if not re.fullmatch(r"[0-9a-f]{40}", pin["revision"]) or not re.fullmatch(r"[0-9a-f]{64}", pin["sha256"]):
-        raise ValueError("The installer requires an immutable tap revision and SHA-256.")
-    url = f"https://raw.githubusercontent.com/lynnswap/homebrew-tap/{pin['revision']}/scripts/install-homebrew.sh"
-    with urllib.request.urlopen(url, timeout=30) as response:
-        engine = response.read()
-    if hashlib.sha256(engine).hexdigest() != pin["sha256"]:
-        raise ValueError("Shared installer checksum mismatch.")
-    return (f"#!/bin/sh\n# Shared installer: lynnswap/homebrew-tap@{pin['revision']}\n"
-            + "exec /bin/bash -c " + shlex.quote(engine.decode("utf-8"))
-            + ' install.sh custom-xcode-build-service "$@"\n')
-
-
-def source_package(args):
-    require(re.fullmatch(VERSION_PATTERN, args.version), "Use a vX.Y.Z release tag.")
-    source_root = getattr(args, "source_root", None) or REPOSITORY_ROOT
-    revision = output(["git", "-C", str(source_root), "rev-parse", "--verify", "--end-of-options", f"{args.revision}^{{commit}}"])
-    # Compare source entries, since GitHub controls the public archive's compression.
-    def contents(archive):
-        entries = archive.getmembers()
-        root = entries[0].name.split("/")[0]
-        return sorted((entry.name.partition("/")[2], entry.type, entry.mode & 0o111,
-                       entry.linkname, archive.extractfile(entry).read() if entry.isfile() else b"")
-                      for entry in entries if entry.name.rstrip("/") != root)
-    with tempfile.TemporaryFile() as source:
-        subprocess.run(["git", "-C", str(source_root), "archive", "--prefix=source/", revision], stdout=source, check=True)
-        source.seek(0)
-        with tarfile.open(fileobj=source) as expected, tarfile.open(args.source_archive) as downloaded:
-            require(contents(expected) == contents(downloaded), "Public source archive differs from the selected commit.")
-    empty_directory(args.output_dir)
-    archive_name = f"custom-xcode-build-service-{args.version.removeprefix('v')}.tar.gz"
-    shutil.copyfile(args.source_archive, args.output_dir / archive_name)
-    digest = hashlib.sha256(args.source_archive.read_bytes()).hexdigest()
-    template = (source_root / DISTRIBUTION_PATH / "custom-xcode-build-service.rb.in").read_text()
-    version = args.version.removeprefix("v")
-    # Homebrew's URL parser drops some prerelease suffixes. Stable versions stay
-    # inferred so updating the URL cannot leave a stale explicit version behind.
-    explicit_version = f'  version "{version}"\n' if "-" in version else ""
-    formula = (template.replace("@EXPLICIT_VERSION@\n", explicit_version)
-               .replace("@VERSION@", version).replace("@SHA256@", digest))
-    (args.output_dir / "custom-xcode-build-service.rb").write_text(formula)
-    names = [archive_name, "custom-xcode-build-service.rb"]
-    if "-" not in version:
-        (args.output_dir / "install.sh").write_text(render_installer(source_root, revision))
-        (args.output_dir / "install.sh").chmod(0o755)
-        names.append("install.sh")
-    (args.output_dir / "SHA256SUMS.txt").write_text("".join(
-        f"{hashlib.sha256((args.output_dir / name).read_bytes()).hexdigest()}  {name}\n" for name in names))
-
-
 def verify_payload(args):
     payload = args.payload.resolve()
     manifest = validate_payload(payload)
     for binary in [payload / "bin/custom-xcode-build-service", service_path(payload, manifest), payload / HOST_PLUGIN_BINARY]:
         check_binary(binary)
-    with tempfile.TemporaryDirectory(prefix="custom-service-bottle-test-") as directory:
+    with tempfile.TemporaryDirectory(prefix="custom-service-install-test-") as directory:
         temporary = Path(directory)
         smoke_build(payload, temporary, manifest, args.fixture_dir)
         smoke_swift(payload, temporary, manifest, args.disable_sandbox,
@@ -924,13 +880,7 @@ def main():
         "verify", help="Verify a release with the selected Xcode; does not install"
     )
     verification.add_argument("--release-dir", type=Path, required=True)
-    sources = commands.add_parser("source", help="Prepare a source archive and Formula for a tagged release")
-    sources.add_argument("--version", required=True)
-    sources.add_argument("--revision", default="HEAD")
-    sources.add_argument("--source-root", type=Path, help="Git checkout containing the approved source")
-    sources.add_argument("--source-archive", type=Path, required=True)
-    sources.add_argument("--output-dir", type=Path, required=True)
-    installed = commands.add_parser("verify-payload", help="Run build smoke tests with an installed Homebrew payload")
+    installed = commands.add_parser("verify-payload", help="Run build smoke tests with an installed payload")
     installed.add_argument("--payload", type=Path, required=True)
     installed.add_argument("--disable-sandbox", action="store_true")
     installed.add_argument("--skip-xcode-package-tests", action="store_true",
@@ -938,7 +888,7 @@ def main():
     installed.add_argument("--fixture-dir", type=Path, default=REPOSITORY_ROOT / "Tests/SwiftBuildTests/TestData/CommandLineTool")
     args = parser.parse_args()
     try:
-        {"build": build, "stage": stage, "package": package, "verify": verify, "source": source_package, "verify-payload": verify_payload}[
+        {"build": build, "stage": stage, "package": package, "verify": verify, "verify-payload": verify_payload}[
             args.command
         ](args)
     except (
