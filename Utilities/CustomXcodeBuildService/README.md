@@ -24,8 +24,6 @@ brew upgrade lynnswap/tap/custom-xcode-build-service
 custom-xcode-build-service reload
 ```
 
-You do not need to run `use custom` again.
-
 ## Status
 
 ```sh
