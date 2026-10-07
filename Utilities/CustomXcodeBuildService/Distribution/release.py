@@ -550,6 +550,10 @@ def package(args):
                         archive.addfile(info)
     source = args.build_dir / "source"
     template = (source / DISTRIBUTION_PATH / "custom-xcode-build-service.rb.in").read_text()
+    # Homebrew scans stable tags correctly, but prereleases can fall back to
+    # the archive's arm64 suffix, so those still need an explicit version.
+    if "-" not in manifest["version"]:
+        template = template.replace('  version "@VERSION@"\n', '')
     digest = hashlib.sha256((args.output_dir / ARCHIVE).read_bytes()).hexdigest()
     formula = (template.replace("@VERSION@", manifest["version"].removeprefix("v"))
                .replace("@SHA256@", digest))
