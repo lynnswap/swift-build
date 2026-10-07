@@ -554,7 +554,10 @@ class DistributionTests(unittest.TestCase):
             directory = self.package(version)
             formula = (directory / "custom-xcode-build-service.rb").read_text()
             self.assertIn(f'/releases/download/{version}/' + release.ARCHIVE, formula)
-            self.assertIn(f'version "{version.removeprefix("v")}"', formula)
+            if "-" in version:
+                self.assertIn(f'version "{version.removeprefix("v")}"', formula)
+            else:
+                self.assertNotIn('\n  version ', formula)
             self.assertIn(release.hashlib.sha256((directory / release.ARCHIVE).read_bytes()).hexdigest(), formula)
             self.assertNotIn('release.py', formula)
             self.assertEqual(set(path.name for path in directory.iterdir()), set(release.asset_names(version)))

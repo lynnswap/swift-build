@@ -32,6 +32,8 @@ cleanup() {
 trap cleanup EXIT
 cp "$release_dir/custom-xcode-build-service.rb" "$(brew --repository custom-xcode-build-service/verification)/Formula/custom-xcode-build-service.rb"
 brew trust --formula "$formula"
+brew style "$formula"
+brew audit --except=installed "$formula"
 # Seed Homebrew with the exact candidate archive; its Formula verifies the checksum.
 cache="$(brew --cache --build-from-source "$formula")"
 mkdir -p "$(dirname "$cache")"
