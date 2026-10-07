@@ -53,7 +53,6 @@ jobs:
     runs-on: xcode-27
     timeout-minutes: 180
     outputs:
-      xcodes: ${{ steps.xcodes.outputs.xcodes }}
       artifact_id: ${{ steps.binary.outputs.artifact-id }}
       checksums_sha256: ${{ steps.digest.outputs.checksums_sha256 }}
     env:
@@ -63,11 +62,6 @@ jobs:
         with:
           ref: ${{ inputs.revision || github.sha }}
           persist-credentials: false
-      - name: Discover Xcodes on the preview runner
-        id: xcodes
-        run: |
-          python3 Utilities/CustomXcodeBuildService/Distribution/xcode_matrix.py discover \
-            --runner xcode-27 --github-output "$GITHUB_OUTPUT"
       - name: Check distribution scripts
         run: |
           python3 -m unittest discover -s Utilities/CustomXcodeBuildService/Distribution/tests -p 'test_*.py'
@@ -97,55 +91,15 @@ jobs:
           compression-level: 0
           retention-days: 35
 
-  discover-xcodes:
-    name: Discover Xcodes on the stable runner
-    runs-on: macos-26
-    timeout-minutes: 10
-    outputs:
-      xcodes: ${{ steps.xcodes.outputs.xcodes }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          ref: ${{ inputs.revision || github.sha }}
-          persist-credentials: false
-      - name: Discover installed Xcodes
-        id: xcodes
-        run: |
-          python3 Utilities/CustomXcodeBuildService/Distribution/xcode_matrix.py discover \
-            --runner macos-26 --github-output "$GITHUB_OUTPUT"
-
-  compatibility-matrix:
-    name: Select stable Xcodes and the latest beta
-    needs: [build, discover-xcodes]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    outputs:
-      matrix: ${{ steps.select.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          ref: ${{ inputs.revision || github.sha }}
-          persist-credentials: false
-      - name: Select compatibility targets
-        id: select
-        env:
-          STABLE_RUNNER_XCODES: ${{ needs.discover-xcodes.outputs.xcodes }}
-          PREVIEW_RUNNER_XCODES: ${{ needs.build.outputs.xcodes }}
-        run: |
-          python3 Utilities/CustomXcodeBuildService/Distribution/xcode_matrix.py plan \
-            --inventories "$STABLE_RUNNER_XCODES" "$PREVIEW_RUNNER_XCODES" \
-            --github-output "$GITHUB_OUTPUT"
-
   compatibility:
-    name: IPC compatibility (Xcode ${{ matrix.version }}, ${{ matrix.build }})
-    needs: [build, compatibility-matrix]
+    name: IPC compatibility (${{ matrix.runner }})
+    needs: build
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.compatibility-matrix.outputs.matrix) }}
+      matrix:
+        runner: [macos-26, xcode-27]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
-    env:
-      DEVELOPER_DIR: ${{ matrix.developer_dir }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -159,8 +113,7 @@ jobs:
       - name: Test Xcode IPC and SwiftPM compatibility
         run: |
           sw_vers
-          xcrun xcodebuild -version
-          python3 Utilities/CustomXcodeBuildService/Distribution/release.py verify \
+          python3 Utilities/CustomXcodeBuildService/Distribution/verify_xcodes.py \
             --release-dir "$RUNNER_TEMP/custom-service-release"
 
   installation:

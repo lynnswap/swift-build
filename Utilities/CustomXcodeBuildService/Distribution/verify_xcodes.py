@@ -11,15 +11,17 @@
 ##
 ##===----------------------------------------------------------------------===##
 
-"""Discover installed Xcodes and select compatibility jobs on their host runners."""
+"""Verify the release with stable Xcodes and the latest beta installed on this host."""
 
 import argparse
-import json
+import os
 import plistlib
+import subprocess
+import sys
 from pathlib import Path
 
 
-def discover(applications, runner):
+def discover(applications):
     installations = {}
     for application in sorted(applications.glob("Xcode*.app")):
         application = application.resolve()
@@ -41,19 +43,14 @@ def discover(applications, runner):
             "build": build,
             "bundle_version": version["CFBundleVersion"],
             "beta": beta,
-            "runner": runner,
             "developer_dir": str(application / "Contents/Developer"),
         })
     return list(installations.values())
 
 
-def select(inventories):
-    installations = {}
-    for inventory in inventories:
-        for xcode in inventory:
-            installations.setdefault((xcode["version"], xcode["build"]), xcode)
-    stable = [xcode for xcode in installations.values() if not xcode["beta"]]
-    betas = [xcode for xcode in installations.values() if xcode["beta"]]
+def select(installations):
+    stable = [xcode for xcode in installations if not xcode["beta"]]
+    betas = [xcode for xcode in installations if xcode["beta"]]
 
     def version_key(xcode):
         version = tuple(int(part) for part in xcode["version"].split("."))
@@ -66,32 +63,40 @@ def select(inventories):
     if betas:
         selected.append(max(betas, key=version_key))
     if not selected:
-        raise ValueError("No installed Xcode 26 or 27 was found on the runners.")
+        raise ValueError("No installed Xcode 26 or 27 was found on this host.")
     return selected
+
+
+def verify(applications, release_dir):
+    # Hosted runner labels can span image revisions during a rollout. Discover
+    # and test on the same host instead of sharing paths between jobs.
+    selected = select(discover(applications))
+    failures = []
+    for xcode in selected:
+        label = f"Xcode {xcode['version']} ({xcode['build']})"
+        print(f"::group::IPC and SwiftPM compatibility: {label}", flush=True)
+        environment = os.environ.copy()
+        environment["DEVELOPER_DIR"] = xcode["developer_dir"]
+        try:
+            subprocess.run(
+                [sys.executable, str(Path(__file__).with_name("release.py")),
+                 "verify", "--release-dir", str(release_dir)],
+                env=environment, check=True,
+            )
+        except subprocess.CalledProcessError:
+            failures.append(label)
+        finally:
+            print("::endgroup::", flush=True)
+    if failures:
+        raise ValueError(f"Compatibility checks failed: {', '.join(failures)}")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    commands = parser.add_subparsers(dest="command", required=True)
-    discovery = commands.add_parser("discover")
-    discovery.add_argument("--runner", required=True)
-    discovery.add_argument("--github-output", type=Path)
-    planning = commands.add_parser("plan")
-    planning.add_argument("--inventories", nargs="+", required=True)
-    planning.add_argument("--github-output", type=Path)
+    parser.add_argument("--release-dir", type=Path, required=True)
     args = parser.parse_args()
     try:
-        if args.command == "discover":
-            key = "xcodes"
-            value = discover(Path("/Applications"), args.runner)
-        else:
-            key = "matrix"
-            value = {"include": select([json.loads(item) for item in args.inventories])}
-        serialized = json.dumps(value)
-        print(serialized)
-        if args.github_output:
-            with args.github_output.open("a") as stream:
-                stream.write(f"{key}={serialized}\n")
+        verify(Path("/Applications"), args.release_dir)
     except (OSError, ValueError, KeyError) as error:
         parser.exit(1, f"error: {error}\n")
 
