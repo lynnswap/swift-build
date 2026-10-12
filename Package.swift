@@ -87,8 +87,11 @@ let package = Package(
         .library(name: "SWBUtil", targets: ["SWBUtil"]),
         .library(name: "SWBProjectModel", targets: ["SWBProjectModel"]),
         .library(name: "SWBBuildService", targets: ["SWBBuildService"]),
+    ] + (isStaticBuild ? [] : [
+        // The mock CAS plugin is a test-only dynamic library. Static builds (e.g. with the
+        // Static Linux SDK) cannot link dynamic libraries against the non-PIC static C++ runtime.
         .library(name: "MockToolchainCASPlugin", type: .dynamic, targets: ["MockToolchainCASPlugin"]),
-    ],
+    ]),
     targets: [
         // Executables
         .executableTarget(
@@ -513,7 +516,7 @@ if useLocalDependencies {
 
     package.dependencies += [
         .package(url: "https://github.com/swiftlang/swift-driver.git", branch: relatedDependenciesBranch),
-        .package(url: "https://github.com/apple/swift-system.git", .upToNextMajor(from: "1.5.0")),
+        .package(url: "https://github.com/apple/swift-system.git", .upToNextMajor(from: "1.7.3")),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.0.3"),
         .package(url: "https://github.com/swiftlang/swift-tools-protocols.git", branch: relatedDependenciesBranch),
     ]
