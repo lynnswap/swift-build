@@ -2,7 +2,7 @@
 //
 // This source file is part of the Swift open source project
 //
-// Copyright (c) 2025 Apple Inc. and the Swift project authors
+// Copyright (c) 2025-2026 Apple Inc. and the Swift project authors
 // Licensed under Apache License v2.0 with Runtime Library Exception
 //
 // See http://swift.org/LICENSE.txt for license information
@@ -515,6 +515,16 @@ public final class LdLinkerSpec : GenericLinkerSpec, SpecIdentifierType, @unchec
 
         specialArgs.append(contentsOf: sparseSDKSearchPathArguments(cbc))
 
+        // With variant-aware static linking, tell LD to prefer variant-suffixed siblings
+        // (`libX_debug.a`) during library path search, falling back to the un-varianted library
+        // when no sibling exists.
+        if cbc.scope.evaluate(BuiltinMacros.ENABLE_VARIANT_AWARE_STATIC_LINKING) {
+            let variantSuffix = cbc.scope.evaluate(BuiltinMacros.EXECUTABLE_VARIANT_SUFFIX)
+            if !variantSuffix.isEmpty {
+                specialArgs += ["-Xlinker", "-image_suffix", "-Xlinker", variantSuffix]
+            }
+        }
+
         // Define the linker file list.
         let fileListPath = cbc.scope.evaluate(BuiltinMacros.__INPUT_FILE_LIST_PATH__, lookup: linkerDriverLookup)
         if !fileListPath.isEmpty {
@@ -568,7 +578,7 @@ public final class LdLinkerSpec : GenericLinkerSpec, SpecIdentifierType, @unchec
         // Add flags to emit dependency info.
         let dependencyInfo = await self.dependencyData(cbc: cbc, delegate: delegate, outputs: &outputs)
 
-        // FIXME: Honor LD_QUITE_LINKER_ARGUMENTS_FOR_COMPILER_DRIVER == NO ?
+        // FIXME: Honor LD_QUOTE_LINKER_ARGUMENTS_FOR_COMPILER_DRIVER == NO ?
 
         let optionContext = await discoveredCommandLineToolSpecInfo(cbc.producer, cbc.scope, delegate)
 
@@ -1768,10 +1778,6 @@ public final class LibtoolLinkerSpec : GenericLinkerSpec, SpecIdentifierType, @u
 
     override public var payloadType: (any TaskPayload.Type)? { return LibtoolLinkerTaskPayload.self }
 
-    public func libtoolToolPath(_ cbc: CommandBuildContext) -> Path {
-        return libtoolToolPath(cbc.producer, cbc.scope)
-    }
-
     public func libtoolToolPath(_ producer: any CommandProducer, _ scope: MacroEvaluationScope) -> Path {
         let lookupPath = scope.evaluate(BuiltinMacros.LIBTOOL).nilIfEmpty ?? Path("libtool")
         return resolveExecutablePath(producer, lookupPath)
@@ -1813,7 +1819,16 @@ public final class LibtoolLinkerSpec : GenericLinkerSpec, SpecIdentifierType, @u
 
     override public func discoveredCommandLineToolSpecInfo(_ producer: any CommandProducer, _ scope: MacroEvaluationScope, _ delegate: any CoreClientTargetDiagnosticProducingDelegate) async -> (any DiscoveredCommandLineToolSpecInfo)? {
         do {
-            return try await Self.discoveredCommandLineToolSpecInfo(producer, delegate, toolPath: libtoolToolPath(producer, scope))
+            let libtoolPath: Path
+            let driver = scope.evaluate(BuiltinMacros.LIBTOOL_DRIVER)
+            if driver == "libtool" || driver.isEmpty {
+                libtoolPath = libtoolToolPath(producer, scope)
+            }
+            else {
+                // If we're invoking libtool via a driver rather than directly, then we want to look up the path to an actual libtool binary to get its information.
+                libtoolPath = resolveExecutablePath(producer, Path("libtool"))
+            }
+            return try await Self.discoveredCommandLineToolSpecInfo(producer, delegate, toolPath: libtoolPath)
         } catch {
             delegate.error(error)
             return nil
@@ -1890,7 +1905,7 @@ public final class LibtoolLinkerSpec : GenericLinkerSpec, SpecIdentifierType, @u
         var dependencyInfo: DependencyDataStyle?
         let dependencyInfoFile = cbc.scope.evaluate(BuiltinMacros.LIBTOOL_DEPENDENCY_INFO_FILE)
         if !dependencyInfoFile.isEmpty {
-            specialArgs += ["-dependency_info", dependencyInfoFile.str]
+            specialArgs += ["-Xstatic-lib-tool", "-dependency_info", "-Xstatic-lib-tool", dependencyInfoFile.str]
             dependencyInfo = .dependencyInfo(dependencyInfoFile)
             outputs.append(delegate.createNode(dependencyInfoFile))
         }
@@ -1898,16 +1913,27 @@ public final class LibtoolLinkerSpec : GenericLinkerSpec, SpecIdentifierType, @u
         let optionContext = await discoveredCommandLineToolSpecInfo(cbc.producer, cbc.scope, delegate)
 
         // Generate the command line.
-        let commandLine = await commandLineFromTemplate(cbc, delegate, optionContext: optionContext, specialArgs: specialArgs).map(\.asString)
+        let generatedCommandLine = await commandLineFromTemplate(cbc, delegate, optionContext: optionContext, specialArgs: specialArgs).map(\.asString)
+
+        // Remove argument quoting (-Xstatic-lib-tool) if we're not using a compiler to drive libtool.
+        let invokingLibtoolDirectly = (cbc.scope.evaluate(BuiltinMacros.LIBTOOL_DRIVER) == "libtool")
+        let commandLine: [String]
+        if invokingLibtoolDirectly {
+            commandLine = generatedCommandLine.compactMap({ $0 == "-Xstatic-lib-tool" ? nil : $0 })
+        }
+        else {
+            commandLine = generatedCommandLine
+        }
 
         // Compute the inputs and outputs.
         var inputs = inputPaths.map{ delegate.createNode($0) }
         // Add inputs for the (un)exports files, if we generated options for them.
-        if let idx = commandLine.firstIndex(of: "-exported_symbols_list"), idx+1 < commandLine.count {
-            inputs.append(delegate.createNode(Path(commandLine[idx+1]).normalize()))
+        let argIncrement = (invokingLibtoolDirectly ? 1 : 2)
+        if let idx = commandLine.firstIndex(of: "-exported_symbols_list"), idx+argIncrement < commandLine.count {
+            inputs.append(delegate.createNode(Path(commandLine[idx+argIncrement]).normalize()))
         }
-        if let idx = commandLine.firstIndex(of: "-unexported_symbols_list"), idx+1 < commandLine.count {
-            inputs.append(delegate.createNode(Path(commandLine[idx+1]).normalize()))
+        if let idx = commandLine.firstIndex(of: "-unexported_symbols_list"), idx+argIncrement < commandLine.count {
+            inputs.append(delegate.createNode(Path(commandLine[idx+argIncrement]).normalize()))
         }
 
         var payload: LibtoolLinkerTaskPayload? = nil
@@ -1986,34 +2012,9 @@ public final class LibtoolLinkerSpec : GenericLinkerSpec, SpecIdentifierType, @u
 public func discoveredLinkerToolsInfo(_ producer: any CommandProducer, _ delegate: any CoreClientTargetDiagnosticProducingDelegate, at toolPath: Path) async -> (any DiscoveredCommandLineToolSpecInfo)? {
     do {
         do {
+            // -version_details is an Apple ld specific option providing parseable output; try that first
             let commandLine = [toolPath.str, "-version_details"]
             return try await producer.discoveredCommandLineToolSpecInfo(delegate, nil, commandLine, { executionResult in
-                let gnuLD = [
-                    #/GNU ld version (?<version>[\d.]+)-.*/#,
-                    #/GNU ld \(GNU Binutils.*\) (?<version>[\d.]+)/#,
-                ]
-                if let match = try gnuLD.compactMap({ try $0.firstMatch(in: String(decoding: executionResult.stdout, as: UTF8.self)) }).first {
-                    return DiscoveredLdLinkerToolSpecInfo(linker: .gnuld, toolPath: toolPath, toolVersion: try Version(String(match.output.version)), architectures: Set())
-                }
-
-                let goLD = [
-                    #/GNU gold version (?<version>[\d.]+)-.*/#,
-                    #/GNU gold \(GNU Binutils.*\) (?<version>[\d.]+)/#, // Ubuntu "GNU gold (GNU Binutils for Ubuntu 2.38) 1.16", Debian "GNU gold (GNU Binutils for Debian 2.40) 1.16"
-                    #/GNU gold \(version .*\) (?<version>[\d.]+)/#,     // Fedora "GNU gold (version 2.40-14.fc39) 1.16", RHEL "GNU gold (version 2.35.2-54.el9) 1.16", Amazon "GNU gold (version 2.29.1-31.amzn2.0.1) 1.14"
-                ]
-
-                if let match = try goLD.compactMap({ try $0.firstMatch(in: String(decoding: executionResult.stdout, as: UTF8.self)) }).first {
-                    return DiscoveredLdLinkerToolSpecInfo(linker: .gold, toolPath: toolPath, toolVersion: try Version(String(match.output.version)), architectures: Set())
-                }
-
-                // link.exe has no option to simply dump the version, running, the program will no arguments or an invalid one will dump a header that contains the version.
-                let linkExe = [
-                    #/Microsoft \(R\) Incremental Linker Version (?<version>[\d.]+)/#
-                ]
-                if let match = try linkExe.compactMap({ try $0.firstMatch(in: String(decoding: executionResult.stdout, as: UTF8.self)) }).first {
-                    return DiscoveredLdLinkerToolSpecInfo(linker: .linkExe, toolPath: toolPath, toolVersion: try Version(String(match.output.version)), architectures: Set())
-                }
-
                 struct LDVersionDetails: Decodable {
                     let version: Version
                     let architectures: Set<String>
@@ -2031,6 +2032,32 @@ public func discoveredLinkerToolsInfo(_ producer: any CommandProducer, _ delegat
         } catch let e as CommandLineOutputJSONParsingError {
             let vCommandLine = [toolPath.str, "-v"]
             return try await producer.discoveredCommandLineToolSpecInfo(delegate, nil, vCommandLine, { executionResult in
+                let gnuLD = [
+                    #/GNU ld version (?<version>[\d.]+)-.*/#,
+                    #/GNU ld \(GNU Binutils.*\) (?<version>[\d.]+)/#,
+                ]
+                if let match = try gnuLD.compactMap({ try $0.firstMatch(in: String(decoding: executionResult.stdout, as: UTF8.self)) }).first {
+                    return DiscoveredLdLinkerToolSpecInfo(linker: .gnuld, toolPath: toolPath, toolVersion: try Version(String(match.output.version)), architectures: Set())
+                }
+
+                let goLD = [
+                    #/GNU gold version (?<version>[\d.]+)-.*/#,
+                    #/GNU gold \(GNU Binutils.*\) (?<version>[\d.]+)/#,  // Ubuntu "GNU gold (GNU Binutils for Ubuntu 2.38) 1.16", Debian "GNU gold (GNU Binutils for Debian 2.40) 1.16"
+                    #/GNU gold \(version .*\) (?<version>[\d.]+)/#,  // Fedora "GNU gold (version 2.40-14.fc39) 1.16", RHEL "GNU gold (version 2.35.2-54.el9) 1.16", Amazon "GNU gold (version 2.29.1-31.amzn2.0.1) 1.14"
+                ]
+
+                if let match = try goLD.compactMap({ try $0.firstMatch(in: String(decoding: executionResult.stdout, as: UTF8.self)) }).first {
+                    return DiscoveredLdLinkerToolSpecInfo(linker: .gold, toolPath: toolPath, toolVersion: try Version(String(match.output.version)), architectures: Set())
+                }
+
+                // link.exe has no option to simply dump the version, running, the program will no arguments or an invalid one will dump a header that contains the version.
+                let linkExe = [
+                    #/Microsoft \(R\) Incremental Linker Version (?<version>[\d.]+)/#
+                ]
+                if let match = try linkExe.compactMap({ try $0.firstMatch(in: String(decoding: executionResult.stdout, as: UTF8.self)) }).first {
+                    return DiscoveredLdLinkerToolSpecInfo(linker: .linkExe, toolPath: toolPath, toolVersion: try Version(String(match.output.version)), architectures: Set())
+                }
+
                 let lld = [
                     #/LLD (?<version>[\d.]+).*/#,
                 ]

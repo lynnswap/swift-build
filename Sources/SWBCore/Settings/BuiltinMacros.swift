@@ -2,7 +2,7 @@
 //
 // This source file is part of the Swift open source project
 //
-// Copyright (c) 2025 Apple Inc. and the Swift project authors
+// Copyright (c) 2025-2026 Apple Inc. and the Swift project authors
 // Licensed under Apache License v2.0 with Runtime Library Exception
 //
 // See http://swift.org/LICENSE.txt for license information
@@ -161,6 +161,7 @@ public final class BuiltinMacros {
     public static let SWIFT_MODULE_ONLY_ARCHS = BuiltinMacros.declareStringListMacro("SWIFT_MODULE_ONLY_ARCHS")
     public static let SWIFT_MODULE_ONLY_ARCHS_ORIGINAL = BuiltinMacros.declareStringListMacro("SWIFT_MODULE_ONLY_ARCHS_ORIGINAL")
     public static let __SWIFT_MODULE_ONLY_ARCHS__ = BuiltinMacros.declareStringListMacro("__SWIFT_MODULE_ONLY_ARCHS__")
+    public static let SWIFT_DISABLE_MODULE_ONLY_ARCHS = BuiltinMacros.declareBooleanMacro("SWIFT_DISABLE_MODULE_ONLY_ARCHS")
     public static let SWIFT_MODULE_ONLY_TARGET_TRIPLES = BuiltinMacros.declareStringListMacro("SWIFT_MODULE_ONLY_TARGET_TRIPLES")
     public static let SWIFT_MODULE_ONLY_TARGET_TRIPLES_ORIGINAL = BuiltinMacros.declareStringListMacro("SWIFT_MODULE_ONLY_TARGET_TRIPLES_ORIGINAL")
 
@@ -714,6 +715,8 @@ public final class BuiltinMacros {
     public static let ENABLE_HARDWARE_CHECKED_POINTER_ARITHMETIC_SLICE = BuiltinMacros.declareBooleanMacro("ENABLE_HARDWARE_CHECKED_POINTER_ARITHMETIC_SLICE")
     public static let DISABLE_TASK_SANDBOXING = BuiltinMacros.declareBooleanMacro("DISABLE_TASK_SANDBOXING")
     public static let ENABLE_USER_SCRIPT_SANDBOXING = BuiltinMacros.declareBooleanMacro("ENABLE_USER_SCRIPT_SANDBOXING")
+    public static let ENABLE_VARIANT_AWARE_STATIC_LINKING = BuiltinMacros.declareBooleanMacro("ENABLE_VARIANT_AWARE_STATIC_LINKING")
+    public static let DISABLE_VARIANT_AWARE_STATIC_LINKING_FALLBACK_WARNING = BuiltinMacros.declareBooleanMacro("DISABLE_VARIANT_AWARE_STATIC_LINKING_FALLBACK_WARNING")
     public static let ENABLE_XOJIT_PREVIEWS = BuiltinMacros.declareBooleanMacro("ENABLE_XOJIT_PREVIEWS")
     public static let EX_ENABLE_EXTENSION_POINT_GENERATION = BuiltinMacros.declareBooleanMacro("EX_ENABLE_EXTENSION_POINT_GENERATION")
     public static let EX_DISABLE_APPEXTENSION_ATTRIBUTES_GENERATION = BuiltinMacros.declareBooleanMacro("EX_DISABLE_APPEXTENSION_ATTRIBUTES_GENERATION")
@@ -888,6 +891,7 @@ public final class BuiltinMacros {
     public static let LIBRARY_SEARCH_PATHS = BuiltinMacros.declarePathListMacro("LIBRARY_SEARCH_PATHS")
     public static let LIBTOOL = BuiltinMacros.declarePathMacro("LIBTOOL")
     public static let LIBTOOL_DEPENDENCY_INFO_FILE = BuiltinMacros.declarePathMacro("LIBTOOL_DEPENDENCY_INFO_FILE")
+    public static let LIBTOOL_DRIVER = BuiltinMacros.declareStringMacro("LIBTOOL_DRIVER")
     public static let LIBTOOL_EXTRACT_ARCHIVE_INPUTS = BuiltinMacros.declareBooleanMacro("LIBTOOL_EXTRACT_ARCHIVE_INPUTS")
     public static let LIBTOOL_USE_RESPONSE_FILE = BuiltinMacros.declareBooleanMacro("LIBTOOL_USE_RESPONSE_FILE")
     public static let LINKER = BuiltinMacros.declareStringMacro("LINKER")
@@ -1873,6 +1877,8 @@ public final class BuiltinMacros {
         DISABLE_TASK_SANDBOXING,
         ENABLE_USER_SCRIPT_SANDBOXING,
         ENFORCE_VALID_ARCHS,
+        ENABLE_VARIANT_AWARE_STATIC_LINKING,
+        DISABLE_VARIANT_AWARE_STATIC_LINKING_FALLBACK_WARNING,
         ENTITLEMENTS_ALLOWED,
         ENTITLEMENTS_DONT_REMOVE_GET_TASK_ALLOW,
         ENTITLEMENTS_DESTINATION,
@@ -2081,6 +2087,7 @@ public final class BuiltinMacros {
         LIBRARY_SEARCH_PATHS,
         LIBTOOL,
         LIBTOOL_DEPENDENCY_INFO_FILE,
+        LIBTOOL_DRIVER,
         LIBTOOL_EXTRACT_ARCHIVE_INPUTS,
         LIBTOOL_USE_RESPONSE_FILE,
         LINKER,
@@ -2439,6 +2446,7 @@ public final class BuiltinMacros {
         SWIFT_WARNINGS_AS_WARNINGS_GROUPS,
         SWIFT_WARNINGS_AS_ERRORS_GROUPS,
         SWIFT_MODULE_NAME,
+        SWIFT_DISABLE_MODULE_ONLY_ARCHS,
         SWIFT_MODULE_ONLY_ARCHS,
         SWIFT_MODULE_ONLY_TARGET_TRIPLES,
         SWIFT_MODULE_ONLY_MACOSX_DEPLOYMENT_TARGET,

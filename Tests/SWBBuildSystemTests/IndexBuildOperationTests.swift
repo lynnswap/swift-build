@@ -127,15 +127,24 @@ fileprivate struct IndexBuildOperationTests: CoreBasedTests {
 
             let parameters = BuildParameters(action: .indexBuild, configuration: "Debug", arena: arenaInfo(from: tmpDirPath.join("build")))
             let buildTargets = tester.workspace.allTargets.map { BuildRequest.BuildTargetInfo(parameters: parameters, target: $0) }
-            let request = BuildRequest(parameters: parameters, buildTargets: buildTargets, continueBuildingAfterErrors: true, useParallelTargets: true, useImplicitDependencies: false, useDryRun: false, buildCommand: .prepareForIndexing(buildOnlyTheseTargets: nil, enableIndexBuildArena: true))
+            // Prepare only the leaf AppTarget, as the IDE does, so that just its prep closure runs.
+            let appTarget = try #require(tester.workspace.allTargets.first { $0.name == "AppTarget" })
+            let request = BuildRequest(parameters: parameters, buildTargets: buildTargets, continueBuildingAfterErrors: true, useParallelTargets: true, useImplicitDependencies: false, useDryRun: false, buildCommand: .prepareForIndexing(buildOnlyTheseTargets: [appTarget], enableIndexBuildArena: true))
 
             try await UserDefaults.withEnvironment(["EnableSwiftExplicitModulesInIndexBuild": "YES"]) {
-                // Prep with explicit modules on, then grab AppTarget's compilation-requirements task.
+                // The leaf only prepares dependency modules; indexing still uses its planned compilation requirements.
                 var compilationRequirementsTask: (any ExecutableTask)?
+                var frameworkCompilationRequirementsTask: (any ExecutableTask)?
                 try await tester.checkBuild(parameters: parameters, runDestination: .macOS, buildRequest: request, persistent: true) { results in
                     results.checkNoErrors()
-                    results.checkTask(.matchTargetName("AppTarget"), .matchRuleItem("SwiftDriver Compilation Requirements")) { task in
-                        compilationRequirementsTask = task
+                    results.checkTaskExists(.matchTargetName("AppTarget"), .matchRuleItem("SwiftDriver Explicit Modules For Index"))
+                    results.checkNoTask(.matchTargetName("AppTarget"), .matchRuleItem("SwiftDriver Compilation Requirements"))
+                    let compilationRequirementsTasks = results.buildDescription.tasks.filter {
+                        $0.forTarget?.target.name == "AppTarget" && $0.ruleInfo.first == "SwiftDriver Compilation Requirements"
+                    }
+                    compilationRequirementsTask = try #require(compilationRequirementsTasks.only)
+                    results.checkTask(.matchTargetName("FwkTarget"), .matchRuleItem("SwiftDriver Compilation Requirements")) { task in
+                        frameworkCompilationRequirementsTask = task
                     }
                 }
 
@@ -143,7 +152,11 @@ fileprivate struct IndexBuildOperationTests: CoreBasedTests {
                 let sidecars = try tester.fs.traverse(tmpDirPath) { path -> Path? in
                     path.basename.hasPrefix("AppTarget-") && path.basename.hasSuffix(".index-explicit-modules.json") ? path : nil
                 }
-                let sidecarPath = try #require(sidecars.first, "expected AppTarget's explicit-modules index sidecar to be written during prep")
+                let sidecarPath = try #require(sidecars.only, "expected the leaf AppTarget's explicit-modules index sidecar to be written during prep")
+                let appModules = try tester.fs.traverse(tmpDirPath) { path -> Path? in
+                    path.basename == "AppTarget.swiftmodule" ? path : nil
+                }
+                #expect(appModules.isEmpty, "prep should not emit the leaf AppTarget's own module")
                 let info = try JSONDecoder().decode(IndexExplicitModuleInfo.self, from: Data(tester.fs.read(sidecarPath).bytes))
                 #expect(info.resolvedArguments.contains("-emit-module"))
                 #expect(!info.resolvedArguments.contains("-emit-pch"))
@@ -165,6 +178,9 @@ fileprivate struct IndexBuildOperationTests: CoreBasedTests {
                 let swiftSpec = try core.specRegistry.getSpec(ofType: SwiftCompilerSpec.self)
                 let appSource = testWorkspace.sourceRoot.join("aProject/app.swift")
                 let task = try #require(compilationRequirementsTask)
+                let driverPayload = try #require((task.payload as? SwiftTaskPayload)?.driverPayload)
+                #expect(info.driverCommandLine == driverPayload.commandLine)
+                #expect(info.compilerVersion == driverPayload.compilerVersion)
                 let indexingInfo = swiftSpec.generateIndexingInfo(for: task, input: TaskGenerateIndexingInfoInput(requestedSourceFile: appSource, outputPathOnly: false, enableIndexBuildArena: true)).only?.indexingInfo as? SwiftSourceFileIndexingInfo
                 let grafted = try #require(indexingInfo?.compilerArguments)
 
@@ -176,6 +192,15 @@ fileprivate struct IndexBuildOperationTests: CoreBasedTests {
                 #expect(grafted[safe: graftClangTarget - 1] == "-Xfrontend")
                 #expect(grafted[safe: graftClangTarget + 1] == "-Xfrontend")
                 #expect(grafted[safe: graftClangTarget + 2] == clangTarget)
+
+                let frameworkTask = try #require(frameworkCompilationRequirementsTask)
+                let frameworkPayload = try #require((frameworkTask.payload as? SwiftTaskPayload)?.driverPayload)
+                let frameworkSidecarPath = try #require(frameworkPayload.indexExplicitModuleInfoPath)
+                let frameworkInfo = try JSONDecoder().decode(IndexExplicitModuleInfo.self, from: Data(tester.fs.read(frameworkSidecarPath).bytes))
+                #expect(frameworkInfo.driverCommandLine == frameworkPayload.commandLine)
+                #expect(frameworkInfo.compilerVersion == frameworkPayload.compilerVersion)
+                let frameworkIndexingInfo = swiftSpec.generateIndexingInfo(for: frameworkTask, input: TaskGenerateIndexingInfoInput(requestedSourceFile: testWorkspace.sourceRoot.join("aProject/fwk.swift"), outputPathOnly: false, enableIndexBuildArena: true)).only?.indexingInfo as? SwiftSourceFileIndexingInfo
+                #expect(frameworkIndexingInfo?.compilerArguments?.contains("-explicit-swift-module-map-file") == true)
 
                 if !bridgingHeader && !longCommandLine {
                     try await tester.fs.writeFileContents(appSource) { stream in
@@ -204,11 +229,15 @@ fileprivate struct IndexBuildOperationTests: CoreBasedTests {
                 }
                 try await tester.checkBuild(parameters: changedParameters, runDestination: .macOS, buildRequest: changedRequest, persistent: true) { results in
                     results.checkNoErrors()
-                    try results.checkTask(.matchTargetName("AppTarget"), .matchRuleItem("SwiftDriver Compilation Requirements")) { changedTask in
-                        let changedInfo = swiftSpec.generateIndexingInfo(for: changedTask, input: TaskGenerateIndexingInfoInput(requestedSourceFile: appSource, outputPathOnly: false, enableIndexBuildArena: true)).only?.indexingInfo as? SwiftSourceFileIndexingInfo
-                        let arguments = try #require(changedInfo?.compilerArguments)
-                        #expect(arguments.contains("-explicit-swift-module-map-file"))
+                    results.checkTaskExists(.matchTargetName("AppTarget"), .matchRuleItem("SwiftDriver Explicit Modules For Index"))
+                    results.checkNoTask(.matchTargetName("AppTarget"), .matchRuleItem("SwiftDriver Compilation Requirements"))
+                    let changedTasks = results.buildDescription.tasks.filter {
+                        $0.forTarget?.target.name == "AppTarget" && $0.ruleInfo.first == "SwiftDriver Compilation Requirements"
                     }
+                    let changedTask = try #require(changedTasks.only)
+                    let changedInfo = swiftSpec.generateIndexingInfo(for: changedTask, input: TaskGenerateIndexingInfoInput(requestedSourceFile: appSource, outputPathOnly: false, enableIndexBuildArena: true)).only?.indexingInfo as? SwiftSourceFileIndexingInfo
+                    let arguments = try #require(changedInfo?.compilerArguments)
+                    #expect(arguments.contains("-explicit-swift-module-map-file"))
                 }
 
                 let failingParameters = changedParameters.mergingOverrides(["OTHER_SWIFT_FLAGS": "-Xfrontend -intentional-index-preparation-failure"])

@@ -643,14 +643,39 @@ fileprivate struct IndexBuildTaskConstructionTests: CoreBasedTests {
         try await UserDefaults.withEnvironment(["EnableSwiftExplicitModulesInIndexBuild": enabled ? "YES" : "NO"]) {
             let tester = try await TaskConstructionTester(getCore(), project)
             try await tester.checkIndexBuild() { results in
+                // With explicit modules on, preparing the leaf AppTarget produces its explicit-modules sidecar (via a task
+                // that builds only its explicit module dependencies), but not its own module content.
+                results.checkTask(.matchTargetName("AppTarget"), .matchRuleType(ProductPlan.preparedForIndexPreCompilationRuleName)) { preCompMarker in
+                    if enabled {
+                        results.checkTaskFollows(preCompMarker, .matchTargetName("AppTarget"), .matchRuleItem("SwiftDriver Explicit Modules For Index"))
+                    } else {
+                        results.checkNoTask(.matchTargetName("AppTarget"), .matchRuleItem("SwiftDriver Explicit Modules For Index"))
+                    }
+                    results.checkTaskDoesNotFollow(preCompMarker, .matchTargetName("AppTarget"), .matchRuleType(ProductPlan.preparedForIndexModuleContentRuleName))
+                    results.checkTaskDoesNotFollow(preCompMarker, .matchTargetName("AppTarget"), .matchRuleItem("SwiftDriver Compilation Requirements"))
+                }
+                if enabled {
+                    results.checkTask(.matchTargetName("AppTarget"), .matchRuleItem("SwiftDriver Explicit Modules For Index")) { task in
+                        let output = task.outputs.only?.path
+                        #expect(output?.basename.hasPrefix("AppTarget-") == true && output?.basename.hasSuffix(".index-explicit-modules.json") == true)
+                        #expect(output?.str.contains("AppTarget.build/Objects-normal/") == true, "sidecar should live in the per-target object dir")
+                    }
+                }
                 try results.checkTask(.matchTargetName("AppTarget"), .matchRuleItem("SwiftDriver Compilation Requirements")) { task in
                     // Explicit modules should compose with the prepare-for-index mode (still skips function bodies).
                     let skipFlag = swiftFeatures.has(.experimentalSkipAllFunctionBodies) ? "-experimental-skip-all-function-bodies" : "-experimental-skip-non-inlinable-function-bodies"
                     task.checkCommandLineContains(["-Xfrontend", skipFlag])
                     if enabled {
                         task.checkCommandLineContains(["-explicit-module-build"])
+                        if LibSwiftDriver.supportsDriverFlag(spelled: "-incremental-dependency-scan-cache-path") {
+                            task.checkCommandLineContains(["-incremental-dependency-scan"])
+                            task.checkCommandLineContains(["-incremental-dependency-scan-cache-path"])
+                            task.checkOutputs(contain: [.namePattern(.suffix(".swiftmoduledeps"))])
+                        }
                     } else {
                         task.checkCommandLineDoesNotContain("-explicit-module-build")
+                        task.checkCommandLineDoesNotContain("-incremental-dependency-scan")
+                        task.checkCommandLineDoesNotContain("-incremental-dependency-scan-cache-path")
                     }
 
                     let payload = try #require(task.execTask.payload as? SwiftTaskPayload)
@@ -670,6 +695,11 @@ fileprivate struct IndexBuildTaskConstructionTests: CoreBasedTests {
                     #expect(!arguments.contains("-disable-implicit-swift-modules"))
                     #expect(arguments.contains("-warn-long-function-bodies"))
                     #expect(arguments.contains("100"))
+                    #expect(!arguments.contains("-incremental-dependency-scan-cache-path"))
+                    if let cacheFlagIndex = driverPayload.commandLine.firstIndex(of: "-incremental-dependency-scan-cache-path") {
+                        let cachePath = try #require(driverPayload.commandLine[safe: cacheFlagIndex + 1])
+                        #expect(!arguments.contains(cachePath))
+                    }
                 }
                 results.checkNoDiagnostics()
             }
@@ -711,12 +741,19 @@ fileprivate struct IndexBuildTaskConstructionTests: CoreBasedTests {
                 for targetName in ["First", "Second"] {
                     for platform in ["iphoneos", "iphonesimulator"] {
                         try results.checkTarget(targetName, platformDiscriminator: platform) { target in
-                            try results.checkTask(.matchTarget(target), .matchRuleItem("SwiftDriver Compilation Requirements")) { task in
+                            let path = try results.checkTask(.matchTarget(target), .matchRuleItem("SwiftDriver Compilation Requirements")) { task in
                                 let payload = try #require((task.execTask.payload as? SwiftTaskPayload)?.driverPayload)
                                 #expect(payload.moduleName == "SharedModule")
                                 #expect(payload.slice == "arm64")
-                                paths.insert(try #require(payload.indexExplicitModuleInfoPath))
+                                let path = try #require(payload.indexExplicitModuleInfoPath)
+                                paths.insert(path)
                                 moduleDirectories.insert(payload.explicitModulesTempDirPath)
+                                return path
+                            }
+                            try results.checkTask(.matchTarget(target), .matchRuleItem("SwiftDriver Explicit Modules For Index")) { task in
+                                let payload = try #require((task.execTask.payload as? SwiftTaskPayload)?.driverPayload)
+                                #expect(payload.indexExplicitModuleInfoPath == path)
+                                #expect(task.outputs.only?.path == path)
                             }
                         }
                     }

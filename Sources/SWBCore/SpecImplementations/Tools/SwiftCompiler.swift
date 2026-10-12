@@ -187,6 +187,7 @@ public struct SwiftSourceFileIndexingInfo: SourceFileIndexingInfo {
         "-use-frontend-parseable-output",
         "-emit-digester-baseline"]
     private static let newDriverArgs: Set<ByteString> = [
+        "-incremental-dependency-scan-cache-path",
         "-emit-module-serialize-diagnostics-path",
         "-dependency-scan-serialize-diagnostics-path",
         "-emit-module-dependencies-path",
@@ -495,6 +496,8 @@ extension SwiftDriverPayload {
     /// (`generateIndexingInfo`), so both agree on the path without any additional plumbing.
     /// Keep it in the target's object directory because the explicit module cache is shared across build contexts.
     ///
+    /// Lives in the per-target temp dir, since the explicit modules dir is shared by all configured targets.
+    ///
     /// `nil` when explicit modules aren't enabled.
     public var indexExplicitModuleInfoPath: Path? {
         guard explicitModulesEnabled else { return nil }
@@ -707,7 +710,7 @@ public struct SwiftMacroImplementationDescriptor: Hashable, Comparable, Sendable
 
     // The flag passed to the compiler to load the macro implementation.
     public var compilerFlags: [String] {
-        ["-Xfrontend", "-load-plugin-executable", "-Xfrontend", value]
+        ["-load-plugin-executable", value]
     }
 
     public init(declaringModuleNames: [String], path: Path) {
@@ -1466,6 +1469,19 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
 
             let useIntegratedDriver = integratedDriverEnabled(scope: cbc.scope)
             let explicitModuleBuildEnabled = await swiftExplicitModuleBuildEnabled(cbc.producer, cbc.scope, delegate)
+
+            // On the index prepare build, enable incremental dependency scanning with a
+            // build-system-owned cache location (declared as an output so it's tracked and cleaned).
+            // The cache-path flag is newer, so supporting it implies -incremental-dependency-scan.
+            if case .prepareForIndex = compilationMode,
+               explicitModuleBuildEnabled,
+               LibSwiftDriver.supportsDriverFlag(spelled: "-incremental-dependency-scan-cache-path") {
+                args.append("-incremental-dependency-scan")
+                let scanCachePath = objectFileDir.join("\(moduleName).swiftmoduledeps")
+                args.append(contentsOf: ["-incremental-dependency-scan-cache-path", scanCachePath.str])
+                moduleOutputPaths.append(scanCachePath)
+            }
+
             let isCachingEnabled = await swiftCachingEnabled(cbc, delegate, moduleName, useIntegratedDriver, explicitModuleBuildEnabled, args.contains("-disable-bridging-pch"))
             if await cbc.producer.shouldUseSDKStatCache() && toolSpecInfo.toolFeatures.has(.vfsstatcache) && !isCachingEnabled {
                 let cachePath = Path(cbc.scope.evaluate(BuiltinMacros.SDK_STAT_CACHE_PATH))
@@ -2030,9 +2046,12 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
             // 1. The platform must require it
             // 2. We must be compiling with debug info
             // 3. We must be emitting a module separately
+            // 4. Driver must not already record the module via -debug-module-path
+            let debugInfoRecordsModulePath = explicitModuleBuildEnabled &&
+                toolSpecInfo.hasFeature(DiscoveredSwiftCompilerToolSpecInfo.FeatureFlag.debugInfoExplicitDependency.rawValue)
             if cbc.scope.evaluate(BuiltinMacros.PLATFORM_REQUIRES_SWIFT_MODULEWRAP) &&
                 cbc.scope.evaluate(BuiltinMacros.GCC_GENERATE_DEBUGGING_SYMBOLS) &&
-                emittingModuleSeparately {
+                emittingModuleSeparately && !debugInfoRecordsModulePath {
                 let moduleWrapOutput = Path(moduleFilePath.withoutSuffix + ".o")
                 // The modulewrap task depends on the module, but its outputs are linking requirements,
                 // not downstream compilation requirements track it as an extra output.
@@ -2141,6 +2160,12 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
 
                 // Compilation Requirements
                 delegate.createTask(type: self, dependencyData: dependencyData, payload: payload, ruleInfo: ruleInfo("SwiftDriver Compilation Requirements", targetName), additionalSignatureData: additionalSignatureData, commandLine: ["builtin-Swift-Compilation-Requirements", "--"] + args, environment: environmentBindings, workingDirectory: compilerWorkingDirectory(cbc), inputs: allInputsNodes, outputs: compilationRequirementOutputs, action: delegate.taskActionCreationDelegate.createSwiftCompilationRequirementTaskAction(), execDescription: archSpecificExecutionDescription(cbc.scope.namespace.parseString("Unblock downstream dependents of $PRODUCT_NAME"), cbc, delegate), preparesForIndexing: true, enableSandboxing: enableSandboxing, additionalTaskOrderingOptions: [.compilation, .compilationRequirement, .linkingRequirement, .blockedByTargetHeaders, .compilationForIndexableSourceFile], usesExecutionInputs: true, showInLog: true)
+
+                // In the index arena, preparing this target needs its explicit-modules sidecar and the dependency modules
+                // it references, but not its own module; this task runs planning plus the explicit dependency jobs only.
+                if case .prepareForIndex = compilationMode, SWBFeatureFlag.enableSwiftExplicitModulesInIndexBuild.value, let sidecarPath = payload.driverPayload?.indexExplicitModuleInfoPath {
+                    delegate.createTask(type: self, payload: payload, ruleInfo: ruleInfo("SwiftDriver Explicit Modules For Index", targetName), additionalSignatureData: additionalSignatureData, commandLine: ["builtin-SwiftDriver-Explicit-Modules", "--"] + args, environment: environmentBindings, workingDirectory: compilerWorkingDirectory(cbc), inputs: allInputsNodes, outputs: [delegate.createNode(sidecarPath)], action: delegate.taskActionCreationDelegate.createSwiftExplicitModulesTaskAction(), execDescription: archSpecificExecutionDescription(cbc.scope.namespace.parseString("Build explicit modules for indexing $PRODUCT_NAME"), cbc, delegate), preparesForIndexing: true, enableSandboxing: enableSandboxing, additionalTaskOrderingOptions: [.blockedByTargetHeaders, .explicitModulesForIndex], usesExecutionInputs: true, showInLog: true)
+                }
 
                 if case .compile = compilationMode {
                     // Unblocking compilation

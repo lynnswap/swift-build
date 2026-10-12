@@ -264,6 +264,30 @@ open class SwiftDriverJobSchedulingTaskAction: TaskAction {
         return .succeeded
     }
 
+    /// Records the indexing inputs after the scheduler has successfully completed the module jobs.
+    internal func writeIndexExplicitModuleInfo(for task: any ExecutableTask, dynamicExecutionDelegate: any DynamicTaskExecutionDelegate, executionDelegate: any TaskExecutionDelegate, outputDelegate: any TaskOutputDelegate) {
+        guard case .prepareForIndexing(_, true) = executionDelegate.buildCommand,
+              let driverPayload = (task.payload as? SwiftTaskPayload)?.driverPayload,
+              let path = driverPayload.indexExplicitModuleInfoPath else { return }
+
+        do {
+            let graph = dynamicExecutionDelegate.operationContext.swiftModuleDependencyGraph
+            let plannedBuild = try graph.queryPlannedBuild(for: driverPayload.uniqueID)
+            guard let job = plannedBuild.compilationRequirementsPlannedDriverJobs().first(where: {
+                $0.driverJob.categorizer.isEmitModule || $0.driverJob.categorizer.isCompile
+            }) else { return }
+            let commandLine = try plannedBuild.resolvedCommandLine(for: job)
+            let info = IndexExplicitModuleInfo(driverCommandLine: driverPayload.commandLine, compilerVersion: driverPayload.compilerVersion, resolvedArguments: commandLine)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
+            let contents = try ByteString(encoder.encode(info))
+            try executionDelegate.fs.createDirectory(path.dirname, recursive: true)
+            _ = try executionDelegate.fs.writeIfChanged(path, contents: contents)
+        } catch {
+            outputDelegate.warning("Unable to write explicit modules index info: \(error)")
+        }
+    }
+
 
     open func primaryJobs(for plannedBuild: LibSwiftDriver.PlannedBuild, driverPayload: SwiftDriverPayload) -> ArraySlice<LibSwiftDriver.PlannedBuild.PlannedSwiftDriverJob> {
         assertionFailure("Subclass responsibility")
