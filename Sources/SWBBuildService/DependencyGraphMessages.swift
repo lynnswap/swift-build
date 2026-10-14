@@ -11,8 +11,8 @@
 //===----------------------------------------------------------------------===//
 
 import SWBBuildSystem
-import SWBCore
-import SWBProtocol
+package import SWBCore
+package import SWBProtocol
 import SWBServiceCore
 import SWBTaskConstruction
 import SWBTaskExecution
@@ -103,6 +103,52 @@ struct ComputeDependencyGraphMsg: MessageHandler {
 }
 
 
+// Index requests can outlive PIF replacement. Retain their inputs without the old context's caches.
+package struct DependencyGraphRequestInputs: Sendable {
+    private let core: Core
+    private let workspace: SWBCore.Workspace
+    private let fs: any FSProxy
+    private let userInfo: UserInfo?
+    private let systemInfo: SystemInfo?
+    private let userPreferences: UserPreferences
+
+    package init(workspaceContext: WorkspaceContext) {
+        core = workspaceContext.core
+        workspace = workspaceContext.workspace
+        fs = workspaceContext.fs
+        userInfo = workspaceContext.userInfo
+        systemInfo = workspaceContext.systemInfo
+        userPreferences = workspaceContext.userPreferences
+    }
+
+    package func requestKey(for message: NonBlockingComputeDependencyGraphRequest) -> DependencyGraphRequestCoordinator.IndexRequestKey {
+        .init(core: ObjectIdentifier(core), fs: ObjectIdentifier(fs), workspaceSignature: workspace.signature, userInfo: userInfo, systemInfo: systemInfo, userPreferences: userPreferences, request: .init(sessionHandle: message.sessionHandle, targetGUIDs: message.targetGUIDs, buildParameters: message.buildParameters, includeImplicitDependencies: message.includeImplicitDependencies, dependencyScope: message.dependencyScope))
+    }
+
+    package func makeWorkspaceContext() -> WorkspaceContext {
+        let context = WorkspaceContext(core: core, workspace: workspace, fs: fs, processExecutionCache: ProcessExecutionCache())
+        if let userInfo {
+            context.updateUserInfo(userInfo)
+        }
+        if let systemInfo {
+            context.updateSystemInfo(systemInfo)
+        }
+        context.updateUserPreferences(userPreferences)
+        return context
+    }
+}
+
+private func computeDependencyGraphResponse(for message: NonBlockingComputeDependencyGraphRequest, in workspaceContext: WorkspaceContext) async throws -> DependencyGraphResponse {
+    let buildGraph = try await constructTargetDependencyGraph(for: message.targetGUIDs, in: workspaceContext, buildParameters: message.buildParameters, includeImplicitDependencies: message.includeImplicitDependencies, dependencyScope: message.dependencyScope)
+    try _Concurrency.Task.checkCancellation()
+    var adjacencyList: [TargetGUID: [TargetGUID]] = [:]
+    for configuredTarget in buildGraph.allTargets {
+        try _Concurrency.Task.checkCancellation()
+        adjacencyList[TargetGUID(rawValue: configuredTarget.target.guid), default: []].append(contentsOf: buildGraph.dependencies(of: configuredTarget).map { TargetGUID(rawValue: $0.target.guid) })
+    }
+    return DependencyGraphResponse(adjacencyList: adjacencyList)
+}
+
 struct NonBlockingComputeDependencyGraphMsg: MessageHandler {
     func handle(request: Request, message: NonBlockingComputeDependencyGraphRequest) async throws -> VoidResponse {
         let session = try request.session(for: message)
@@ -114,22 +160,24 @@ struct NonBlockingComputeDependencyGraphMsg: MessageHandler {
         let requestForReply = Request(service: request.service, channel: message.responseChannel, name: "compute_dependency_graph")
 
         let priority: _Concurrency.TaskPriority
+        let indexRequestKey: DependencyGraphRequestCoordinator.IndexRequestKey?
+        let operation: @Sendable () async throws -> DependencyGraphResponse
         if buildParameters.action == .indexBuild {
             priority = .utility
+            let inputs = DependencyGraphRequestInputs(workspaceContext: workspaceContext)
+            indexRequestKey = inputs.requestKey(for: message)
+            operation = {
+                try await computeDependencyGraphResponse(for: message, in: inputs.makeWorkspaceContext())
+            }
         } else {
             priority = .userInitiated
+            indexRequestKey = nil
+            operation = {
+                try await computeDependencyGraphResponse(for: message, in: workspaceContext)
+            }
         }
 
-        session.dependencyGraphRequestCoordinator.submit(lane: buildParameters.action == .indexBuild ? .index : .foreground, priority: priority) {
-            let buildGraph = try await constructTargetDependencyGraph(for: message.targetGUIDs, in: workspaceContext, buildParameters: message.buildParameters, includeImplicitDependencies: message.includeImplicitDependencies, dependencyScope: message.dependencyScope)
-            try _Concurrency.Task.checkCancellation()
-            var adjacencyList: [TargetGUID: [TargetGUID]] = [:]
-            for configuredTarget in buildGraph.allTargets {
-                try _Concurrency.Task.checkCancellation()
-                adjacencyList[TargetGUID(rawValue: configuredTarget.target.guid), default: []].append(contentsOf: buildGraph.dependencies(of: configuredTarget).map { TargetGUID(rawValue: $0.target.guid) })
-            }
-            return DependencyGraphResponse(adjacencyList: adjacencyList)
-        } completion: { outcome in
+        session.dependencyGraphRequestCoordinator.submit(lane: buildParameters.action == .indexBuild ? .index : .foreground, priority: priority, indexRequestKey: indexRequestKey, operation: operation) { outcome in
             switch outcome {
             case .success(let response):
                 requestForReply.reply(response)

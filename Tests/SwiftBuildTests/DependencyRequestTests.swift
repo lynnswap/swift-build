@@ -106,7 +106,7 @@ fileprivate struct DependencyClosureTests: CoreBasedTests {
                     dependencies: [.init("F2"), .init("F3")]
                 )
 
-                try await testSession.session.sendPIF(.init(TestWorkspace("Test", sourceRoot: tmpDirPath, projects: [
+                let pif = try TestWorkspace("Test", sourceRoot: tmpDirPath, projects: [
                     TestProject(
                         "Test",
                         groupTree: TestGroup("Test", children: [
@@ -122,7 +122,8 @@ fileprivate struct DependencyClosureTests: CoreBasedTests {
                             appTarget
                         ]
                     )
-                ]).toObjects().propertyListItem))
+                ]).toObjects().propertyListItem
+                try await testSession.session.sendPIF(.init(pif))
 
                 let parameters = SWBBuildParameters(action: action, configuration: "Debug", activeRunDestination: .anyiOSDevice)
                 #expect(try await testSession.session.computeDependencyClosure(targetGUIDs: [appTarget.guid], buildParameters: parameters, includeImplicitDependencies: true) ==
@@ -143,6 +144,77 @@ fileprivate struct DependencyClosureTests: CoreBasedTests {
                          SWBTargetGUID(rawValue: f1Target.guid): []])
                 #expect(try await testSession.session.computeDependencyGraph(targetGUIDs: [SWBTargetGUID(rawValue: f3Target.guid)], buildParameters: parameters, includeImplicitDependencies: true) ==
                         [SWBTargetGUID(rawValue: f3Target.guid): []])
+
+                if action == "indexbuild" {
+                    try await testSession.session.sendPIF(.init(pif))
+                    let expectedGraph: [SWBTargetGUID: [SWBTargetGUID]] = [
+                        SWBTargetGUID(rawValue: appTarget.guid): [SWBTargetGUID(rawValue: f2Target.guid), SWBTargetGUID(rawValue: f3Target.guid)],
+                        SWBTargetGUID(rawValue: f2Target.guid): [SWBTargetGUID(rawValue: f1Target.guid)],
+                        SWBTargetGUID(rawValue: f3Target.guid): [],
+                        SWBTargetGUID(rawValue: f1Target.guid): [],
+                    ]
+                    try await withThrowingTaskGroup(of: Void.self) { group in
+                        for _ in 0..<16 {
+                            group.addTask {
+                                let graph = try await testSession.session.computeDependencyGraph(targetGUIDs: [SWBTargetGUID(rawValue: appTarget.guid)], buildParameters: parameters, includeImplicitDependencies: true)
+                                #expect(graph == expectedGraph)
+                            }
+                        }
+                        try await group.waitForAll()
+                    }
+                }
+            }
+        }
+    }
+
+    @Test(.requireSDKs(.macOS))
+    func computeIndexDependencyGraphUsesUpdatedEnvironment() async throws {
+        try await withTemporaryDirectory { temporaryDirectory in
+            try await withAsyncDeferrable { deferrable in
+                let testSession = try await TestSWBSession(temporaryDirectory: temporaryDirectory)
+                await deferrable.addBlock {
+                    await #expect(throws: Never.self) {
+                        try await testSession.close()
+                    }
+                }
+
+                let firstTarget = TestStandardTarget("First", type: .framework)
+                let secondTarget = TestStandardTarget("Second", type: .framework)
+                let mainTarget = TestStandardTarget(
+                    "Main",
+                    type: .framework,
+                    buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: [
+                        "EXCLUDED_EXPLICIT_TARGET_DEPENDENCIES": "$(OMIT_TARGET)",
+                    ])],
+                    dependencies: [.init("First"), .init("Second")]
+                )
+                let pif = try TestWorkspace("Test", sourceRoot: temporaryDirectory.path, projects: [
+                    TestProject(
+                        "Test",
+                        groupTree: TestGroup("Test"),
+                        buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: ["SDKROOT": "macosx"])],
+                        targets: [firstTarget, secondTarget, mainTarget]
+                    ),
+                ]).toObjects().propertyListItem
+                try await testSession.session.sendPIF(.init(pif))
+
+                let parameters = SWBBuildParameters(action: "indexbuild", configuration: "Debug", activeRunDestination: .anyMac)
+                let firstGraph: [SWBTargetGUID: [SWBTargetGUID]] = [
+                    SWBTargetGUID(rawValue: mainTarget.guid): [SWBTargetGUID(rawValue: secondTarget.guid)],
+                    SWBTargetGUID(rawValue: secondTarget.guid): [],
+                ]
+                try await testSession.session.setUserInfo(SWBUserInfo.defaultForTesting.with(buildSystemEnvironment: ["OMIT_TARGET": "First"]))
+                #expect(try await testSession.session.computeDependencyGraph(targetGUIDs: [SWBTargetGUID(rawValue: mainTarget.guid)], buildParameters: parameters, includeImplicitDependencies: false) == firstGraph)
+
+                try await testSession.session.setUserInfo(SWBUserInfo.defaultForTesting.with(buildSystemEnvironment: ["OMIT_TARGET": "Second"]))
+                #expect(try await testSession.session.computeDependencyGraph(targetGUIDs: [SWBTargetGUID(rawValue: mainTarget.guid)], buildParameters: parameters, includeImplicitDependencies: false) == [
+                    SWBTargetGUID(rawValue: mainTarget.guid): [SWBTargetGUID(rawValue: firstTarget.guid)],
+                    SWBTargetGUID(rawValue: firstTarget.guid): [],
+                ])
+
+                try await testSession.session.sendPIF(.init(pif))
+                try await testSession.session.setUserInfo(SWBUserInfo.defaultForTesting.with(buildSystemEnvironment: ["OMIT_TARGET": "First"]))
+                #expect(try await testSession.session.computeDependencyGraph(targetGUIDs: [SWBTargetGUID(rawValue: mainTarget.guid)], buildParameters: parameters, includeImplicitDependencies: false) == firstGraph)
             }
         }
     }
