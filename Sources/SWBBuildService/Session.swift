@@ -154,8 +154,8 @@ public final class Session {
     /// The active workspace session
     public internal(set) var workspaceContext: WorkspaceContext? {
         didSet {
-            guard let workspaceContext, let cached = cachedIndexDependencyGraphContext else {
-                cachedIndexDependencyGraphContext = nil
+            guard let workspaceContext, let cached = cachedDependencyGraphContext else {
+                cachedDependencyGraphContext = nil
                 return
             }
             // PIF reapplication sends client information separately. Validate those fields
@@ -163,29 +163,29 @@ public final class Session {
             if cached.key.core != ObjectIdentifier(workspaceContext.core)
                 || cached.key.fs != ObjectIdentifier(workspaceContext.fs)
                 || cached.key.workspaceSignature != workspaceContext.workspace.signature {
-                cachedIndexDependencyGraphContext = nil
+                cachedDependencyGraphContext = nil
             }
         }
     }
 
-    private var cachedIndexDependencyGraphContext: IndexDependencyGraphContext?
+    private var cachedDependencyGraphContext: DependencyGraphContext?
 
-    package func indexDependencyGraphContext(for inputs: DependencyGraphRequestInputs, key: DependencyGraphRequestCoordinator.IndexRequestKey) -> IndexDependencyGraphContext {
-        if let cached = cachedIndexDependencyGraphContext, cached.key == key { return cached }
+    package func dependencyGraphContext(for inputs: DependencyGraphRequestInputs, key: DependencyGraphRequestCoordinator.RequestKey) -> DependencyGraphContext {
+        if let cached = cachedDependencyGraphContext, cached.key == key { return cached }
         // A different request replaces the slot instead of accumulating configurations.
-        let context = IndexDependencyGraphContext(inputs: inputs, key: key)
-        cachedIndexDependencyGraphContext = context
+        let context = DependencyGraphContext(inputs: inputs, key: key)
+        cachedDependencyGraphContext = context
         return context
     }
 
-    package func invalidateIndexWorkspaceContext<Value: Equatable>(for field: KeyPath<DependencyGraphRequestInputs, Value>, value: Value) {
-        if let cached = cachedIndexDependencyGraphContext, cached.inputs[keyPath: field] != value {
-            cachedIndexDependencyGraphContext = nil
+    package func invalidateDependencyGraphContext<Value: Equatable>(for field: KeyPath<DependencyGraphRequestInputs, Value>, value: Value) {
+        if let cached = cachedDependencyGraphContext, cached.inputs[keyPath: field] != value {
+            cachedDependencyGraphContext = nil
         }
     }
 
-    package func clearIndexWorkspaceContext() {
-        cachedIndexDependencyGraphContext = nil
+    package func clearDependencyGraphContext() {
+        cachedDependencyGraphContext = nil
     }
 
     /// The incremental PIF loader.

@@ -49,7 +49,7 @@ private func constructTargetDependencyGraph(for targetGUIDs: [TargetGUID], in wo
         targets.append(target)
     }
     let parameters = try BuildParameters(from: buildParameters, core: workspaceContext.core)
-    let buildRequestContext = BuildRequestContext(workspaceContext: workspaceContext)
+    let buildRequestContext = BuildRequestContext(workspaceContext: workspaceContext, cacheSettings: true)
     let delegate = ResolverDelegate()
 
     let scope: DependencyScope
@@ -81,7 +81,12 @@ struct ComputeDependencyClosureMsg: MessageHandler {
         guard let workspaceContext = session.workspaceContext else {
             throw MsgParserError.missingWorkspaceContext
         }
-        let buildGraph = try await constructTargetDependencyGraph(for: message.targetGUIDs.map(TargetGUID.init(rawValue:)), in: workspaceContext, buildParameters: message.buildParameters, includeImplicitDependencies: message.includeImplicitDependencies, dependencyScope: message.dependencyScope)
+        let inputs = DependencyGraphRequestInputs(workspaceContext: workspaceContext)
+        let graphRequest = ComputeDependencyGraphRequest(sessionHandle: message.sessionHandle, targetGUIDs: message.targetGUIDs.map(TargetGUID.init(rawValue:)), buildParameters: message.buildParameters, includeImplicitDependencies: message.includeImplicitDependencies, dependencyScope: message.dependencyScope)
+        let reusableContext = session.dependencyGraphContext(for: inputs, key: inputs.requestKey(for: graphRequest))
+        let context = reusableContext.acquireWorkspaceContext()
+        defer { reusableContext.finished(using: context) }
+        let buildGraph = try await constructTargetDependencyGraph(for: graphRequest.targetGUIDs, in: context, buildParameters: graphRequest.buildParameters, includeImplicitDependencies: graphRequest.includeImplicitDependencies, dependencyScope: graphRequest.dependencyScope)
         let guids = buildGraph.allTargets.map(\.target.guid)
         return StringListResponse(guids)
     }
@@ -94,7 +99,11 @@ struct ComputeDependencyGraphMsg: MessageHandler {
         guard let workspaceContext = session.workspaceContext else {
             throw MsgParserError.missingWorkspaceContext
         }
-        let buildGraph = try await constructTargetDependencyGraph(for: message.targetGUIDs, in: workspaceContext, buildParameters: message.buildParameters, includeImplicitDependencies: message.includeImplicitDependencies, dependencyScope: message.dependencyScope)
+        let inputs = DependencyGraphRequestInputs(workspaceContext: workspaceContext)
+        let reusableContext = session.dependencyGraphContext(for: inputs, key: inputs.requestKey(for: message))
+        let context = reusableContext.acquireWorkspaceContext()
+        defer { reusableContext.finished(using: context) }
+        let buildGraph = try await constructTargetDependencyGraph(for: message.targetGUIDs, in: context, buildParameters: message.buildParameters, includeImplicitDependencies: message.includeImplicitDependencies, dependencyScope: message.dependencyScope)
         var adjacencyList: [TargetGUID: [TargetGUID]] = [:]
         for configuredTarget in buildGraph.allTargets {
             adjacencyList[TargetGUID(rawValue: configuredTarget.target.guid), default: []].append(contentsOf: buildGraph.dependencies(of: configuredTarget).map { TargetGUID(rawValue: $0.target.guid) })
@@ -104,7 +113,7 @@ struct ComputeDependencyGraphMsg: MessageHandler {
 }
 
 
-// Index requests can outlive PIF replacement. Retain their inputs without the old context's caches.
+// Queued requests can outlive PIF replacement. Retain their inputs without the old context's caches.
 package struct DependencyGraphRequestInputs: Sendable {
     private let core: Core
     private let workspace: SWBCore.Workspace
@@ -122,8 +131,12 @@ package struct DependencyGraphRequestInputs: Sendable {
         userPreferences = workspaceContext.userPreferences
     }
 
-    package func requestKey(for message: NonBlockingComputeDependencyGraphRequest) -> DependencyGraphRequestCoordinator.IndexRequestKey {
-        .init(core: ObjectIdentifier(core), fs: ObjectIdentifier(fs), workspaceSignature: workspace.signature, userInfo: userInfo, systemInfo: systemInfo, userPreferences: userPreferences, request: .init(sessionHandle: message.sessionHandle, targetGUIDs: message.targetGUIDs, buildParameters: message.buildParameters, includeImplicitDependencies: message.includeImplicitDependencies, dependencyScope: message.dependencyScope))
+    package func requestKey(for message: ComputeDependencyGraphRequest) -> DependencyGraphRequestCoordinator.RequestKey {
+        .init(core: ObjectIdentifier(core), fs: ObjectIdentifier(fs), workspaceSignature: workspace.signature, userInfo: userInfo, systemInfo: systemInfo, userPreferences: userPreferences, request: message)
+    }
+
+    package func requestKey(for message: NonBlockingComputeDependencyGraphRequest) -> DependencyGraphRequestCoordinator.RequestKey {
+        requestKey(for: .init(sessionHandle: message.sessionHandle, targetGUIDs: message.targetGUIDs, buildParameters: message.buildParameters, includeImplicitDependencies: message.includeImplicitDependencies, dependencyScope: message.dependencyScope))
     }
 
     package func makeWorkspaceContext() -> WorkspaceContext {
@@ -140,31 +153,41 @@ package struct DependencyGraphRequestInputs: Sendable {
 }
 
 // A session owns one current input set. Queued requests only weakly reference this owner.
-package final class IndexDependencyGraphContext: Sendable {
+package final class DependencyGraphContext: Sendable {
     package let inputs: DependencyGraphRequestInputs
-    package let key: DependencyGraphRequestCoordinator.IndexRequestKey
-    private let cachedWorkspaceContext = SWBMutex<WorkspaceContext?>(nil)
+    package let key: DependencyGraphRequestCoordinator.RequestKey
+    private struct State: ~Copyable {
+        var workspaceContext: WorkspaceContext?
+        var isInUse = false
+    }
 
-    package init(inputs: DependencyGraphRequestInputs, key: DependencyGraphRequestCoordinator.IndexRequestKey) {
+    private let state = SWBMutex(State())
+
+    package init(inputs: DependencyGraphRequestInputs, key: DependencyGraphRequestCoordinator.RequestKey) {
         self.inputs = inputs
         self.key = key
     }
 
-    package func workspaceContext() -> WorkspaceContext {
-        cachedWorkspaceContext.withLock { cached in
-            if let cached { return cached }
-            let context = inputs.makeWorkspaceContext()
-            cached = context
+    package func acquireWorkspaceContext() -> WorkspaceContext {
+        state.withLock { state in
+            // A concurrent query must not borrow settings before the first query has
+            // established whether its SDK and filesystem inputs permit reuse.
+            if state.isInUse { return inputs.makeWorkspaceContext() }
+            let context = state.workspaceContext ?? inputs.makeWorkspaceContext()
+            state.workspaceContext = context
+            state.isInUse = true
             return context
         }
     }
 
     package func finished(using context: WorkspaceContext) {
-        // Some settings inputs and context-specific SDK registries are not signature-validated.
-        // Preserve their per-request freshness instead of reusing those contexts.
-        if context.settingsRequireFreshContext || context.sdkRegistry.hasCustomSDKs {
-            cachedWorkspaceContext.withLock { cached in
-                if cached === context { cached = nil }
+        state.withLock { state in
+            guard state.workspaceContext === context else { return }
+            state.isInUse = false
+            // Some settings inputs and context-specific SDK registries are not signature-validated.
+            // Preserve their per-request freshness instead of reusing those contexts.
+            if context.settingsRequireFreshContext || context.sdkRegistry.hasCustomSDKs {
+                state.workspaceContext = nil
             }
         }
     }
@@ -191,32 +214,20 @@ struct NonBlockingComputeDependencyGraphMsg: MessageHandler {
 
         let requestForReply = Request(service: request.service, channel: message.responseChannel, name: "compute_dependency_graph")
 
-        let priority: _Concurrency.TaskPriority
-        let indexRequestKey: DependencyGraphRequestCoordinator.IndexRequestKey?
-        let operation: @Sendable () async throws -> DependencyGraphResponse
-        if buildParameters.action == .indexBuild {
-            priority = .utility
-            let inputs = DependencyGraphRequestInputs(workspaceContext: workspaceContext)
-            let key = inputs.requestKey(for: message)
-            indexRequestKey = key
-            let reusableContext = WeakRef(session.indexDependencyGraphContext(for: inputs, key: key))
-            operation = {
-                if let reusableContext = reusableContext.instance {
-                    let context = reusableContext.workspaceContext()
-                    defer { reusableContext.finished(using: context) }
-                    return try await computeDependencyGraphResponse(for: message, in: context)
-                }
-                return try await computeDependencyGraphResponse(for: message, in: inputs.makeWorkspaceContext())
+        let isIndexRequest = buildParameters.action == .indexBuild
+        let inputs = DependencyGraphRequestInputs(workspaceContext: workspaceContext)
+        let key = inputs.requestKey(for: message)
+        let reusableContext = WeakRef(session.dependencyGraphContext(for: inputs, key: key))
+        let operation: @Sendable () async throws -> DependencyGraphResponse = {
+            if let reusableContext = reusableContext.instance {
+                let context = reusableContext.acquireWorkspaceContext()
+                defer { reusableContext.finished(using: context) }
+                return try await computeDependencyGraphResponse(for: message, in: context)
             }
-        } else {
-            priority = .userInitiated
-            indexRequestKey = nil
-            operation = {
-                try await computeDependencyGraphResponse(for: message, in: workspaceContext)
-            }
+            return try await computeDependencyGraphResponse(for: message, in: inputs.makeWorkspaceContext())
         }
 
-        session.dependencyGraphRequestCoordinator.submit(lane: buildParameters.action == .indexBuild ? .index : .foreground, priority: priority, indexRequestKey: indexRequestKey, operation: operation) { outcome in
+        session.dependencyGraphRequestCoordinator.submit(lane: isIndexRequest ? .index : .foreground, priority: isIndexRequest ? .utility : .userInitiated, indexRequestKey: isIndexRequest ? key : nil, operation: operation) { outcome in
             switch outcome {
             case .success(let response):
                 requestForReply.reply(response)

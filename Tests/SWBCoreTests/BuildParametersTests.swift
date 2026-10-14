@@ -19,6 +19,55 @@ import SWBTestSupport
 
 @Suite fileprivate struct BuildParametersTests {
     @Test
+    func unchangedTransformationsPreserveParameters() {
+        let parameters = BuildParameters(configuration: "Debug", activeRunDestination: .macOS, activeArchitecture: "arm64", overrides: ["FLAG": "YES"], commandLineOverrides: ["FLAG": "CLI"], toolchainOverride: "custom")
+        let values = [parameters: "cached"]
+        for transformed in [parameters.mergingOverrides([:]), parameters.mergingOverrides(["FLAG": "YES"]), parameters.replacing(activeRunDestination: .macOS, activeArchitecture: "arm64")] {
+            #expect(transformed == parameters)
+            #expect(values[transformed] == "cached")
+        }
+
+        let merged = parameters.mergingOverrides(["FLAG": "NO", "NEW": "VALUE"])
+        #expect(merged.overrides == ["FLAG": "NO", "NEW": "VALUE"])
+        #expect(merged.commandLineOverrides == parameters.commandLineOverrides)
+        #expect(merged.toolchainOverride == parameters.toolchainOverride)
+    }
+
+    @Test
+    func withoutOverridesClearsConfigurationFilePaths() {
+        let parameters = BuildParameters(configuration: "Debug", commandLineConfigOverridesPath: Path("/tmp/Command.xcconfig"), environmentConfigOverridesPath: Path("/tmp/Environment.xcconfig"), toolchainOverride: "custom")
+        let expected = BuildParameters(configuration: "Debug", toolchainOverride: "custom")
+        let cleared = parameters.withoutOverrides
+        #expect(cleared == expected)
+        #expect([expected: "cached"][cleared.withoutOverrides] == "cached")
+    }
+
+    @Test(arguments: [false, true])
+    func replacingUpdatesDestinationAndArchitectureIndependently(removesDestination: Bool) {
+        let parameters = BuildParameters(configuration: "Debug", activeRunDestination: .macOS, activeArchitecture: "arm64", overrides: ["FLAG": "YES"])
+        let destination: SWBCore.RunDestinationInfo? = removesDestination ? nil : .macOS
+        let architecture: String? = removesDestination ? "arm64" : nil
+        let replaced = parameters.replacing(activeRunDestination: destination, activeArchitecture: architecture)
+        #expect(replaced.activeRunDestination == destination)
+        #expect(replaced.activeArchitecture == architecture)
+        #expect(replaced.overrides == parameters.overrides)
+    }
+
+    @Test
+    func transformationsNormalizeDecodedPackageConfiguration() throws {
+        let canonical = BuildParameters(configuration: "Debug")
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(canonical)) as? [String: Any])
+        object["packageConfigurationOverride"] = "Release"
+        let decoded = try JSONDecoder().decode(BuildParameters.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(decoded.packageConfigurationOverride == "Release")
+
+        for transformed in [decoded.mergingOverrides([:]), decoded.withoutOverrides, decoded.replacing(activeRunDestination: nil, activeArchitecture: nil)] {
+            #expect(transformed == canonical)
+            #expect([canonical: "cached"][transformed] == "cached")
+        }
+    }
+
+    @Test
     func serializationDoesNotContainUnstableHash() throws {
         let action = BuildAction.build
         let configuration = "Debug"
