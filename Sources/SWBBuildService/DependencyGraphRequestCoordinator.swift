@@ -11,11 +11,32 @@
 //===----------------------------------------------------------------------===//
 
 import Foundation
+package import SWBCore
 package import SWBProtocol
 package import SWBUtil
 import Synchronization
 
 package final class DependencyGraphRequestCoordinator: Sendable {
+    package struct IndexRequestKey: Equatable, Sendable {
+        let core: ObjectIdentifier
+        let fs: ObjectIdentifier
+        let workspaceSignature: String
+        let userInfo: UserInfo?
+        let systemInfo: SystemInfo?
+        let userPreferences: UserPreferences
+        let request: ComputeDependencyGraphRequest
+
+        package init(core: ObjectIdentifier, fs: ObjectIdentifier, workspaceSignature: String, userInfo: UserInfo?, systemInfo: SystemInfo?, userPreferences: UserPreferences, request: ComputeDependencyGraphRequest) {
+            self.core = core
+            self.fs = fs
+            self.workspaceSignature = workspaceSignature
+            self.userInfo = userInfo
+            self.systemInfo = systemInfo
+            self.userPreferences = userPreferences
+            self.request = request
+        }
+    }
+
     package enum Lane: Sendable {
         case index
         case foreground
@@ -31,7 +52,8 @@ package final class DependencyGraphRequestCoordinator: Sendable {
 
     private struct Operation: Sendable {
         let task: _Concurrency.Task<Void, Never>
-        let completion: Completion
+        var indexRequestKey: IndexRequestKey?
+        var completions: [Completion]
     }
 
     private struct State: ~Copyable {
@@ -61,13 +83,16 @@ package final class DependencyGraphRequestCoordinator: Sendable {
             operation.task.cancel()
         }
         for operation in operations {
-            operation.completion(.cancelled)
+            for completion in operation.completions {
+                completion(.cancelled)
+            }
         }
     }
 
     package func submit(
         lane: Lane,
         priority: _Concurrency.TaskPriority,
+        indexRequestKey: IndexRequestKey? = nil,
         operation: @escaping @Sendable () async throws -> DependencyGraphResponse,
         completion: @escaping Completion
     ) {
@@ -82,10 +107,17 @@ package final class DependencyGraphRequestCoordinator: Sendable {
                 return true
             }
 
+            if lane == .index, let indexRequestKey,
+               let existingID = state.operations.first(where: { $0.value.indexRequestKey == indexRequestKey })?.key {
+                state.operations[existingID]?.completions.append(completion)
+                return false
+            }
+
             let task = _Concurrency.Task<Void, Never>(priority: priority) { [weak self] in
                 let outcome: Outcome
                 do {
                     let response = try await queue.withOperation {
+                        self?.didStart(id: id)
                         try _Concurrency.Task.checkCancellation()
                         let response = try await operation()
                         try _Concurrency.Task.checkCancellation()
@@ -97,9 +129,9 @@ package final class DependencyGraphRequestCoordinator: Sendable {
                 } catch {
                     outcome = .failure(String(describing: error))
                 }
-                self?.finish(id: id, outcome: outcome, completion: completion)
+                self?.finish(id: id, outcome: outcome)
             }
-            state.operations[id] = Operation(task: task, completion: completion)
+            state.operations[id] = Operation(task: task, indexRequestKey: lane == .index ? indexRequestKey : nil, completions: [completion])
             return false
         }
 
@@ -141,13 +173,23 @@ package final class DependencyGraphRequestCoordinator: Sendable {
         }
     }
 
-    private func finish(id: UUID, outcome: Outcome, completion: Completion) {
-        let committedOutcome = state.withLock { state in
-            state.acceptsNewOperations ? outcome : .cancelled
+    private func didStart(id: UUID) {
+        state.withLock { state in
+            // A later request must perform its own reads once graph construction has begun.
+            state.operations[id]?.indexRequestKey = nil
+        }
+    }
+
+    private func finish(id: UUID, outcome: Outcome) {
+        let (committedOutcome, completions) = state.withLock { state in
+            state.operations[id]?.indexRequestKey = nil
+            return (state.acceptsNewOperations ? outcome : .cancelled, state.operations[id]?.completions ?? [])
         }
         // Keep the task registered through the callback so close and quiescence
         // cannot return while a terminal reply is still being sent.
-        completion(committedOutcome)
+        for completion in completions {
+            completion(committedOutcome)
+        }
         state.withLock { state in
             state.operations[id] = nil
         }

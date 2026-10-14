@@ -12,12 +12,196 @@
 
 import Dispatch
 import SWBBuildService
+import SWBCore
 import SWBProtocol
+import SWBTestSupport
 import SWBUtil
 import Synchronization
 import Testing
 
-@Suite(.serialized) fileprivate struct DependencyGraphRequestCoordinatorTests {
+@Suite(.serialized) fileprivate struct DependencyGraphRequestCoordinatorTests: CoreBasedTests {
+    @Test
+    func requestInputsReleaseTheOriginalContextAndPreserveItsSnapshot() async throws {
+        let snapshot = try await {
+            let context = try await contextForTestData(TestWorkspace("Test", projects: []))
+            context.updateUserPreferences(.defaultForTesting)
+            return (
+                inputs: DependencyGraphRequestInputs(workspaceContext: context),
+                context: WeakRef(context),
+                workspace: context.workspace,
+                fs: context.fs,
+                userInfo: context.userInfo,
+                systemInfo: context.systemInfo,
+                userPreferences: context.userPreferences
+            )
+        }()
+
+        #expect(snapshot.context.instance == nil)
+        let restored = snapshot.inputs.makeWorkspaceContext()
+        #expect(restored.workspace === snapshot.workspace)
+        #expect(restored.fs === snapshot.fs)
+        #expect(restored.userInfo == snapshot.userInfo)
+        #expect(restored.systemInfo == snapshot.systemInfo)
+        #expect(restored.userPreferences == snapshot.userPreferences)
+    }
+
+    @Test(arguments: SnapshotMetadata.allCases)
+    func requestInputsPreserveMetadataAndSeparateUpdates(_ metadata: SnapshotMetadata) async throws {
+        let context = try await contextForTestData(TestWorkspace("Test", projects: []), environment: ["SNAPSHOT_VALUE": "original"])
+        context.updateUserPreferences(.defaultForTesting)
+        let userInfo = context.userInfo
+        let systemInfo = context.systemInfo
+        let userPreferences = context.userPreferences
+        let inputs = DependencyGraphRequestInputs(workspaceContext: context)
+        let request = makeDependencyGraphRequest()
+        let originalKey = inputs.requestKey(for: request)
+
+        switch metadata {
+        case .userInfo:
+            context.updateUserInfo(try #require(userInfo).withAdditionalEnvironment(environment: ["SNAPSHOT_VALUE": "updated"]))
+        case .systemInfo:
+            let info = try #require(systemInfo)
+            context.updateSystemInfo(SystemInfo(operatingSystemVersion: info.operatingSystemVersion, productBuildVersion: info.productBuildVersion + "-updated", nativeArchitecture: info.nativeArchitecture))
+        case .userPreferences:
+            context.updateUserPreferences(userPreferences.with(enableDebugActivityLogs: true))
+        }
+
+        #expect(DependencyGraphRequestInputs(workspaceContext: context).requestKey(for: request) != originalKey)
+        let restored = inputs.makeWorkspaceContext()
+        #expect(restored.userInfo == userInfo)
+        #expect(restored.systemInfo == systemInfo)
+        #expect(restored.userPreferences == userPreferences)
+        #expect(DependencyGraphRequestInputs(workspaceContext: restored).requestKey(for: request) == originalKey)
+    }
+
+    @Test(arguments: [false, true])
+    func identicalPendingRequestsShareWorkAndReplyToEveryCaller(shouldFail: Bool) async throws {
+        let indexQueue = AsyncOperationQueue(concurrentTasks: 1)
+        let blocker = await holdQueue(indexQueue)
+        let coordinator = makeCoordinator(indexQueue: indexQueue)
+        let key = makeIndexRequestKey(coordinator)
+        let activity = ActivityRecorder()
+        let replies = SWBMutex<[Int: [DependencyGraphRequestCoordinator.Outcome]]>([:])
+        let releasedSnapshots = SWBMutex(0)
+        var snapshots: [WeakRef<RequestSnapshot>] = []
+
+        for id in 0..<16 {
+            snapshots.append(submitSnapshotRequest(
+                coordinator: coordinator,
+                key: key,
+                shouldFail: shouldFail,
+                activity: activity,
+                onRelease: { releasedSnapshots.withLock { $0 += 1 } },
+                completion: { outcome in
+                    replies.withLock { $0[id, default: []].append(outcome) }
+                }
+            ))
+        }
+
+        #expect(snapshots.first?.instance != nil)
+        #expect(snapshots.dropFirst().allSatisfy { $0.instance == nil })
+        #expect(releasedSnapshots.withLock { $0 } == 15)
+        #expect(activity.startCount("index") == 0)
+
+        blocker.release.signal()
+        try await blocker.task.value
+        await coordinator.waitForQuiescence()
+
+        let expected: DependencyGraphRequestCoordinator.Outcome = shouldFail
+            ? .failure("expected")
+            : .success(makeResponse("shared"))
+        #expect(activity.startCount("index") == 1)
+        #expect(replies.withLock { $0.count } == 16)
+        #expect(replies.withLock { $0.values.allSatisfy { $0 == [expected] } })
+    }
+
+    @Test(arguments: [false, true])
+    func distinctSnapshotsAndParametersKeepTheirOwnOutcomes(changesWorkspace: Bool) async throws {
+        let indexQueue = AsyncOperationQueue(concurrentTasks: 1)
+        let blocker = await holdQueue(indexQueue)
+        let coordinator = makeCoordinator(indexQueue: indexQueue)
+        let firstKey = makeIndexRequestKey(coordinator)
+        let secondKey = makeIndexRequestKey(
+            coordinator,
+            workspaceSignature: changesWorkspace ? "updated-workspace" : "workspace",
+            configuration: changesWorkspace ? "Debug" : "Release"
+        )
+        let activity = ActivityRecorder()
+        let firstRecorder = OutcomeRecorder()
+        let secondRecorder = OutcomeRecorder()
+
+        coordinator.submit(lane: .index, priority: .utility, indexRequestKey: firstKey) {
+            activity.begin("index")
+            defer { activity.end("index") }
+            return makeResponse("first")
+        } completion: {
+            firstRecorder.record($0)
+        }
+
+        coordinator.submit(lane: .index, priority: .utility, indexRequestKey: secondKey) {
+            activity.begin("index")
+            defer { activity.end("index") }
+            throw TestError.expected
+        } completion: {
+            secondRecorder.record($0)
+        }
+
+        blocker.release.signal()
+        try await blocker.task.value
+        await coordinator.waitForQuiescence()
+
+        #expect(activity.startCount("index") == 2)
+        #expect(firstRecorder.outcomes == [.success(makeResponse("first"))])
+        #expect(secondRecorder.outcomes == [.failure("expected")])
+    }
+
+    @Test
+    func aRequestArrivingAfterWorkStartsGetsANewComputation() async {
+        let coordinator = makeCoordinator()
+        let key = makeIndexRequestKey(coordinator)
+        let firstStarted = WaitCondition()
+        let releaseFirst = WaitCondition()
+        let activity = ActivityRecorder()
+        let firstRecorder = OutcomeRecorder()
+        let secondRecorder = OutcomeRecorder()
+        let followerRecorder = OutcomeRecorder()
+
+        coordinator.submit(lane: .index, priority: .utility, indexRequestKey: key) {
+            activity.begin("index")
+            defer { activity.end("index") }
+            firstStarted.signal()
+            await releaseFirst.wait()
+            return makeResponse("first")
+        } completion: {
+            firstRecorder.record($0)
+        }
+
+        await firstStarted.wait()
+
+        coordinator.submit(lane: .index, priority: .utility, indexRequestKey: key) {
+            activity.begin("index")
+            defer { activity.end("index") }
+            return makeResponse("second")
+        } completion: {
+            secondRecorder.record($0)
+        }
+
+        coordinator.submit(lane: .index, priority: .utility, indexRequestKey: key) {
+            Issue.record("The pending follower must share the second computation")
+            return makeResponse("unexpected")
+        } completion: {
+            followerRecorder.record($0)
+        }
+
+        releaseFirst.signal()
+        await coordinator.waitForQuiescence()
+
+        #expect(activity.startCount("index") == 2)
+        #expect(firstRecorder.outcomes == [.success(makeResponse("first"))])
+        #expect(secondRecorder.outcomes == [.success(makeResponse("second"))])
+        #expect(followerRecorder.outcomes == [.success(makeResponse("second"))])
+    }
+
     @Test
     func executesEverySubmittedRequestAndReportsItsOutcome() async {
         let coordinator = makeCoordinator()
@@ -147,7 +331,9 @@ import Testing
         let lifecycleDriver = LifecycleDriver()
         let activeRecorder = OutcomeRecorder()
         let queuedRecorder = OutcomeRecorder()
+        let queuedFollowerRecorder = OutcomeRecorder()
         let lateRecorder = OutcomeRecorder()
+        let queuedKey = makeIndexRequestKey(coordinator)
 
         coordinator.submit(lane: .index, priority: .utility) {
             activity.begin("active")
@@ -168,13 +354,20 @@ import Testing
 
         await activeStarted.wait()
 
-        coordinator.submit(lane: .index, priority: .utility) {
+        coordinator.submit(lane: .index, priority: .utility, indexRequestKey: queuedKey) {
             activity.begin("queued")
             defer { activity.end("queued") }
             return makeResponse("queued")
         } completion: {
             sequence.record("queued-reply")
             queuedRecorder.record($0)
+        }
+
+        coordinator.submit(lane: .index, priority: .utility, indexRequestKey: queuedKey) {
+            Issue.record("A cancelled merged request must not enter graph construction")
+            return makeResponse("unexpected")
+        } completion: {
+            queuedFollowerRecorder.record($0)
         }
 
         let closeTask = _Concurrency.Task {
@@ -200,6 +393,7 @@ import Testing
 
         #expect(activeRecorder.outcomes == [.cancelled])
         #expect(queuedRecorder.outcomes == [.cancelled])
+        #expect(queuedFollowerRecorder.outcomes == [.cancelled])
         #expect(lateRecorder.outcomes == [.cancelled])
         #expect(activity.startCount("active") == 1)
         #expect(activity.startCount("queued") == 0)
@@ -208,16 +402,20 @@ import Testing
     }
 
     @Test
-    func closeWaitsForCommittedReplyAndPreservesItsOutcome() async {
-        let coordinator = makeCoordinator()
+    func closeWaitsForCommittedReplyAndPreservesItsOutcome() async throws {
+        let indexQueue = AsyncOperationQueue(concurrentTasks: 1)
+        let blocker = await holdQueue(indexQueue)
+        let coordinator = makeCoordinator(indexQueue: indexQueue)
+        let key = makeIndexRequestKey(coordinator)
         let releaseReply = DispatchSemaphore(value: 0)
         let replyStarted = WaitCondition()
         let closeStarted = WaitCondition()
         let sequence = SequenceRecorder()
         let recorder = OutcomeRecorder()
+        let followerRecorder = OutcomeRecorder()
         let lifecycleDriver = LifecycleDriver()
 
-        coordinator.submit(lane: .foreground, priority: .userInitiated) {
+        coordinator.submit(lane: .index, priority: .utility, indexRequestKey: key) {
             makeResponse("success")
         } completion: {
             sequence.record("reply-started")
@@ -226,6 +424,17 @@ import Testing
             sequence.record("reply-finished")
             recorder.record($0)
         }
+
+        coordinator.submit(lane: .index, priority: .utility, indexRequestKey: key) {
+            Issue.record("The pending follower must share the committed response")
+            return makeResponse("unexpected")
+        } completion: {
+            sequence.record("follower-reply-finished")
+            followerRecorder.record($0)
+        }
+
+        blocker.release.signal()
+        try await blocker.task.value
 
         await replyStarted.wait()
 
@@ -243,19 +452,24 @@ import Testing
         await closeTask.value
 
         #expect(recorder.outcomes == [.success(makeResponse("success"))])
+        #expect(followerRecorder.outcomes == [.success(makeResponse("success"))])
         #expect(sequence.index(of: "reply-finished") < sequence.index(of: "close-returned"))
+        #expect(sequence.index(of: "follower-reply-finished") < sequence.index(of: "close-returned"))
     }
 
     @Test
-    func quiescenceWaitsForOperationAndReplyCompletion() async {
-        let coordinator = makeCoordinator()
+    func quiescenceWaitsForOperationAndReplyCompletion() async throws {
+        let indexQueue = AsyncOperationQueue(concurrentTasks: 1)
+        let blocker = await holdQueue(indexQueue)
+        let coordinator = makeCoordinator(indexQueue: indexQueue)
+        let key = makeIndexRequestKey(coordinator)
         let releaseReply = DispatchSemaphore(value: 0)
         let replyStarted = WaitCondition()
         let quiescenceStarted = WaitCondition()
         let sequence = SequenceRecorder()
         let lifecycleDriver = LifecycleDriver()
 
-        coordinator.submit(lane: .index, priority: .utility) {
+        coordinator.submit(lane: .index, priority: .utility, indexRequestKey: key) {
             sequence.record("operation-finished")
             return makeResponse("success")
         } completion: { _ in
@@ -264,6 +478,16 @@ import Testing
             releaseReply.wait()
             sequence.record("reply-finished")
         }
+
+        coordinator.submit(lane: .index, priority: .utility, indexRequestKey: key) {
+            Issue.record("The pending follower must share the quiescent response")
+            return makeResponse("unexpected")
+        } completion: { _ in
+            sequence.record("follower-reply-finished")
+        }
+
+        blocker.release.signal()
+        try await blocker.task.value
 
         await replyStarted.wait()
 
@@ -281,6 +505,7 @@ import Testing
 
         #expect(sequence.index(of: "reply-started") < sequence.index(of: "reply-finished"))
         #expect(sequence.index(of: "reply-finished") < sequence.index(of: "quiescence-returned"))
+        #expect(sequence.index(of: "follower-reply-finished") < sequence.index(of: "quiescence-returned"))
     }
 
     @Test
@@ -405,6 +630,10 @@ private enum TestError: Error, CustomStringConvertible {
     }
 }
 
+fileprivate enum SnapshotMetadata: CaseIterable, Sendable {
+    case userInfo, systemInfo, userPreferences
+}
+
 private final class OutcomeRecorder: Sendable {
     let received = WaitCondition()
     private let storage = SWBMutex<[DependencyGraphRequestCoordinator.Outcome]>([])
@@ -493,4 +722,95 @@ private func makeCoordinator(
 private func makeResponse(_ target: String) -> DependencyGraphResponse {
     let target = TargetGUID(rawValue: target)
     return DependencyGraphResponse(adjacencyList: [target: []])
+}
+
+private func holdQueue(_ queue: AsyncOperationQueue) async -> (release: WaitCondition, task: _Concurrency.Task<Void, any Error>) {
+    let started = WaitCondition()
+    let release = WaitCondition()
+    let task = _Concurrency.Task {
+        try await queue.withOperation {
+            started.signal()
+            await release.wait()
+        }
+    }
+    await started.wait()
+    return (release, task)
+}
+
+private func makeIndexRequestKey(
+    _ owner: DependencyGraphRequestCoordinator,
+    workspaceSignature: String = "workspace",
+    configuration: String = "Debug"
+) -> DependencyGraphRequestCoordinator.IndexRequestKey {
+    let message = makeDependencyGraphRequest(configuration: configuration)
+    return DependencyGraphRequestCoordinator.IndexRequestKey(
+        core: ObjectIdentifier(owner),
+        fs: ObjectIdentifier(owner),
+        workspaceSignature: workspaceSignature,
+        userInfo: nil,
+        systemInfo: nil,
+        userPreferences: .defaultForTesting,
+        request: ComputeDependencyGraphRequest(
+            sessionHandle: message.sessionHandle,
+            targetGUIDs: message.targetGUIDs,
+            buildParameters: message.buildParameters,
+            includeImplicitDependencies: message.includeImplicitDependencies,
+            dependencyScope: message.dependencyScope
+        )
+    )
+}
+
+private func makeDependencyGraphRequest(configuration: String = "Debug") -> NonBlockingComputeDependencyGraphRequest {
+    NonBlockingComputeDependencyGraphRequest(
+        sessionHandle: "session",
+        responseChannel: 1,
+        targetGUIDs: [TargetGUID(rawValue: "target")],
+        buildParameters: BuildParametersMessagePayload(
+            action: "indexbuild",
+            configuration: configuration,
+            activeRunDestination: nil,
+            activeArchitecture: nil,
+            arenaInfo: nil,
+            overrides: SettingsOverridesMessagePayload(
+                synthesized: [:],
+                commandLine: [:],
+                commandLineConfigPath: nil,
+                commandLineConfig: [:],
+                environmentConfigPath: nil,
+                environmentConfig: [:],
+                toolchainOverride: nil
+            )
+        ),
+        includeImplicitDependencies: true,
+        dependencyScope: .workspace
+    )
+}
+
+private final class RequestSnapshot: Sendable {
+    let response = makeResponse("shared")
+    private let onRelease: @Sendable () -> Void
+
+    init(onRelease: @escaping @Sendable () -> Void) {
+        self.onRelease = onRelease
+    }
+
+    deinit { onRelease() }
+}
+
+private func submitSnapshotRequest(
+    coordinator: DependencyGraphRequestCoordinator,
+    key: DependencyGraphRequestCoordinator.IndexRequestKey,
+    shouldFail: Bool,
+    activity: ActivityRecorder,
+    onRelease: @escaping @Sendable () -> Void,
+    completion: @escaping DependencyGraphRequestCoordinator.Completion
+) -> WeakRef<RequestSnapshot> {
+    let snapshot = RequestSnapshot(onRelease: onRelease)
+    coordinator.submit(lane: .index, priority: .utility, indexRequestKey: key) {
+        activity.begin("index")
+        defer { activity.end("index") }
+        if shouldFail { throw TestError.expected }
+        return snapshot.response
+    } completion: { completion($0) }
+    return WeakRef(snapshot)
 }
