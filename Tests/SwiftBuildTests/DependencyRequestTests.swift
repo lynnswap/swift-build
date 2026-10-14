@@ -219,6 +219,123 @@ fileprivate struct DependencyClosureTests: CoreBasedTests {
         }
     }
 
+    @Test(.requireSDKs(.macOS), arguments: [false, true])
+    func computeIndexDependencyGraphUsesUpdatedConfigFile(createsOptionalInclude: Bool) async throws {
+        try await withTemporaryDirectory { temporaryDirectory in
+            try await withAsyncDeferrable { deferrable in
+                let testSession = try await TestSWBSession(temporaryDirectory: temporaryDirectory)
+                await deferrable.addBlock {
+                    await #expect(throws: Never.self) {
+                        try await testSession.close()
+                    }
+                }
+
+                let firstTarget = TestStandardTarget("First", type: .framework)
+                let secondTarget = TestStandardTarget("Second", type: .framework)
+                let mainTarget = TestStandardTarget(
+                    "Main",
+                    type: .framework,
+                    buildConfigurations: [TestBuildConfiguration("Debug", baseConfig: "Dependencies.xcconfig")],
+                    dependencies: [.init("First"), .init("Second")]
+                )
+                let pif = try TestWorkspace("Test", sourceRoot: temporaryDirectory.path, projects: [
+                    TestProject(
+                        "Test",
+                        groupTree: TestGroup("Test", children: [TestFile("Dependencies.xcconfig")]),
+                        buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: ["SDKROOT": "macosx"])],
+                        targets: [firstTarget, secondTarget, mainTarget]
+                    ),
+                ]).toObjects().propertyListItem
+                let configPath = temporaryDirectory.path.join("Test/Dependencies.xcconfig")
+                try localFS.createDirectory(configPath.dirname, recursive: true)
+                try await localFS.writeFileContents(configPath) {
+                    $0 <<< (createsOptionalInclude ? "#include? \"Generated\"\n" : "EXCLUDED_EXPLICIT_TARGET_DEPENDENCIES = First\n")
+                }
+                try await testSession.session.sendPIF(.init(pif))
+
+                let parameters = SWBBuildParameters(action: "indexbuild", configuration: "Debug", activeRunDestination: .anyMac)
+                var initialGraph: [SWBTargetGUID: [SWBTargetGUID]] = [
+                    SWBTargetGUID(rawValue: mainTarget.guid): [SWBTargetGUID(rawValue: secondTarget.guid)],
+                    SWBTargetGUID(rawValue: secondTarget.guid): [],
+                ]
+                if createsOptionalInclude {
+                    initialGraph[SWBTargetGUID(rawValue: mainTarget.guid)] = [SWBTargetGUID(rawValue: firstTarget.guid), SWBTargetGUID(rawValue: secondTarget.guid)]
+                    initialGraph[SWBTargetGUID(rawValue: firstTarget.guid)] = []
+                }
+                #expect(try await testSession.session.computeDependencyGraph(targetGUIDs: [SWBTargetGUID(rawValue: mainTarget.guid)], buildParameters: parameters, includeImplicitDependencies: false) == initialGraph)
+
+                let changedConfigPath = createsOptionalInclude ? configPath.dirname.join("Generated.xcconfig") : configPath
+                try await localFS.writeFileContents(changedConfigPath) {
+                    $0 <<< "EXCLUDED_EXPLICIT_TARGET_DEPENDENCIES = Second\n"
+                }
+                #expect(try await testSession.session.computeDependencyGraph(targetGUIDs: [SWBTargetGUID(rawValue: mainTarget.guid)], buildParameters: parameters, includeImplicitDependencies: false) == [
+                    SWBTargetGUID(rawValue: mainTarget.guid): [SWBTargetGUID(rawValue: firstTarget.guid)],
+                    SWBTargetGUID(rawValue: firstTarget.guid): [],
+                ])
+            }
+        }
+    }
+
+    @Test(.requireSDKs(.macOS), arguments: [true, false])
+    func computeIndexDependencyGraphUsesUpdatedExternalSDK(sdkInitiallyExists: Bool) async throws {
+        try await withTemporaryDirectory { temporaryDirectory in
+            try await withAsyncDeferrable { deferrable in
+                let testSession = try await TestSWBSession(temporaryDirectory: temporaryDirectory)
+                await deferrable.addBlock {
+                    await #expect(throws: Never.self) {
+                        try await testSession.close()
+                    }
+                }
+
+                let sdkPath = temporaryDirectory.path.join("Dependencies.sdk")
+                if sdkInitiallyExists {
+                    try await writeSDK(name: sdkPath.basename, parentDir: sdkPath.dirname, settings: [
+                        "CanonicalName": "com.example.dependencies1.0",
+                        "IsBaseSDK": "NO",
+                        "DefaultProperties": ["EXCLUDED_EXPLICIT_TARGET_DEPENDENCIES": "First"],
+                    ])
+                }
+
+                let firstTarget = TestStandardTarget("First", type: .framework)
+                let secondTarget = TestStandardTarget("Second", type: .framework)
+                let mainTarget = TestStandardTarget("Main", type: .framework, dependencies: [.init("First"), .init("Second")])
+                let pif = try TestWorkspace("Test", sourceRoot: temporaryDirectory.path, projects: [
+                    TestProject(
+                        "Test",
+                        groupTree: TestGroup("Test"),
+                        buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: [
+                            "SDKROOT": "macosx",
+                            "ADDITIONAL_SDKS": sdkPath.str,
+                        ])],
+                        targets: [firstTarget, secondTarget, mainTarget]
+                    ),
+                ]).toObjects().propertyListItem
+                try await testSession.session.sendPIF(.init(pif))
+
+                let parameters = SWBBuildParameters(action: "indexbuild", configuration: "Debug", activeRunDestination: .anyMac)
+                var initialGraph: [SWBTargetGUID: [SWBTargetGUID]] = [
+                    SWBTargetGUID(rawValue: mainTarget.guid): [SWBTargetGUID(rawValue: secondTarget.guid)],
+                    SWBTargetGUID(rawValue: secondTarget.guid): [],
+                ]
+                if !sdkInitiallyExists {
+                    initialGraph[SWBTargetGUID(rawValue: mainTarget.guid)] = [SWBTargetGUID(rawValue: firstTarget.guid), SWBTargetGUID(rawValue: secondTarget.guid)]
+                    initialGraph[SWBTargetGUID(rawValue: firstTarget.guid)] = []
+                }
+                #expect(try await testSession.session.computeDependencyGraph(targetGUIDs: [SWBTargetGUID(rawValue: mainTarget.guid)], buildParameters: parameters, includeImplicitDependencies: false) == initialGraph)
+
+                try await writeSDK(name: sdkPath.basename, parentDir: sdkPath.dirname, settings: [
+                    "CanonicalName": "com.example.dependencies1.0",
+                    "IsBaseSDK": "NO",
+                    "DefaultProperties": ["EXCLUDED_EXPLICIT_TARGET_DEPENDENCIES": "Second"],
+                ])
+                #expect(try await testSession.session.computeDependencyGraph(targetGUIDs: [SWBTargetGUID(rawValue: mainTarget.guid)], buildParameters: parameters, includeImplicitDependencies: false) == [
+                    SWBTargetGUID(rawValue: mainTarget.guid): [SWBTargetGUID(rawValue: firstTarget.guid)],
+                    SWBTargetGUID(rawValue: firstTarget.guid): [],
+                ])
+            }
+        }
+    }
+
     @Test(.requireSDKs(.macOS, .iOS))
     func computeDependencyClosureWithPlatformFilters() async throws {
         try await withTemporaryDirectory { temporaryDirectory in

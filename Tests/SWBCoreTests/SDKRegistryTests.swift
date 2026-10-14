@@ -258,6 +258,41 @@ import SWBMacro
         }
     }
 
+    @Test(arguments: [false, true])
+    func workspaceContextReuseRequiresStandardSDKPaths(usesNameOrPath: Bool) async throws {
+        try await withRegistryForTestInputs([
+            ("boot.sdk", ["CanonicalName": "macosx"]),
+        ]) { coreSDKRegistry, delegate, sdkDirectory in
+            let sdk = try #require(coreSDKRegistry.lookup("macosx"))
+            let aliasPath = sdkDirectory.join("Alias.sdk")
+            try localFS.symlink(aliasPath, target: Path(sdk.path.basename))
+
+            func lookup(_ path: Path, in registry: WorkspaceContextSDKRegistry) throws -> SDK? {
+                if usesNameOrPath {
+                    return try registry.lookup(nameOrPath: path.str, basePath: .root, activeRunDestination: nil)
+                }
+                return registry.lookup(path)
+            }
+
+            let standardRegistry = WorkspaceContextSDKRegistry(coreSDKRegistry: coreSDKRegistry, delegate: delegate, userNamespace: MacroNamespace(), overridingSDKsDir: nil)
+            #expect(try standardRegistry.lookup("macosx", activeRunDestination: nil) === sdk)
+            #expect(try standardRegistry.lookup(nameOrPath: "macosx", basePath: .root, activeRunDestination: nil) === sdk)
+            #expect(try lookup(sdk.path, in: standardRegistry) === sdk)
+            #expect(!standardRegistry.hasCustomSDKs)
+
+            let aliasRegistry = WorkspaceContextSDKRegistry(coreSDKRegistry: coreSDKRegistry, delegate: delegate, userNamespace: MacroNamespace(), overridingSDKsDir: nil)
+            #expect(try lookup(aliasPath, in: aliasRegistry) === sdk)
+            #expect(aliasRegistry.hasCustomSDKs)
+
+            let missingRegistry = WorkspaceContextSDKRegistry(coreSDKRegistry: coreSDKRegistry, delegate: delegate, userNamespace: MacroNamespace(), overridingSDKsDir: nil)
+            #expect(try lookup(sdkDirectory.join("Missing.sdk"), in: missingRegistry) == nil)
+            #expect(missingRegistry.hasCustomSDKs)
+
+            #expect(delegate.errors == [])
+            #expect(delegate.warnings == [])
+        }
+    }
+
     @Test
     func overridingSDKs() async throws {
         try await withRegistryForTestInputs([
@@ -270,6 +305,7 @@ import SWBMacro
 
                 let userNamespace = MacroNamespace()
                 let registry = WorkspaceContextSDKRegistry(coreSDKRegistry: coreSDKRegistry, delegate: delegate, userNamespace: userNamespace, overridingSDKsDir: overridingSDKsDirPath)
+                #expect(registry.hasCustomSDKs)
 
                 #expect(registry.lookup("macosx")?.path.basename == "boot.sdk")
                 #expect(registry.lookup(nameOrPath: "macosx", basePath: .root)?.path.basename == "boot.sdk")
@@ -306,12 +342,14 @@ import SWBMacro
                 // Now make sure we can load the external SDK via a workspace context registry.
                 let userNamespace = MacroNamespace()
                 let registry = WorkspaceContextSDKRegistry(coreSDKRegistry: coreSDKRegistry, delegate: delegate, userNamespace: userNamespace, overridingSDKsDir: nil)
+                #expect(!registry.hasCustomSDKs)
 
                 #expect(registry.lookup("macosx")?.path.basename == "boot.sdk")
                 #expect(registry.lookup(nameOrPath: "macosx", basePath: .root)?.path.basename == "boot.sdk")
 
                 #expect(registry.lookup(externalSDKsDirPath.join("external.sdk"))?.canonicalName == "external1.0")
                 #expect(registry.lookup(externalSDKsDirPath.join("external.sdk"))?.canonicalName == "external1.0")
+                #expect(registry.hasCustomSDKs)
 
                 #expect(delegate.errors == [])
                 #expect(delegate.warnings == [])

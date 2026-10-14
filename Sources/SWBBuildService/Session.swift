@@ -152,7 +152,41 @@ public final class Session {
     package let dependencyGraphRequestCoordinator = DependencyGraphRequestCoordinator()
 
     /// The active workspace session
-    public internal(set) var workspaceContext: WorkspaceContext?
+    public internal(set) var workspaceContext: WorkspaceContext? {
+        didSet {
+            guard let workspaceContext, let cached = cachedIndexDependencyGraphContext else {
+                cachedIndexDependencyGraphContext = nil
+                return
+            }
+            // PIF reapplication sends client information separately. Validate those fields
+            // when each update arrives, while retaining a matching workspace's warm cache.
+            if cached.key.core != ObjectIdentifier(workspaceContext.core)
+                || cached.key.fs != ObjectIdentifier(workspaceContext.fs)
+                || cached.key.workspaceSignature != workspaceContext.workspace.signature {
+                cachedIndexDependencyGraphContext = nil
+            }
+        }
+    }
+
+    private var cachedIndexDependencyGraphContext: IndexDependencyGraphContext?
+
+    package func indexDependencyGraphContext(for inputs: DependencyGraphRequestInputs, key: DependencyGraphRequestCoordinator.IndexRequestKey) -> IndexDependencyGraphContext {
+        if let cached = cachedIndexDependencyGraphContext, cached.key == key { return cached }
+        // A different request replaces the slot instead of accumulating configurations.
+        let context = IndexDependencyGraphContext(inputs: inputs, key: key)
+        cachedIndexDependencyGraphContext = context
+        return context
+    }
+
+    package func invalidateIndexWorkspaceContext<Value: Equatable>(for field: KeyPath<DependencyGraphRequestInputs, Value>, value: Value) {
+        if let cached = cachedIndexDependencyGraphContext, cached.inputs[keyPath: field] != value {
+            cachedIndexDependencyGraphContext = nil
+        }
+    }
+
+    package func clearIndexWorkspaceContext() {
+        cachedIndexDependencyGraphContext = nil
+    }
 
     /// The incremental PIF loader.
     private let incrementalPIFLoader: IncrementalPIFLoader

@@ -11,8 +11,9 @@
 //===----------------------------------------------------------------------===//
 
 import Dispatch
-import SWBBuildService
+@testable import SWBBuildService
 import SWBCore
+import SWBMacro
 import SWBProtocol
 import SWBTestSupport
 import SWBUtil
@@ -72,6 +73,206 @@ import Testing
         #expect(restored.systemInfo == systemInfo)
         #expect(restored.userPreferences == userPreferences)
         #expect(DependencyGraphRequestInputs(workspaceContext: restored).requestKey(for: request) == originalKey)
+    }
+
+    @Test(.requireSDKs(.macOS), arguments: [false, true])
+    func identicalPIFAndMetadataReuseIndexSettings(usesAutomaticSDK: Bool) async throws {
+        let workspace = makeIndexSettingsWorkspace(buildSettings: usesAutomaticSDK ? ["SDKROOT": "auto", "SUPPORTED_PLATFORMS": "macosx"] : [:])
+        let context = try await contextForTestData(workspace)
+        context.updateUserPreferences(.defaultForTesting)
+        let session = Session(context.core, "Test", cachePath: nil)
+        session.workspaceContext = context
+        let inputs = DependencyGraphRequestInputs(workspaceContext: context)
+        let entry = makeIndexContext(session, inputs: inputs)
+        let cachedContext = entry.workspaceContext()
+        let settings = indexSettings(in: cachedContext)
+        #expect(settings.errors.isEmpty)
+        #expect(try indexValue(in: settings) == "IndexTarget:Debug")
+        entry.finished(using: cachedContext)
+
+        let reappliedContext = WorkspaceContext(core: context.core, workspace: try workspace.load(context.core), fs: context.fs, processExecutionCache: ProcessExecutionCache())
+        #expect(reappliedContext.workspace !== context.workspace)
+        #expect(reappliedContext.workspace.signature == context.workspace.signature)
+        session.workspaceContext = reappliedContext
+        reappliedContext.updateUserInfo(try #require(context.userInfo))
+        session.invalidateIndexWorkspaceContext(for: \.userInfo, value: reappliedContext.userInfo)
+        reappliedContext.updateSystemInfo(try #require(context.systemInfo))
+        session.invalidateIndexWorkspaceContext(for: \.systemInfo, value: reappliedContext.systemInfo)
+        reappliedContext.updateUserPreferences(context.userPreferences)
+        session.invalidateIndexWorkspaceContext(for: \.userPreferences, value: reappliedContext.userPreferences)
+
+        let reappliedInputs = DependencyGraphRequestInputs(workspaceContext: reappliedContext)
+        let reappliedEntry = makeIndexContext(session, inputs: reappliedInputs)
+        #expect(reappliedEntry === entry)
+        #expect(reappliedEntry.workspaceContext() === cachedContext)
+        #expect(indexSettings(in: reappliedEntry.workspaceContext()) === settings)
+
+    }
+
+    @Test(.requireSDKs(.macOS))
+    func developmentAssetDirectoryChangesUseFreshIndexSettings() async throws {
+        let assetPath = Path("/tmp/DevelopmentAssets")
+        let workspace = makeIndexSettingsWorkspace(buildSettings: [
+            "DEVELOPMENT_ASSET_PATHS": assetPath.str,
+            "DEPLOYMENT_POSTPROCESSING": "YES",
+        ])
+        let context = try await contextForTestData(workspace)
+        let session = Session(context.core, "Test", cachePath: nil)
+        session.workspaceContext = context
+        let inputs = DependencyGraphRequestInputs(workspaceContext: context)
+        let entry = makeIndexContext(session, inputs: inputs)
+        let cachedContext = entry.workspaceContext()
+        let originalSettings = indexSettings(in: cachedContext)
+        #expect(originalSettings.globalScope.evaluate(BuiltinMacros.EXCLUDED_SOURCE_FILE_NAMES) == [assetPath.str])
+        entry.finished(using: cachedContext)
+
+        try context.fs.createDirectory(assetPath, recursive: true)
+        let updatedEntry = makeIndexContext(session, inputs: inputs)
+        #expect(updatedEntry === entry)
+        let updatedContext = updatedEntry.workspaceContext()
+        #expect(updatedContext !== cachedContext)
+        let updatedSettings = indexSettings(in: updatedContext)
+        #expect(updatedSettings !== originalSettings)
+        #expect(updatedSettings.inputPathsAffectingSettingsSignature == originalSettings.inputPathsAffectingSettingsSignature)
+        #expect(updatedSettings.globalScope.evaluate(BuiltinMacros.EXCLUDED_SOURCE_FILE_NAMES) == [assetPath.join("*").str])
+    }
+
+    @Test(arguments: SnapshotMetadata.allCases)
+    func metadataUpdatesInvalidateOnlyChangedIndexInputs(_ metadata: SnapshotMetadata) async throws {
+        let context = try await contextForTestData(TestWorkspace("Test", projects: []), environment: ["SNAPSHOT_VALUE": "original"])
+        context.updateUserPreferences(.defaultForTesting)
+        let session = Session(context.core, "Test", cachePath: nil)
+        session.workspaceContext = context
+        let originalInputs = DependencyGraphRequestInputs(workspaceContext: context)
+        let originalEntry = WeakRef(makeIndexContext(session, inputs: originalInputs))
+        let originalContext = WeakRef(try #require(originalEntry.instance).workspaceContext())
+
+        switch metadata {
+        case .userInfo:
+            context.updateUserInfo(try #require(context.userInfo))
+            session.invalidateIndexWorkspaceContext(for: \.userInfo, value: context.userInfo)
+        case .systemInfo:
+            context.updateSystemInfo(try #require(context.systemInfo))
+            session.invalidateIndexWorkspaceContext(for: \.systemInfo, value: context.systemInfo)
+        case .userPreferences:
+            context.updateUserPreferences(context.userPreferences)
+            session.invalidateIndexWorkspaceContext(for: \.userPreferences, value: context.userPreferences)
+        }
+        #expect(makeIndexContext(session, inputs: originalInputs) === originalEntry.instance)
+        #expect(originalContext.instance != nil)
+
+        switch metadata {
+        case .userInfo:
+            context.updateUserInfo(try #require(context.userInfo).withAdditionalEnvironment(environment: ["SNAPSHOT_VALUE": "updated"]))
+            session.invalidateIndexWorkspaceContext(for: \.userInfo, value: context.userInfo)
+        case .systemInfo:
+            let info = try #require(context.systemInfo)
+            context.updateSystemInfo(SystemInfo(operatingSystemVersion: info.operatingSystemVersion, productBuildVersion: info.productBuildVersion + "-updated", nativeArchitecture: info.nativeArchitecture))
+            session.invalidateIndexWorkspaceContext(for: \.systemInfo, value: context.systemInfo)
+        case .userPreferences:
+            context.updateUserPreferences(context.userPreferences.with(enableDebugActivityLogs: true))
+            session.invalidateIndexWorkspaceContext(for: \.userPreferences, value: context.userPreferences)
+        }
+        #expect(originalEntry.instance == nil)
+        #expect(originalContext.instance == nil)
+        let updatedInputs = DependencyGraphRequestInputs(workspaceContext: context)
+        let updatedEntry = makeIndexContext(session, inputs: updatedInputs)
+        #expect(updatedEntry.key != originalInputs.requestKey(for: makeDependencyGraphRequest()))
+        #expect(updatedEntry.workspaceContext().userInfo == context.userInfo)
+        #expect(updatedEntry.workspaceContext().systemInfo == context.systemInfo)
+        #expect(updatedEntry.workspaceContext().userPreferences == context.userPreferences)
+    }
+
+    @Test(arguments: [false, true])
+    func replacedIndexContextsLiveOnlyForActiveRequests(isActive: Bool) async throws {
+        let context = try await contextForTestData(TestWorkspace("Original", projects: []))
+        let session = Session(context.core, "Test", cachePath: nil)
+        session.workspaceContext = context
+        let inputs = DependencyGraphRequestInputs(workspaceContext: context)
+        let entry = WeakRef(makeIndexContext(session, inputs: inputs))
+        let cachedContext = WeakRef(try #require(entry.instance).workspaceContext())
+        let indexQueue = AsyncOperationQueue(concurrentTasks: 1)
+        let blocker = isActive ? nil : await holdQueue(indexQueue)
+        let coordinator = makeCoordinator(indexQueue: indexQueue)
+        let recorder = OutcomeRecorder()
+        let started = WaitCondition()
+        let release = WaitCondition()
+
+        coordinator.submit(lane: .index, priority: .utility, indexRequestKey: inputs.requestKey(for: makeDependencyGraphRequest())) {
+            let activeEntry = entry.instance
+            let activeContext = activeEntry?.workspaceContext() ?? inputs.makeWorkspaceContext()
+            defer { activeEntry?.finished(using: activeContext) }
+            started.signal()
+            if isActive { await release.wait() }
+            #expect(activeContext.userInfo == inputs.userInfo)
+            #expect(activeContext.systemInfo == inputs.systemInfo)
+            #expect(activeContext.userPreferences == inputs.userPreferences)
+            return makeResponse(activeContext.workspace.name)
+        } completion: {
+            recorder.record($0)
+        }
+
+        if isActive {
+            await started.wait()
+            session.workspaceContext = nil
+        } else {
+            session.workspaceContext = try await contextForTestData(TestWorkspace("Updated", projects: []))
+        }
+        #expect((entry.instance != nil) == isActive)
+        #expect((cachedContext.instance != nil) == isActive)
+
+        release.signal()
+        if let blocker {
+            blocker.release.signal()
+            try await blocker.task.value
+        }
+        await coordinator.waitForQuiescence()
+        #expect(entry.instance == nil)
+        #expect(cachedContext.instance == nil)
+        #expect(recorder.outcomes == [.success(makeResponse("Original"))])
+    }
+
+    @Test(.requireSDKs(.macOS), arguments: [false, true])
+    func sessionsKeepOnlyTheCurrentIndexInputSet(changesWorkspace: Bool) async throws {
+        let fixture = makeIndexSettingsWorkspace()
+        let context = try await contextForTestData(fixture)
+        let session = Session(context.core, "Test", cachePath: nil)
+        session.workspaceContext = context
+        var snapshots: [DependencyGraphRequestInputs] = []
+        var entries: [WeakRef<IndexDependencyGraphContext>] = []
+        var contexts: [WeakRef<WorkspaceContext>] = []
+        var settings: [WeakRef<Settings>] = []
+
+        for generation in 0..<20 {
+            if changesWorkspace {
+                let workspace = try TestWorkspace("Generation-\(generation)", projects: fixture.projects).load(context.core)
+                session.workspaceContext = try await contextForTestData(workspace, core: context.core, fs: context.fs)
+            }
+            let inputs = DependencyGraphRequestInputs(workspaceContext: try #require(session.workspaceContext))
+            snapshots.append(inputs)
+            let configuration = changesWorkspace || generation.isMultiple(of: 2) ? "Debug" : "Release"
+            let entry = makeIndexContext(session, inputs: inputs, configuration: configuration)
+            let cachedContext = entry.workspaceContext()
+            let cachedSettings = indexSettings(in: cachedContext, configuration: configuration)
+            #expect(cachedSettings.errors.isEmpty)
+            #expect(try indexValue(in: cachedSettings) == "IndexTarget:\(configuration)")
+            entry.finished(using: cachedContext)
+            entries.append(WeakRef(entry))
+            contexts.append(WeakRef(cachedContext))
+            settings.append(WeakRef(cachedSettings))
+            #expect(entries.dropLast().allSatisfy { $0.instance == nil })
+            #expect(contexts.dropLast().allSatisfy { $0.instance == nil })
+            #expect(settings.dropLast().allSatisfy { $0.instance == nil })
+        }
+
+        #expect(snapshots.count == 20)
+        #expect(entries.last?.instance != nil)
+        #expect(contexts.last?.instance != nil)
+        #expect(settings.last?.instance != nil)
+        session.clearIndexWorkspaceContext()
+        #expect(entries.allSatisfy { $0.instance == nil })
+        #expect(contexts.allSatisfy { $0.instance == nil })
+        #expect(settings.allSatisfy { $0.instance == nil })
     }
 
     @Test(arguments: [false, true])
@@ -784,6 +985,32 @@ private func makeDependencyGraphRequest(configuration: String = "Debug") -> NonB
         includeImplicitDependencies: true,
         dependencyScope: .workspace
     )
+}
+
+private func makeIndexContext(_ session: Session, inputs: DependencyGraphRequestInputs, configuration: String = "Debug") -> IndexDependencyGraphContext {
+    session.indexDependencyGraphContext(for: inputs, key: inputs.requestKey(for: makeDependencyGraphRequest(configuration: configuration)))
+}
+
+private func makeIndexSettingsWorkspace(buildSettings: [String: String] = [:]) -> TestWorkspace {
+    TestWorkspace("Test", projects: [
+        TestProject("Project", groupTree: TestGroup("Files"), buildConfigurations: [
+            TestBuildConfiguration("Debug", buildSettings: ["SDKROOT": "macosx"].merging(buildSettings, uniquingKeysWith: { _, value in value })),
+            TestBuildConfiguration("Release", buildSettings: ["SDKROOT": "macosx"].merging(buildSettings, uniquingKeysWith: { _, value in value })),
+        ], targets: [
+            TestStandardTarget("IndexTarget", type: .commandLineTool, buildConfigurations: [
+                TestBuildConfiguration("Debug", buildSettings: ["INDEX_VALUE": "$(TARGET_NAME):$(CONFIGURATION)"]),
+                TestBuildConfiguration("Release", buildSettings: ["INDEX_VALUE": "$(TARGET_NAME):$(CONFIGURATION)"]),
+            ]),
+        ]),
+    ])
+}
+
+private func indexSettings(in context: WorkspaceContext, configuration: String = "Debug") -> Settings {
+    BuildRequestContext(workspaceContext: context).getCachedSettings(BuildParameters(action: .indexBuild, configuration: configuration, activeRunDestination: .macOS), target: context.workspace.projects[0].targets[0])
+}
+
+private func indexValue(in settings: Settings) throws -> String {
+    settings.globalScope.evaluateAsString(try #require(settings.userNamespace.lookupMacroDeclaration("INDEX_VALUE")))
 }
 
 private final class RequestSnapshot: Sendable {
