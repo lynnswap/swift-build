@@ -334,6 +334,14 @@ public final class WorkspaceContext: Sendable {
         _workspaceSettingsCache.value
     }
 
+    private let _settingsRequireFreshContext = SWBMutex(false)
+    package var settingsRequireFreshContext: Bool {
+        _settingsRequireFreshContext.withLock { $0 }
+    }
+    internal func requireFreshContextForSettings() {
+        _settingsRequireFreshContext.withLock { $0 = true }
+    }
+
     internal let macroConfigFileLoader: MacroConfigFileLoader
 
     let machOInfoCache: FileSystemSignatureBasedCache<MachOInfo>

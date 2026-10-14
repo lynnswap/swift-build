@@ -160,9 +160,9 @@ package final class IndexDependencyGraphContext: Sendable {
     }
 
     package func finished(using context: WorkspaceContext) {
-        // Context-specific SDK registries do not revalidate metadata or directory membership.
+        // Some settings inputs and context-specific SDK registries are not signature-validated.
         // Preserve their per-request freshness instead of reusing those contexts.
-        if context.sdkRegistry.hasCustomSDKs {
+        if context.settingsRequireFreshContext || context.sdkRegistry.hasCustomSDKs {
             cachedWorkspaceContext.withLock { cached in
                 if cached === context { cached = nil }
             }

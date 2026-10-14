@@ -110,7 +110,7 @@ import Testing
     }
 
     @Test(.requireSDKs(.macOS))
-    func developmentAssetDirectoryChangesInvalidateIndexSettings() async throws {
+    func developmentAssetDirectoryChangesUseFreshIndexSettings() async throws {
         let assetPath = Path("/tmp/DevelopmentAssets")
         let workspace = makeIndexSettingsWorkspace(buildSettings: [
             "DEVELOPMENT_ASSET_PATHS": assetPath.str,
@@ -129,9 +129,11 @@ import Testing
         try context.fs.createDirectory(assetPath, recursive: true)
         let updatedEntry = makeIndexContext(session, inputs: inputs)
         #expect(updatedEntry === entry)
-        #expect(updatedEntry.workspaceContext() === cachedContext)
-        let updatedSettings = indexSettings(in: cachedContext)
+        let updatedContext = updatedEntry.workspaceContext()
+        #expect(updatedContext !== cachedContext)
+        let updatedSettings = indexSettings(in: updatedContext)
         #expect(updatedSettings !== originalSettings)
+        #expect(updatedSettings.inputPathsAffectingSettingsSignature == originalSettings.inputPathsAffectingSettingsSignature)
         #expect(updatedSettings.globalScope.evaluate(BuiltinMacros.EXCLUDED_SOURCE_FILE_NAMES) == [assetPath.join("*").str])
     }
 
