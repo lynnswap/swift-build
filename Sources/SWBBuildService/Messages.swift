@@ -228,6 +228,7 @@ private struct WaitForQuiescenceHandler: MessageHandler {
 private struct DeleteSessionHandler: MessageHandler {
     func handle(request: Request, message: DeleteSessionRequest) async throws -> VoidResponse {
         let session = try request.session(for: message)
+        session.clearIndexWorkspaceContext()
         await session.dependencyGraphRequestCoordinator.close()
         await session.buildDescriptionManager.waitForBuildDescriptionSerialization()
         request.buildService.sessionMap.removeValue(forKey: session.UID)
@@ -319,6 +320,7 @@ private struct SetSessionSystemInfoMsg: MessageHandler {
 
         // Update the workspace context.
         workspaceContext.updateSystemInfo(SystemInfo(operatingSystemVersion: message.operatingSystemVersion, productBuildVersion: message.productBuildVersion, nativeArchitecture: message.nativeArchitecture))
+        session.invalidateIndexWorkspaceContext(for: \.systemInfo, value: workspaceContext.systemInfo)
 
         return VoidResponse()
     }
@@ -338,6 +340,7 @@ private struct SetSessionUserInfoMsg: MessageHandler {
 
         // Update the workspace context.
         workspaceContext.updateUserInfo(UserInfo(user: message.user, group: message.group, uid: message.uid, gid: message.gid, home: Path(message.home), processEnvironment: message.processEnvironment, buildSystemEnvironment: message.buildSystemEnvironment))
+        session.invalidateIndexWorkspaceContext(for: \.userInfo, value: workspaceContext.userInfo)
 
         return VoidResponse()
     }
@@ -358,6 +361,7 @@ private struct SetSessionUserPreferencesMsg: MessageHandler {
             usePerConfigurationBuildLocations: message.usePerConfigurationBuildLocations,
             allowsExternalToolExecution: message.allowsExternalToolExecution ?? UserPreferences.allowsExternalToolExecutionDefaultValue)
         )
+        session.invalidateIndexWorkspaceContext(for: \.userPreferences, value: workspaceContext.userPreferences)
 
         return VoidResponse()
     }

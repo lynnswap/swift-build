@@ -1822,7 +1822,12 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
         var preOverrides = PreOverridesSettings(sdk: nil)
         do {
             do {
-                preOverrides.sdk = try project.map { try sdkRegistry.lookup(nameOrPath: createScope(effectiveTargetConfig, sdkToUse: nil).evaluate(BuiltinMacros.SDKROOT).str, basePath: $0.sourceRoot, activeRunDestination: parameters.activeRunDestination) } ?? nil
+                preOverrides.sdk = try project.flatMap {
+                    let sdkroot = createScope(effectiveTargetConfig, sdkToUse: nil).evaluate(BuiltinMacros.SDKROOT).str
+                    // Automatic SDKs are resolved against the run destination below.
+                    guard sdkroot != "auto" else { return nil }
+                    return try sdkRegistry.lookup(nameOrPath: sdkroot, basePath: $0.sourceRoot, activeRunDestination: parameters.activeRunDestination)
+                }
             } catch {
                 preOverrides.sdk = nil
 
@@ -3561,6 +3566,7 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
                 // each path could either be a directory or a file path and needs to exist on the filesystem
                 let projectDir = scope.evaluate(BuiltinMacros.PROJECT_DIR)
                 let absolutePath = projectDir.join(developmentAssetsPath)
+                inputPathsAffectingSettings.append(absolutePath)
 
                 // TODO: 50493364 (Development Resources: Check for accidentally added files)
                 if workspaceContext.fs.isDirectory(absolutePath) {
@@ -3815,7 +3821,8 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
         // If the target supports specialization and it already has an SDK, then we need to use that instead of attempting to override the SDK with the run destination information. This is very important in scenarios where the destination is Mac Catalyst, but the target is building for iphoneos. The target will be re-configured for macosx/iosmac.
         do {
             let scope = createScope(sdkToUse: nil)
-            let sdk = try sdkRegistry.lookup(nameOrPath: scope.evaluate(BuiltinMacros.SDKROOT).str, basePath: project?.sourceRoot ?? Path.root, activeRunDestination: nil)
+            let sdkroot = scope.evaluate(BuiltinMacros.SDKROOT).str
+            let sdk = sdkroot == "auto" ? nil : try sdkRegistry.lookup(nameOrPath: sdkroot, basePath: project?.sourceRoot ?? Path.root, activeRunDestination: nil)
             if Settings.targetPlatformSpecializationEnabled(scope: scope) && sdk != nil {
                 return
             }
@@ -3873,7 +3880,8 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
         }
 
         let scope = createScope(sdkToUse: nil)
-        guard let project, let targetSDK = try? sdkRegistry.lookup(nameOrPath: scope.evaluate(BuiltinMacros.SDKROOT).str, basePath: project.sourceRoot, activeRunDestination: parameters.activeRunDestination) else {
+        let sdkroot = scope.evaluate(BuiltinMacros.SDKROOT).str
+        guard sdkroot != "auto", let project, let targetSDK = try? sdkRegistry.lookup(nameOrPath: sdkroot, basePath: project.sourceRoot, activeRunDestination: parameters.activeRunDestination) else {
             return
         }
         let targetPlatform = core.platformRegistry.lookup(name: scope.evaluate(BuiltinMacros.PLATFORM_NAME))

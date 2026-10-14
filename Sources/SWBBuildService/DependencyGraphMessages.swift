@@ -17,6 +17,7 @@ import SWBServiceCore
 import SWBTaskConstruction
 import SWBTaskExecution
 import SWBUtil
+import Synchronization
 
 final private class ResolverDelegate: TargetDependencyResolverDelegate {
     var cancelled: Bool { false }
@@ -108,9 +109,9 @@ package struct DependencyGraphRequestInputs: Sendable {
     private let core: Core
     private let workspace: SWBCore.Workspace
     private let fs: any FSProxy
-    private let userInfo: UserInfo?
-    private let systemInfo: SystemInfo?
-    private let userPreferences: UserPreferences
+    package let userInfo: UserInfo?
+    package let systemInfo: SystemInfo?
+    package let userPreferences: UserPreferences
 
     package init(workspaceContext: WorkspaceContext) {
         core = workspaceContext.core
@@ -135,6 +136,37 @@ package struct DependencyGraphRequestInputs: Sendable {
         }
         context.updateUserPreferences(userPreferences)
         return context
+    }
+}
+
+// A session owns one current input set. Queued requests only weakly reference this owner.
+package final class IndexDependencyGraphContext: Sendable {
+    package let inputs: DependencyGraphRequestInputs
+    package let key: DependencyGraphRequestCoordinator.IndexRequestKey
+    private let cachedWorkspaceContext = SWBMutex<WorkspaceContext?>(nil)
+
+    package init(inputs: DependencyGraphRequestInputs, key: DependencyGraphRequestCoordinator.IndexRequestKey) {
+        self.inputs = inputs
+        self.key = key
+    }
+
+    package func workspaceContext() -> WorkspaceContext {
+        cachedWorkspaceContext.withLock { cached in
+            if let cached { return cached }
+            let context = inputs.makeWorkspaceContext()
+            cached = context
+            return context
+        }
+    }
+
+    package func finished(using context: WorkspaceContext) {
+        // Context-specific SDK registries do not revalidate metadata or directory membership.
+        // Preserve their per-request freshness instead of reusing those contexts.
+        if context.sdkRegistry.hasCustomSDKs {
+            cachedWorkspaceContext.withLock { cached in
+                if cached === context { cached = nil }
+            }
+        }
     }
 }
 
@@ -165,9 +197,16 @@ struct NonBlockingComputeDependencyGraphMsg: MessageHandler {
         if buildParameters.action == .indexBuild {
             priority = .utility
             let inputs = DependencyGraphRequestInputs(workspaceContext: workspaceContext)
-            indexRequestKey = inputs.requestKey(for: message)
+            let key = inputs.requestKey(for: message)
+            indexRequestKey = key
+            let reusableContext = WeakRef(session.indexDependencyGraphContext(for: inputs, key: key))
             operation = {
-                try await computeDependencyGraphResponse(for: message, in: inputs.makeWorkspaceContext())
+                if let reusableContext = reusableContext.instance {
+                    let context = reusableContext.workspaceContext()
+                    defer { reusableContext.finished(using: context) }
+                    return try await computeDependencyGraphResponse(for: message, in: context)
+                }
+                return try await computeDependencyGraphResponse(for: message, in: inputs.makeWorkspaceContext())
             }
         } else {
             priority = .userInitiated

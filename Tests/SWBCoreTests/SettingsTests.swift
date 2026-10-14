@@ -4509,6 +4509,7 @@ import SWBTestSupport
             #expect(settings.errors == [])
             #expect(settings.warnings == [])
             #expect(settings.globalScope.evaluate(BuiltinMacros.SDKROOT) == context.sdkRegistry.lookup("macosx")?.path)
+            #expect(!context.sdkRegistry.hasCustomSDKs)
         }
 
         do {
@@ -6319,6 +6320,66 @@ import SWBTestSupport
         do {
             let buildRequestContext = BuildRequestContext(workspaceContext: context)
             let info = buildRequestContext.getCachedMacroConfigFile(path, context: .baseConfiguration)
+            let scope = MacroEvaluationScope(table: info.table)
+            let macro = try #require(scope.namespace.lookupMacroDeclaration("XCCONFIG_USER_SETTING"))
+            #expect(scope.evaluateAsString(macro) == "created")
+        }
+    }
+
+    @Test
+    func createHigherPriorityInclude() async throws {
+        let path = Path.root.join("tmp/Test.xcconfig")
+        let context = try await setupTestingContext([path: "#include \"Generated.xcconfig\"\n"])
+        let project = context.workspace.projects[0]
+        try context.fs.createDirectory(project.sourceRoot, recursive: true)
+        try context.fs.write(project.sourceRoot.join("Generated.xcconfig"), contents: "XCCONFIG_USER_SETTING = from-search-path\n")
+
+        do {
+            let buildRequestContext = BuildRequestContext(workspaceContext: context)
+            let info = buildRequestContext.getCachedMacroConfigFile(path, project: project, context: .baseConfiguration)
+            #expect(info.diagnostics.isEmpty)
+            let scope = MacroEvaluationScope(table: info.table)
+            let macro = try #require(scope.namespace.lookupMacroDeclaration("XCCONFIG_USER_SETTING"))
+            #expect(scope.evaluateAsString(macro) == "from-search-path")
+        }
+
+        try context.fs.write(path.dirname.join("Generated.xcconfig"), contents: "XCCONFIG_USER_SETTING = from-includer\n")
+
+        do {
+            let buildRequestContext = BuildRequestContext(workspaceContext: context)
+            let info = buildRequestContext.getCachedMacroConfigFile(path, project: project, context: .baseConfiguration)
+            #expect(info.diagnostics.isEmpty)
+            let scope = MacroEvaluationScope(table: info.table)
+            let macro = try #require(scope.namespace.lookupMacroDeclaration("XCCONFIG_USER_SETTING"))
+            #expect(scope.evaluateAsString(macro) == "from-includer")
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func createAbsoluteIncludeWithoutExtension(fallbackInitiallyExists: Bool) async throws {
+        let path = Path.root.join("tmp/Test.xcconfig")
+        let includedPath = Path.root.join("tmp/Generated")
+        let fallbackPath = Path("\(includedPath.str).xcconfig")
+        let context = try await setupTestingContext([path: "#include? \"\(includedPath.strWithPosixSlashes)\"\n"])
+        if fallbackInitiallyExists {
+            try context.fs.write(fallbackPath, contents: "XCCONFIG_USER_SETTING = from-fallback\n")
+        }
+
+        do {
+            let buildRequestContext = BuildRequestContext(workspaceContext: context)
+            let info = buildRequestContext.getCachedMacroConfigFile(path, context: .baseConfiguration)
+            #expect(info.diagnostics.isEmpty)
+            let scope = MacroEvaluationScope(table: info.table)
+            let macro = scope.namespace.lookupMacroDeclaration("XCCONFIG_USER_SETTING")
+            #expect(macro.map { scope.evaluateAsString($0) } == (fallbackInitiallyExists ? "from-fallback" : nil))
+        }
+
+        try context.fs.write(fallbackInitiallyExists ? includedPath : fallbackPath, contents: "XCCONFIG_USER_SETTING = created\n")
+
+        do {
+            let buildRequestContext = BuildRequestContext(workspaceContext: context)
+            let info = buildRequestContext.getCachedMacroConfigFile(path, context: .baseConfiguration)
+            #expect(info.diagnostics.isEmpty)
             let scope = MacroEvaluationScope(table: info.table)
             let macro = try #require(scope.namespace.lookupMacroDeclaration("XCCONFIG_USER_SETTING"))
             #expect(scope.evaluateAsString(macro) == "created")

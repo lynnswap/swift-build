@@ -158,18 +158,22 @@ final class MacroConfigFileLoader: Sendable {
 
                     // Look for the included file in the search paths.  We stop at the first path at which we find it.
                     for spath in allSearchPaths {
-                        if fs.exists(spath.join(path)) {
-                            path = spath.join(path)
+                        let candidatePath = spath.join(path)
+                        if fs.exists(candidatePath) {
+                            path = candidatePath
                             break
                         }
+                        // A missing candidate can later appear and change which included file is selected.
+                        nestedConfigurations.paths.append(candidatePath)
 
                         // File extension is optional.
                         if path.fileExtension.isEmpty {
-                            let newPath = Path("\(path.str).xcconfig")
-                            if fs.exists(spath.join(newPath)) {
-                                path = spath.join(newPath)
+                            let newPath = spath.join(Path("\(path.str).xcconfig"))
+                            if fs.exists(newPath) {
+                                path = newPath
                                 break
                             }
+                            nestedConfigurations.paths.append(newPath)
                         }
                     }
 
@@ -185,7 +189,10 @@ final class MacroConfigFileLoader: Sendable {
                     if !fs.exists(path) && path.fileExtension.isEmpty {
                         let newPath = Path("\(path.str).xcconfig")
                         if fs.exists(newPath) {
+                            nestedConfigurations.paths.append(path)
                             path = newPath
+                        } else {
+                            nestedConfigurations.paths.append(newPath)
                         }
                     }
                 }
