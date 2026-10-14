@@ -20,9 +20,18 @@ import Foundation
 /// This object manages caches which are relevant to the lifetime of that build request + build description.
 public final class BuildRequestContext: Sendable {
     private let workspaceContext: WorkspaceContext
+    private let cachedSettings: Registry<WorkspaceSettingsCache.SettingsCacheKey, Lazy<Settings>>?
 
     public init(workspaceContext: WorkspaceContext) {
         self.workspaceContext = workspaceContext
+        self.cachedSettings = nil
+    }
+
+    package init(workspaceContext: WorkspaceContext, cacheSettings: Bool) {
+        self.workspaceContext = workspaceContext
+        // Dependency queries keep settings only until graph construction ends. Ordinary builds
+        // leave their lifetime to the workspace cache's TTL and memory-pressure eviction.
+        self.cachedSettings = cacheSettings ? Registry() : nil
     }
 
     private let filesSignatureCache = Registry<[Path], Lazy<FilesSignature>>()
@@ -101,7 +110,9 @@ public final class BuildRequestContext: Sendable {
 
     /// Get the cached settings for the given parameters, without considering the context of any project/target.
     package func getCachedSettings(_ parameters: BuildParameters) -> Settings {
-        workspaceContext.workspaceSettingsCache.getCachedSettings(parameters, buildRequestContext: self, purpose: .build, filesSignature: filesSignature(for:))
+        getCachedSettings(WorkspaceSettingsCache.SettingsCacheKey(parameters: parameters, projectGUID: nil, targetGUID: nil, purpose: .build, provisioningTaskInputs: nil, impartedBuildProperties: nil, artifactBundleInfo: nil, compilationCachingInfo: nil)) {
+            workspaceContext.workspaceSettingsCache.getCachedSettings(parameters, buildRequestContext: self, purpose: .build, filesSignature: filesSignature(for:))
+        }
     }
 
     /// Get the cached settings for the given parameters and project.
@@ -118,7 +129,16 @@ public final class BuildRequestContext: Sendable {
     ///
     /// - remark: This is private so that clients don't somehow call this with a project which doesn't match the target.  There are public methods covering this one.
     private func getCachedSettings(_ parameters: BuildParameters, project: Project, target: Target?, purpose: SettingsPurpose = .build, provisioningTaskInputs: ProvisioningTaskInputs?, impartedBuildProperties: [ImpartedBuildProperties]?, artifactBundleInfo: [ArtifactBundleInfo]?, compilationCachingInfo: CompilationCachingInfo?) -> Settings {
-        workspaceContext.workspaceSettingsCache.getCachedSettings(parameters, project: project, target: target, purpose: purpose, provisioningTaskInputs: provisioningTaskInputs, impartedBuildProperties: impartedBuildProperties, artifactBundleInfo: artifactBundleInfo, compilationCachingInfo: compilationCachingInfo, buildRequestContext: self, filesSignature: filesSignature(for:))
+        getCachedSettings(WorkspaceSettingsCache.SettingsCacheKey(parameters: parameters, projectGUID: project.guid, targetGUID: target?.guid, purpose: purpose, provisioningTaskInputs: provisioningTaskInputs, impartedBuildProperties: impartedBuildProperties, artifactBundleInfo: artifactBundleInfo, compilationCachingInfo: compilationCachingInfo)) {
+            workspaceContext.workspaceSettingsCache.getCachedSettings(parameters, project: project, target: target, purpose: purpose, provisioningTaskInputs: provisioningTaskInputs, impartedBuildProperties: impartedBuildProperties, artifactBundleInfo: artifactBundleInfo, compilationCachingInfo: compilationCachingInfo, buildRequestContext: self, filesSignature: filesSignature(for:))
+        }
+    }
+
+    private func getCachedSettings(_ key: @autoclosure () -> WorkspaceSettingsCache.SettingsCacheKey, _ create: () -> Settings) -> Settings {
+        if let cachedSettings {
+            return cachedSettings.getOrInsert(key(), body: create)
+        }
+        return create()
     }
 
     @_spi(Testing) public func getCachedMacroConfigFile(_ path: Path, project: Project? = nil, context: MacroConfigLoadContext) -> MacroConfigInfo {

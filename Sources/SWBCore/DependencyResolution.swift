@@ -223,7 +223,7 @@ struct SpecializationParameters: Hashable, CustomStringConvertible {
 
     /// Compute a derived set of build parameters with the specialization imposed on them.
     func imposed(on parameters: BuildParameters, workspaceContext: WorkspaceContext) -> BuildParameters {
-        var overrides = parameters.overrides
+        var overrides: [String: String] = [:]
 
         if let imposedSDKRoot = effectiveSDKRootOverride(originalParameters: parameters, workspaceContext: workspaceContext) {
             overrides["SDKROOT"] = imposedSDKRoot
@@ -512,6 +512,14 @@ extension SpecializationParameters {
     /// Cached parameters for the host platform. This is only populated for an index workspace build.
     let hostParametersForIndex: PlatformBuildParameters?
 
+    private struct IndexTargetSuitabilityKey: Hashable, Sendable {
+        let target: Target
+        let parameters: BuildParameters
+        let imposedParameters: SpecializationParameters?
+    }
+
+    private let indexTargetSuitability = Registry<IndexTargetSuitabilityKey, Lazy<Bool>>()
+
     /// Targets which should build dynamically according to the build request.
     /// This is only used by Playgrounds and previews.
     let dynamicallyBuildingTargets: Set<Target>
@@ -669,31 +677,34 @@ extension SpecializationParameters {
 
         guard let runDestination = parameters.activeRunDestination else { return false }
 
-        // Filter any overrides from the parameters, because they can shadow any original "auto" values.
-        let filteredParameters = parameters.withoutOverrides
-        var settings = buildRequestContext.getCachedSettings(filteredParameters, target: target)
+        let key = IndexTargetSuitabilityKey(target: target, parameters: parameters, imposedParameters: imposedParameters)
+        return indexTargetSuitability.getOrInsert(key) {
+            // Filter any overrides from the parameters, because they can shadow any original "auto" values.
+            let filteredParameters = parameters.withoutOverrides
+            var settings = buildRequestContext.getCachedSettings(filteredParameters, target: target)
 
-        if settings.enableTargetPlatformSpecialization, let imposedParameters {
-            // This is for targets that have SDKROOT set to 'auto' (like Swift Packages) and get settings "imposed" on them.
-            settings = buildRequestContext.getCachedSettings(imposedParameters.imposed(on: filteredParameters, workspaceContext: workspaceContext), target: target)
-        }
+            if settings.enableTargetPlatformSpecialization, let imposedParameters {
+                // This is for targets that have SDKROOT set to 'auto' (like Swift Packages) and get settings "imposed" on them.
+                settings = buildRequestContext.getCachedSettings(imposedParameters.imposed(on: filteredParameters, workspaceContext: workspaceContext), target: target)
+            }
 
-        guard let targetPlatform = settings.platform else {
-            return false
-        }
-        if targetPlatform.name != runDestination.platform {
-            return false
-        }
-        if settings.sdkVariant?.name != runDestination.sdkVariant {
-            return false
-        }
+            guard let targetPlatform = settings.platform else {
+                return false
+            }
+            if targetPlatform.name != runDestination.platform {
+                return false
+            }
+            if settings.sdkVariant?.name != runDestination.sdkVariant {
+                return false
+            }
 
-        let supportedPlatforms = settings.globalScope.evaluate(BuiltinMacros.SUPPORTED_PLATFORMS)
-        if !supportedPlatforms.isEmpty && !supportedPlatforms.contains(targetPlatform.name) {
-            return false
-        }
+            let supportedPlatforms = settings.globalScope.evaluate(BuiltinMacros.SUPPORTED_PLATFORMS)
+            if !supportedPlatforms.isEmpty && !supportedPlatforms.contains(targetPlatform.name) {
+                return false
+            }
 
-        return true
+            return true
+        }
     }
 
     func compatibleConfiguredTarget(_ dependency: Target, for parameters: BuildParameters, baseTarget: Target) -> ConfiguredTarget? {
@@ -806,7 +817,13 @@ extension SpecializationParameters {
             } else {
                 platformParams = parameters
             }
-            parameters = buildRequest.parameters.replacing(activeRunDestination: platformParams.activeRunDestination, activeArchitecture: platformParams.activeArchitecture)
+            if let cachedParameters = platformBuildParametersForIndex.first(where: {
+                $0.buildParams.activeRunDestination == platformParams.activeRunDestination && $0.buildParams.activeArchitecture == platformParams.activeArchitecture
+            })?.buildParams {
+                parameters = cachedParameters
+            } else {
+                parameters = buildRequest.parameters.replacing(activeRunDestination: platformParams.activeRunDestination, activeArchitecture: platformParams.activeArchitecture)
+            }
         }
 
         // If we have an existing target compatible with the specialization parameters, we always return it.

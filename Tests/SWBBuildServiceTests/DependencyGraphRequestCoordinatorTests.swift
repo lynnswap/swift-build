@@ -75,6 +75,97 @@ import Testing
         #expect(DependencyGraphRequestInputs(workspaceContext: restored).requestKey(for: request) == originalKey)
     }
 
+    @Test(.requireSDKs(.macOS), arguments: ["build", "indexbuild"])
+    func dependencyQueryTransportsReuseTheSameCanonicalInputs(action: String) async throws {
+        let context = try await contextForTestData(makeIndexSettingsWorkspace())
+        let session = Session(context.core, "Test", cachePath: nil)
+        session.workspaceContext = context
+        let inputs = DependencyGraphRequestInputs(workspaceContext: context)
+        let destination = SWBCore.RunDestinationInfo.macOS
+        let destinationPayload = SWBProtocol.RunDestinationInfo(
+            buildTarget: .toolchainSDK(platform: destination.platform, sdk: destination.sdk, sdkVariant: destination.sdkVariant),
+            targetArchitecture: destination.targetArchitecture,
+            supportedArchitectures: destination.supportedArchitectures,
+            disableOnlyActiveArch: destination.disableOnlyActiveArch,
+            hostTargetedPlatform: destination.hostTargetedPlatform
+        )
+        let nonblocking = makeDependencyGraphRequest(action: action, activeRunDestination: destinationPayload)
+        let legacy = ComputeDependencyGraphRequest(sessionHandle: nonblocking.sessionHandle, targetGUIDs: nonblocking.targetGUIDs, buildParameters: nonblocking.buildParameters, includeImplicitDependencies: nonblocking.includeImplicitDependencies, dependencyScope: nonblocking.dependencyScope)
+        let closure = ComputeDependencyClosureRequest(sessionHandle: legacy.sessionHandle, targetGUIDs: legacy.targetGUIDs.map(\.rawValue), buildParameters: legacy.buildParameters, includeImplicitDependencies: legacy.includeImplicitDependencies, dependencyScope: legacy.dependencyScope)
+        let canonicalClosure = ComputeDependencyGraphRequest(sessionHandle: closure.sessionHandle, targetGUIDs: closure.targetGUIDs.map(TargetGUID.init(rawValue:)), buildParameters: closure.buildParameters, includeImplicitDependencies: closure.includeImplicitDependencies, dependencyScope: closure.dependencyScope)
+        let key = inputs.requestKey(for: nonblocking)
+        let entry = session.dependencyGraphContext(for: inputs, key: key)
+        let cachedContext = entry.acquireWorkspaceContext()
+        let settings = indexSettings(in: cachedContext, action: action == "build" ? .build : .indexBuild)
+        #expect(settings.errors.isEmpty)
+        #expect(try indexValue(in: settings) == "IndexTarget:Debug")
+        entry.finished(using: cachedContext)
+
+        for request in [legacy, canonicalClosure] {
+            let canonicalKey = inputs.requestKey(for: request)
+            #expect(canonicalKey == key)
+            let reusedEntry = session.dependencyGraphContext(for: inputs, key: canonicalKey)
+            #expect(reusedEntry === entry)
+            let reusedContext = reusedEntry.acquireWorkspaceContext()
+            defer { reusedEntry.finished(using: reusedContext) }
+            #expect(reusedContext === cachedContext)
+            #expect(indexSettings(in: reusedContext, action: action == "build" ? .build : .indexBuild) === settings)
+        }
+    }
+
+    @Test(.requireSDKs(.macOS), arguments: [false, true])
+    func overlappingQueriesReadFreshFilesystemInputs(usesExternalSDK: Bool) async throws {
+        try await withTemporaryDirectory { temporaryDirectory in
+            let assetPath = temporaryDirectory.path.join("DevelopmentAssets")
+            let sdkPath = temporaryDirectory.path.join("Dependencies.sdk")
+            if usesExternalSDK {
+                try await writeSDK(name: sdkPath.basename, parentDir: sdkPath.dirname, settings: [
+                    "CanonicalName": "com.example.dependencies1.0",
+                    "IsBaseSDK": "NO",
+                    "DefaultProperties": ["EXCLUDED_SOURCE_FILE_NAMES": "Before.framework"],
+                ])
+            }
+            let context = try await contextForTestData(makeIndexSettingsWorkspace(buildSettings: usesExternalSDK
+                ? ["ADDITIONAL_SDKS": sdkPath.str]
+                : ["DEVELOPMENT_ASSET_PATHS": assetPath.str, "DEPLOYMENT_POSTPROCESSING": "YES"]))
+            let session = Session(context.core, "Test", cachePath: nil)
+            session.workspaceContext = context
+            let inputs = DependencyGraphRequestInputs(workspaceContext: context)
+            let entry = makeQueryContext(session, inputs: inputs)
+            let firstContext = entry.acquireWorkspaceContext()
+            defer { entry.finished(using: firstContext) }
+            let firstSettings = indexSettings(in: firstContext)
+            let originalExclusions = usesExternalSDK ? ["Before.framework"] : [assetPath.str]
+            #expect(firstSettings.errors.isEmpty)
+            #expect(firstSettings.globalScope.evaluate(BuiltinMacros.EXCLUDED_SOURCE_FILE_NAMES) == originalExclusions)
+
+            if usesExternalSDK {
+                try await writeSDK(name: sdkPath.basename, parentDir: sdkPath.dirname, settings: [
+                    "CanonicalName": "com.example.dependencies1.0",
+                    "IsBaseSDK": "NO",
+                    "DefaultProperties": ["EXCLUDED_SOURCE_FILE_NAMES": "After.framework"],
+                ])
+            } else {
+                try context.fs.createDirectory(assetPath, recursive: true)
+            }
+
+            let secondContext = {
+                let currentContext = entry.acquireWorkspaceContext()
+                defer { entry.finished(using: currentContext) }
+                #expect(currentContext !== firstContext)
+                let currentSettings = indexSettings(in: currentContext)
+                #expect(currentSettings.errors.isEmpty)
+                #expect(currentSettings.globalScope.evaluate(BuiltinMacros.EXCLUDED_SOURCE_FILE_NAMES) == (usesExternalSDK ? ["After.framework"] : [assetPath.join("*").str]))
+                return WeakRef(currentContext)
+            }()
+            #expect(secondContext.instance == nil)
+            let thirdContext = entry.acquireWorkspaceContext()
+            defer { entry.finished(using: thirdContext) }
+            #expect(thirdContext !== firstContext)
+            #expect(firstSettings.globalScope.evaluate(BuiltinMacros.EXCLUDED_SOURCE_FILE_NAMES) == originalExclusions)
+        }
+    }
+
     @Test(.requireSDKs(.macOS), arguments: [false, true])
     func identicalPIFAndMetadataReuseIndexSettings(usesAutomaticSDK: Bool) async throws {
         let workspace = makeIndexSettingsWorkspace(buildSettings: usesAutomaticSDK ? ["SDKROOT": "auto", "SUPPORTED_PLATFORMS": "macosx"] : [:])
@@ -83,8 +174,8 @@ import Testing
         let session = Session(context.core, "Test", cachePath: nil)
         session.workspaceContext = context
         let inputs = DependencyGraphRequestInputs(workspaceContext: context)
-        let entry = makeIndexContext(session, inputs: inputs)
-        let cachedContext = entry.workspaceContext()
+        let entry = makeQueryContext(session, inputs: inputs)
+        let cachedContext = entry.acquireWorkspaceContext()
         let settings = indexSettings(in: cachedContext)
         #expect(settings.errors.isEmpty)
         #expect(try indexValue(in: settings) == "IndexTarget:Debug")
@@ -95,18 +186,19 @@ import Testing
         #expect(reappliedContext.workspace.signature == context.workspace.signature)
         session.workspaceContext = reappliedContext
         reappliedContext.updateUserInfo(try #require(context.userInfo))
-        session.invalidateIndexWorkspaceContext(for: \.userInfo, value: reappliedContext.userInfo)
+        session.invalidateDependencyGraphContext(for: \.userInfo, value: reappliedContext.userInfo)
         reappliedContext.updateSystemInfo(try #require(context.systemInfo))
-        session.invalidateIndexWorkspaceContext(for: \.systemInfo, value: reappliedContext.systemInfo)
+        session.invalidateDependencyGraphContext(for: \.systemInfo, value: reappliedContext.systemInfo)
         reappliedContext.updateUserPreferences(context.userPreferences)
-        session.invalidateIndexWorkspaceContext(for: \.userPreferences, value: reappliedContext.userPreferences)
+        session.invalidateDependencyGraphContext(for: \.userPreferences, value: reappliedContext.userPreferences)
 
         let reappliedInputs = DependencyGraphRequestInputs(workspaceContext: reappliedContext)
-        let reappliedEntry = makeIndexContext(session, inputs: reappliedInputs)
+        let reappliedEntry = makeQueryContext(session, inputs: reappliedInputs)
         #expect(reappliedEntry === entry)
-        #expect(reappliedEntry.workspaceContext() === cachedContext)
-        #expect(indexSettings(in: reappliedEntry.workspaceContext()) === settings)
-
+        let reappliedWorkspaceContext = reappliedEntry.acquireWorkspaceContext()
+        defer { reappliedEntry.finished(using: reappliedWorkspaceContext) }
+        #expect(reappliedWorkspaceContext === cachedContext)
+        #expect(indexSettings(in: reappliedWorkspaceContext) === settings)
     }
 
     @Test(.requireSDKs(.macOS))
@@ -120,16 +212,17 @@ import Testing
         let session = Session(context.core, "Test", cachePath: nil)
         session.workspaceContext = context
         let inputs = DependencyGraphRequestInputs(workspaceContext: context)
-        let entry = makeIndexContext(session, inputs: inputs)
-        let cachedContext = entry.workspaceContext()
+        let entry = makeQueryContext(session, inputs: inputs)
+        let cachedContext = entry.acquireWorkspaceContext()
         let originalSettings = indexSettings(in: cachedContext)
         #expect(originalSettings.globalScope.evaluate(BuiltinMacros.EXCLUDED_SOURCE_FILE_NAMES) == [assetPath.str])
         entry.finished(using: cachedContext)
 
         try context.fs.createDirectory(assetPath, recursive: true)
-        let updatedEntry = makeIndexContext(session, inputs: inputs)
+        let updatedEntry = makeQueryContext(session, inputs: inputs)
         #expect(updatedEntry === entry)
-        let updatedContext = updatedEntry.workspaceContext()
+        let updatedContext = updatedEntry.acquireWorkspaceContext()
+        defer { updatedEntry.finished(using: updatedContext) }
         #expect(updatedContext !== cachedContext)
         let updatedSettings = indexSettings(in: updatedContext)
         #expect(updatedSettings !== originalSettings)
@@ -144,43 +237,50 @@ import Testing
         let session = Session(context.core, "Test", cachePath: nil)
         session.workspaceContext = context
         let originalInputs = DependencyGraphRequestInputs(workspaceContext: context)
-        let originalEntry = WeakRef(makeIndexContext(session, inputs: originalInputs))
-        let originalContext = WeakRef(try #require(originalEntry.instance).workspaceContext())
+        let originalEntry = WeakRef(makeQueryContext(session, inputs: originalInputs))
+        let originalContext = try {
+            let entry = try #require(originalEntry.instance)
+            let context = entry.acquireWorkspaceContext()
+            defer { entry.finished(using: context) }
+            return WeakRef(context)
+        }()
 
         switch metadata {
         case .userInfo:
             context.updateUserInfo(try #require(context.userInfo))
-            session.invalidateIndexWorkspaceContext(for: \.userInfo, value: context.userInfo)
+            session.invalidateDependencyGraphContext(for: \.userInfo, value: context.userInfo)
         case .systemInfo:
             context.updateSystemInfo(try #require(context.systemInfo))
-            session.invalidateIndexWorkspaceContext(for: \.systemInfo, value: context.systemInfo)
+            session.invalidateDependencyGraphContext(for: \.systemInfo, value: context.systemInfo)
         case .userPreferences:
             context.updateUserPreferences(context.userPreferences)
-            session.invalidateIndexWorkspaceContext(for: \.userPreferences, value: context.userPreferences)
+            session.invalidateDependencyGraphContext(for: \.userPreferences, value: context.userPreferences)
         }
-        #expect(makeIndexContext(session, inputs: originalInputs) === originalEntry.instance)
+        #expect(makeQueryContext(session, inputs: originalInputs) === originalEntry.instance)
         #expect(originalContext.instance != nil)
 
         switch metadata {
         case .userInfo:
             context.updateUserInfo(try #require(context.userInfo).withAdditionalEnvironment(environment: ["SNAPSHOT_VALUE": "updated"]))
-            session.invalidateIndexWorkspaceContext(for: \.userInfo, value: context.userInfo)
+            session.invalidateDependencyGraphContext(for: \.userInfo, value: context.userInfo)
         case .systemInfo:
             let info = try #require(context.systemInfo)
             context.updateSystemInfo(SystemInfo(operatingSystemVersion: info.operatingSystemVersion, productBuildVersion: info.productBuildVersion + "-updated", nativeArchitecture: info.nativeArchitecture))
-            session.invalidateIndexWorkspaceContext(for: \.systemInfo, value: context.systemInfo)
+            session.invalidateDependencyGraphContext(for: \.systemInfo, value: context.systemInfo)
         case .userPreferences:
             context.updateUserPreferences(context.userPreferences.with(enableDebugActivityLogs: true))
-            session.invalidateIndexWorkspaceContext(for: \.userPreferences, value: context.userPreferences)
+            session.invalidateDependencyGraphContext(for: \.userPreferences, value: context.userPreferences)
         }
         #expect(originalEntry.instance == nil)
         #expect(originalContext.instance == nil)
         let updatedInputs = DependencyGraphRequestInputs(workspaceContext: context)
-        let updatedEntry = makeIndexContext(session, inputs: updatedInputs)
+        let updatedEntry = makeQueryContext(session, inputs: updatedInputs)
+        let updatedContext = updatedEntry.acquireWorkspaceContext()
+        defer { updatedEntry.finished(using: updatedContext) }
         #expect(updatedEntry.key != originalInputs.requestKey(for: makeDependencyGraphRequest()))
-        #expect(updatedEntry.workspaceContext().userInfo == context.userInfo)
-        #expect(updatedEntry.workspaceContext().systemInfo == context.systemInfo)
-        #expect(updatedEntry.workspaceContext().userPreferences == context.userPreferences)
+        #expect(updatedContext.userInfo == context.userInfo)
+        #expect(updatedContext.systemInfo == context.systemInfo)
+        #expect(updatedContext.userPreferences == context.userPreferences)
     }
 
     @Test(arguments: [false, true])
@@ -189,8 +289,13 @@ import Testing
         let session = Session(context.core, "Test", cachePath: nil)
         session.workspaceContext = context
         let inputs = DependencyGraphRequestInputs(workspaceContext: context)
-        let entry = WeakRef(makeIndexContext(session, inputs: inputs))
-        let cachedContext = WeakRef(try #require(entry.instance).workspaceContext())
+        let entry = WeakRef(makeQueryContext(session, inputs: inputs))
+        let cachedContext = try {
+            let entry = try #require(entry.instance)
+            let context = entry.acquireWorkspaceContext()
+            defer { entry.finished(using: context) }
+            return WeakRef(context)
+        }()
         let indexQueue = AsyncOperationQueue(concurrentTasks: 1)
         let blocker = isActive ? nil : await holdQueue(indexQueue)
         let coordinator = makeCoordinator(indexQueue: indexQueue)
@@ -200,7 +305,7 @@ import Testing
 
         coordinator.submit(lane: .index, priority: .utility, indexRequestKey: inputs.requestKey(for: makeDependencyGraphRequest())) {
             let activeEntry = entry.instance
-            let activeContext = activeEntry?.workspaceContext() ?? inputs.makeWorkspaceContext()
+            let activeContext = activeEntry?.acquireWorkspaceContext() ?? inputs.makeWorkspaceContext()
             defer { activeEntry?.finished(using: activeContext) }
             started.signal()
             if isActive { await release.wait() }
@@ -239,7 +344,7 @@ import Testing
         let session = Session(context.core, "Test", cachePath: nil)
         session.workspaceContext = context
         var snapshots: [DependencyGraphRequestInputs] = []
-        var entries: [WeakRef<IndexDependencyGraphContext>] = []
+        var entries: [WeakRef<DependencyGraphContext>] = []
         var contexts: [WeakRef<WorkspaceContext>] = []
         var settings: [WeakRef<Settings>] = []
 
@@ -251,8 +356,8 @@ import Testing
             let inputs = DependencyGraphRequestInputs(workspaceContext: try #require(session.workspaceContext))
             snapshots.append(inputs)
             let configuration = changesWorkspace || generation.isMultiple(of: 2) ? "Debug" : "Release"
-            let entry = makeIndexContext(session, inputs: inputs, configuration: configuration)
-            let cachedContext = entry.workspaceContext()
+            let entry = makeQueryContext(session, inputs: inputs, configuration: configuration)
+            let cachedContext = entry.acquireWorkspaceContext()
             let cachedSettings = indexSettings(in: cachedContext, configuration: configuration)
             #expect(cachedSettings.errors.isEmpty)
             #expect(try indexValue(in: cachedSettings) == "IndexTarget:\(configuration)")
@@ -269,7 +374,7 @@ import Testing
         #expect(entries.last?.instance != nil)
         #expect(contexts.last?.instance != nil)
         #expect(settings.last?.instance != nil)
-        session.clearIndexWorkspaceContext()
+        session.clearDependencyGraphContext()
         #expect(entries.allSatisfy { $0.instance == nil })
         #expect(contexts.allSatisfy { $0.instance == nil })
         #expect(settings.allSatisfy { $0.instance == nil })
@@ -942,9 +1047,9 @@ private func makeIndexRequestKey(
     _ owner: DependencyGraphRequestCoordinator,
     workspaceSignature: String = "workspace",
     configuration: String = "Debug"
-) -> DependencyGraphRequestCoordinator.IndexRequestKey {
+) -> DependencyGraphRequestCoordinator.RequestKey {
     let message = makeDependencyGraphRequest(configuration: configuration)
-    return DependencyGraphRequestCoordinator.IndexRequestKey(
+    return DependencyGraphRequestCoordinator.RequestKey(
         core: ObjectIdentifier(owner),
         fs: ObjectIdentifier(owner),
         workspaceSignature: workspaceSignature,
@@ -961,15 +1066,15 @@ private func makeIndexRequestKey(
     )
 }
 
-private func makeDependencyGraphRequest(configuration: String = "Debug") -> NonBlockingComputeDependencyGraphRequest {
+private func makeDependencyGraphRequest(configuration: String = "Debug", action: String = "indexbuild", activeRunDestination: SWBProtocol.RunDestinationInfo? = nil) -> NonBlockingComputeDependencyGraphRequest {
     NonBlockingComputeDependencyGraphRequest(
         sessionHandle: "session",
         responseChannel: 1,
         targetGUIDs: [TargetGUID(rawValue: "target")],
         buildParameters: BuildParametersMessagePayload(
-            action: "indexbuild",
+            action: action,
             configuration: configuration,
-            activeRunDestination: nil,
+            activeRunDestination: activeRunDestination,
             activeArchitecture: nil,
             arenaInfo: nil,
             overrides: SettingsOverridesMessagePayload(
@@ -987,8 +1092,8 @@ private func makeDependencyGraphRequest(configuration: String = "Debug") -> NonB
     )
 }
 
-private func makeIndexContext(_ session: Session, inputs: DependencyGraphRequestInputs, configuration: String = "Debug") -> IndexDependencyGraphContext {
-    session.indexDependencyGraphContext(for: inputs, key: inputs.requestKey(for: makeDependencyGraphRequest(configuration: configuration)))
+private func makeQueryContext(_ session: Session, inputs: DependencyGraphRequestInputs, configuration: String = "Debug") -> DependencyGraphContext {
+    session.dependencyGraphContext(for: inputs, key: inputs.requestKey(for: makeDependencyGraphRequest(configuration: configuration)))
 }
 
 private func makeIndexSettingsWorkspace(buildSettings: [String: String] = [:]) -> TestWorkspace {
@@ -1005,8 +1110,8 @@ private func makeIndexSettingsWorkspace(buildSettings: [String: String] = [:]) -
     ])
 }
 
-private func indexSettings(in context: WorkspaceContext, configuration: String = "Debug") -> Settings {
-    BuildRequestContext(workspaceContext: context).getCachedSettings(BuildParameters(action: .indexBuild, configuration: configuration, activeRunDestination: .macOS), target: context.workspace.projects[0].targets[0])
+private func indexSettings(in context: WorkspaceContext, configuration: String = "Debug", action: BuildAction = .indexBuild) -> Settings {
+    BuildRequestContext(workspaceContext: context).getCachedSettings(BuildParameters(action: action, configuration: configuration, activeRunDestination: .macOS), target: context.workspace.projects[0].targets[0])
 }
 
 private func indexValue(in settings: Settings) throws -> String {
@@ -1026,7 +1131,7 @@ private final class RequestSnapshot: Sendable {
 
 private func submitSnapshotRequest(
     coordinator: DependencyGraphRequestCoordinator,
-    key: DependencyGraphRequestCoordinator.IndexRequestKey,
+    key: DependencyGraphRequestCoordinator.RequestKey,
     shouldFail: Bool,
     activity: ActivityRecorder,
     onRelease: @escaping @Sendable () -> Void,

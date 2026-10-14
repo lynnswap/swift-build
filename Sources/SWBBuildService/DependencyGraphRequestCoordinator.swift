@@ -17,7 +17,7 @@ package import SWBUtil
 import Synchronization
 
 package final class DependencyGraphRequestCoordinator: Sendable {
-    package struct IndexRequestKey: Equatable, Sendable {
+    package struct RequestKey: Equatable, Sendable {
         let core: ObjectIdentifier
         let fs: ObjectIdentifier
         let workspaceSignature: String
@@ -52,7 +52,7 @@ package final class DependencyGraphRequestCoordinator: Sendable {
 
     private struct Operation: Sendable {
         let task: _Concurrency.Task<Void, Never>
-        var indexRequestKey: IndexRequestKey?
+        var indexRequestKey: RequestKey?
         var completions: [Completion]
     }
 
@@ -92,7 +92,7 @@ package final class DependencyGraphRequestCoordinator: Sendable {
     package func submit(
         lane: Lane,
         priority: _Concurrency.TaskPriority,
-        indexRequestKey: IndexRequestKey? = nil,
+        indexRequestKey: RequestKey? = nil,
         operation: @escaping @Sendable () async throws -> DependencyGraphResponse,
         completion: @escaping Completion
     ) {
