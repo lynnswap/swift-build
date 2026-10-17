@@ -1870,8 +1870,7 @@ internal final class OperationSystemAdaptor: SWBLLBuild.BuildSystemDelegate, Act
 
         // Once a target finishes, we can clean up the associated Swift driver memory
         // First, give it a chance to write out incremental state
-        let driverIdentifiers = operation.buildDescription.taskStore.tasksForTarget(target).compactMap { ($0.payload as? SwiftTaskPayload)?.driverPayload?.uniqueID }
-        for identifier in Set(driverIdentifiers) {
+        for identifier in operation.buildDescription.taskStore.swiftDriverIdentifiers(for: target) {
             for diagnostic in dynamicOperationContext.swiftModuleDependencyGraph.cleanUp(key: identifier) {
                 buildOutputDelegate.emit(diagnostic)
             }
