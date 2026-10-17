@@ -54,11 +54,19 @@ package final class FrozenTaskStore: Sendable {
         self.tasks = tasks
         self.stringArena = stringArena
         self.byteStringArena = byteStringArena
+        var swiftDriverIdentifiersByTarget: [ConfiguredTarget: Set<String>] = [:]
+        for task in tasks.values {
+            if let target = task.forTarget, let identifier = (task.payload as? SwiftTaskPayload)?.driverPayload?.uniqueID {
+                swiftDriverIdentifiersByTarget[target, default: []].insert(identifier)
+            }
+        }
+        self.swiftDriverIdentifiersByTarget = swiftDriverIdentifiersByTarget
     }
 
     private let tasks: [TaskIdentifier: Task]
     private let stringArena: FrozenStringArena
     private let byteStringArena: FrozenByteStringArena
+    private let swiftDriverIdentifiersByTarget: [ConfiguredTarget: Set<String>]
 
     package var taskCount: Int {
         tasks.count
@@ -76,6 +84,11 @@ package final class FrozenTaskStore: Sendable {
 
     package func taskAction(for identifier: TaskIdentifier) -> TaskAction? {
         tasks[identifier]?.action
+    }
+
+    /// Driver cleanup needs only these identifiers, without filling the indexing task cache.
+    package func swiftDriverIdentifiers(for target: ConfiguredTarget) -> Set<String> {
+        swiftDriverIdentifiersByTarget[target] ?? []
     }
 
     /// It is beneficial for the performance of the index queries to have a mapping of tasks in each target.

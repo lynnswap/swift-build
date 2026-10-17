@@ -871,6 +871,76 @@ fileprivate struct BuildDescriptionTests: CoreBasedTests {
         #expect(manifest == fullManifest(fileSystem: fs.ignoreFileSystemDeviceInodeChanges ? "device-agnostic" : "default"))
     }
 
+    @Test(.requireSDKs(.macOS))
+    func swiftDriverIdentifiersByTarget() async throws {
+        let core = try await getCore()
+        let swiftVersion = try await self.swiftVersion
+        let swiftCompilerPath = try await self.swiftCompilerPath
+        let clangCompilerPath = try await self.clangCompilerPath
+        let libtoolPath = try await self.libtoolPath
+        let workspace = try TestWorkspace("Test", projects: [
+            TestProject(
+                "Project",
+                groupTree: TestGroup("Sources", children: [
+                    TestFile("a.swift"), TestFile("b.swift"), TestFile("c.c"),
+                ]),
+                buildConfigurations: [
+                    TestBuildConfiguration("Debug", buildSettings: [
+                        "PRODUCT_NAME": "$(TARGET_NAME)",
+                        "SWIFT_VERSION": swiftVersion,
+                        "SWIFT_EXEC": swiftCompilerPath.str,
+                        "CC": clangCompilerPath.str,
+                        "LIBTOOL": libtoolPath.str,
+                        "ALWAYS_SEARCH_USER_PATHS": "NO",
+                        "SWIFT_USE_INTEGRATED_DRIVER": "YES",
+                        "ONLY_ACTIVE_ARCH": "YES",
+                    ]),
+                ],
+                targets: [
+                    TestStandardTarget("SwiftA", type: .staticLibrary, buildPhases: [TestSourcesBuildPhase(["a.swift"])]),
+                    TestStandardTarget("SwiftB", type: .staticLibrary, buildPhases: [TestSourcesBuildPhase(["b.swift"])]),
+                    TestStandardTarget("Clang", type: .staticLibrary, buildPhases: [TestSourcesBuildPhase(["c.c"])]),
+                ]),
+        ]).load(core)
+        let (results, workspaceContext): (BuildDescriptionDiagnosticResults, WorkspaceContext) = try await buildDescription(for: workspace, activeRunDestination: .macOS)
+        results.checkNoDiagnostics()
+        let description = results.buildDescription
+        let tasks = description.tasks
+        let targets = Dictionary(uniqueKeysWithValues: description.targetsByGuid.values.map { ($0.target.name, $0) })
+        var expectedIdentifiers: [ConfiguredTarget: Set<String>] = [:]
+        for name in ["SwiftA", "SwiftB"] {
+            let target = try #require(targets[name])
+            let identifiers = tasks.filter { $0.forTarget == target }.compactMap {
+                ($0.payload as? SwiftTaskPayload)?.driverPayload?.uniqueID
+            }
+            let identifier = try #require(identifiers.first)
+            #expect(identifiers.count > 1)
+            #expect(Set(identifiers) == [identifier])
+            expectedIdentifiers[target] = [identifier]
+        }
+        let swiftA = try #require(targets["SwiftA"])
+        let swiftB = try #require(targets["SwiftB"])
+        let swiftAIdentifiers = try #require(expectedIdentifiers[swiftA])
+        let swiftBIdentifiers = try #require(expectedIdentifiers[swiftB])
+        #expect(swiftAIdentifiers.isDisjoint(with: swiftBIdentifiers))
+        expectedIdentifiers[try #require(targets["Clang"])] = []
+
+        let taskActionRegistry = try await TaskActionRegistry(pluginManager: core.pluginManager)
+        let serializer = MsgPackSerializer(delegate: BuildDescriptionSerializerDelegate(taskActionRegistry: taskActionRegistry))
+        taskActionRegistry.withSerializationContext { serializer.serialize(description.taskStore) }
+        let deserializerDelegate = BuildDescriptionDeserializerDelegate(workspace: workspaceContext.workspace, platformRegistry: core.platformRegistry, sdkRegistry: core.sdkRegistry, specRegistry: core.specRegistry, taskActionRegistry: taskActionRegistry)
+        let deserializer = MsgPackDeserializer(serializer.byteString, delegate: deserializerDelegate)
+        let deserializedTaskStore: FrozenTaskStore = try taskActionRegistry.withSerializationContext { try deserializer.deserialize() }
+
+        for taskStore in [description.taskStore, deserializedTaskStore] {
+            for (target, identifiers) in expectedIdentifiers {
+                #expect(taskStore.swiftDriverIdentifiers(for: target) == identifiers)
+                #expect(Set(taskStore.tasksForTarget(target).map(\.identifier)) == Set(tasks.filter { $0.forTarget == target }.map(\.identifier)))
+            }
+            #expect(Set(taskStore.tasksForTarget(nil).map(\.identifier)) == Set(tasks.filter { $0.forTarget == nil }.map(\.identifier)))
+        }
+    }
+
     @Test(.requireHostOS(.macOS))
     func serializable() async throws {
         try await withTemporaryDirectory { tmpDirPath -> Void in
