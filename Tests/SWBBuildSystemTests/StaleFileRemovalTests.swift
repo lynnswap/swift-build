@@ -691,8 +691,8 @@ fileprivate struct StaleFileRemovalTests: CoreBasedTests {
             try localFS.write(packageRoot.join("Other.swift"), contents: "public struct OtherValue {}\n")
             try localFS.write(packageRoot.join("A.swift"), contents: "import Foo\npublic func a() -> Int { FooValue().oldMethod() }\n")
             try localFS.write(packageRoot.join("B.swift"), contents: "import Foo\npublic func b() -> Int { FooValue().oldMethod() }\n")
-            try localFS.write(consumerRoot.join("Direct.swift"), contents: "import Foo\nimport Other\nprint(FooValue().oldMethod())\n")
-            try localFS.write(consumerRoot.join("Diamond.swift"), contents: "import Foo\nimport A\nimport B\nprint(FooValue().newMethod(), a(), b())\n")
+            try localFS.write(consumerRoot.join("Direct.swift"), contents: "import Foo\nimport Other\n@main struct DirectMain { static func main() { print(FooValue().oldMethod()) } }\n")
+            try localFS.write(consumerRoot.join("Diamond.swift"), contents: "import Foo\nimport A\nimport B\n@main struct DiamondMain { static func main() { print(FooValue().newMethod(), a(), b()) } }\n")
 
             try await tester.checkBuild(runDestination: .macOS, persistent: true) { results in
                 results.checkNoDiagnostics()
