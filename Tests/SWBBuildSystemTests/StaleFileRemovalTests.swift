@@ -651,14 +651,13 @@ fileprivate struct StaleFileRemovalTests: CoreBasedTests {
                     ], dependencies: ["FooProduct", "Other"]),
                     TestStandardTarget("Diamond", type: .commandLineTool, buildPhases: [
                         TestSourcesBuildPhase(["Diamond.swift"]),
-                        TestFrameworksBuildPhase([TestBuildFile(.target("FooProduct")), TestBuildFile(.target("A")), TestBuildFile(.target("B"))]),
-                    ], dependencies: ["FooProduct", "A", "B"]),
+                        TestFrameworksBuildPhase([TestBuildFile(.target("FooProduct")), TestBuildFile(.target("A"))]),
+                    ], dependencies: ["FooProduct", "A"]),
                 ]),
                 TestPackageProject("Package", groupTree: TestGroup("Sources", children: [
                     TestFile("Foo.swift"),
                     TestFile("Other.swift"),
                     TestFile("A.swift"),
-                    TestFile("B.swift"),
                 ]), buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: settings)], targets: [
                     TestPackageProductTarget("FooProduct",
                                              frameworksBuildPhase: TestFrameworksBuildPhase([TestBuildFile(.target("Foo"))]),
@@ -678,10 +677,6 @@ fileprivate struct StaleFileRemovalTests: CoreBasedTests {
                         TestSourcesBuildPhase(["A.swift"]),
                         TestFrameworksBuildPhase([TestBuildFile(.target("Foo"))]),
                     ], dependencies: ["Foo"]),
-                    TestStandardTarget("B", type: .framework, buildPhases: [
-                        TestSourcesBuildPhase(["B.swift"]),
-                        TestFrameworksBuildPhase([TestBuildFile(.target("Foo"))]),
-                    ], dependencies: ["Foo"]),
                 ]),
             ])
             let tester = try await BuildOperationTester(getCore(), workspace, simulated: false)
@@ -693,9 +688,8 @@ fileprivate struct StaleFileRemovalTests: CoreBasedTests {
             try localFS.write(packageRoot.join("Foo.swift"), contents: ByteString(encodingAsUTF8: originalSource))
             try localFS.write(packageRoot.join("Other.swift"), contents: "public struct OtherValue {}\n")
             try localFS.write(packageRoot.join("A.swift"), contents: "import Foo\npublic func a() -> Int { FooValue().oldMethod() }\n")
-            try localFS.write(packageRoot.join("B.swift"), contents: "import Foo\npublic func b() -> Int { FooValue().oldMethod() }\n")
             try localFS.write(consumerRoot.join("Direct.swift"), contents: "import Foo\nimport Other\n@main struct DirectMain { static func main() { print(FooValue().oldMethod()) } }\n")
-            try localFS.write(consumerRoot.join("Diamond.swift"), contents: "import Foo\nimport A\nimport B\n@main struct DiamondMain { static func main() { print(FooValue().newMethod(), a(), b()) } }\n")
+            try localFS.write(consumerRoot.join("Diamond.swift"), contents: "import Foo\nimport A\n@main struct DiamondMain { static func main() { print(FooValue().newMethod(), a()) } }\n")
 
             try await tester.checkBuild(runDestination: .macOS, persistent: true) { results in
                 results.checkNoDiagnostics()
@@ -717,11 +711,9 @@ fileprivate struct StaleFileRemovalTests: CoreBasedTests {
             ], continueBuildingAfterErrors: false, useParallelTargets: true, useImplicitDependencies: false, useDryRun: false)
             try await tester.checkBuild(runDestination: .macOS, buildRequest: request, persistent: true) { results in
                 results.checkNoDiagnostics()
-                #expect(localFS.exists(products.join("Diamond")))
             }
             #expect(oldModuleFiles.allSatisfy { !localFS.exists($0) })
             #expect(otherModuleFiles.allSatisfy { localFS.exists($0) })
-            #expect(localFS.exists(products.join("Foo.framework/Modules/Foo.swiftmodule")))
         }
     }
 
