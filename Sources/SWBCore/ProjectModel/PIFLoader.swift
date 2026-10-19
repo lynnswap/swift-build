@@ -82,7 +82,7 @@ extension PIFLoadingError: CustomStringConvertible {
 /// A PIF value, in one of the two supported encodings.
 //
 // FIXME: Eliminate the legacy encoding so we can get rid of this.
-public enum EncodedPIFValue {
+public enum EncodedPIFValue: Sendable {
     case json(ProjectModelItemPIF)
     case binary(ByteString)
 
@@ -90,6 +90,14 @@ public enum EncodedPIFValue {
         switch self {
         case .json: return false
         case .binary: return true
+        }
+    }
+
+    fileprivate func hasSameContents(as other: EncodedPIFValue) -> Bool {
+        switch (self, other) {
+        case let (.json(lhs), .json(rhs)): return lhs == rhs
+        case let (.binary(lhs), .binary(rhs)): return lhs == rhs
+        default: return false
         }
     }
 }
@@ -330,8 +338,27 @@ public final class IncrementalPIFLoader {
                 let key = PIFObjectReference(signature: signature, type: type.pifType)
 
                 // Check if we have already loaded this object.
-                if let object = session.incrementalLoader.loadedObjects[key] {
-                    return object as! T
+                if let cached = session.incrementalLoader.loadedObjects[key] {
+                    if !session.incrementalLoader.refreshParentObjects || key.type == .target {
+                        return cached.object as! T
+                    }
+                    if let contents = session.availableDataObjects[key], let previousContents = cached.parentContents, contents.hasSameContents(as: previousContents) {
+                        let references = try type.referencedObjects(for: contents)
+                        switch cached.object {
+                        case let workspace as Workspace:
+                            let projects = try references.map { try loader.loadReference(signature: $0.signature, type: Project.self) }
+                            if workspace.projects.count == projects.count && zip(workspace.projects, projects).allSatisfy({ $0.0 === $0.1 }) {
+                                return cached.object as! T
+                            }
+                        case let project as Project:
+                            let targets = try references.map { try loader.loadReference(signature: $0.signature, type: Target.self) }
+                            if project.targets.count == targets.count && zip(project.targets, targets).allSatisfy({ $0.0 === $0.1 }) {
+                                return cached.object as! T
+                            }
+                        default:
+                            break
+                        }
+                    }
                 }
 
                 // If not, load it.
@@ -386,7 +413,8 @@ public final class IncrementalPIFLoader {
 
             // Merge back in all the loaded objects.
             for (key, value) in loader.loadedObjects {
-                incrementalLoader.loadedObjects[key] = value
+                let parentContents = incrementalLoader.refreshParentObjects && key.type != .target ? availableDataObjects[key] : nil
+                incrementalLoader.loadedObjects[key] = CachedObject(object: value, parentContents: parentContents)
             }
 
             return result
@@ -433,6 +461,17 @@ public final class IncrementalPIFLoader {
         /// Record a required object reference.
         func addRequiredObject(_ key: PIFObjectReference) {
             IncrementalPIFLoader.objectsRequested.increment()
+
+            // WORKAROUND: https://github.com/lynnswap/swift-build/issues/61
+            // Xcode can update a package's target references without changing its
+            // project or workspace signature. Request those parents again until
+            // the producer propagates descendant changes into their signatures.
+            if incrementalLoader.refreshParentObjects && key.type != .target {
+                if !availableDataObjects.contains(key) {
+                    _missingObjects.insert(key)
+                }
+                return
+            }
 
             // Check if on-disk cache is still intact.
             if incrementalLoader.isOnDiskCacheIntact(for: key) {
@@ -494,8 +533,15 @@ public final class IncrementalPIFLoader {
     /// This namespace is currently constant for *all* objects loaded by this interface. Eventually we would like to support actually segregating the user namespaces along workspace or project boundaries, which will require that we lift the namespace to an actual transported object we can integrate with the PIF loading process (right now, we must have a constant one so that different PIF objects always see a consistent namespace view).
     public let userNamespace: MacroNamespace
 
+    private struct CachedObject: Sendable {
+        let object: any PIFObject
+        let parentContents: EncodedPIFValue?
+    }
+
     /// The loaded objects.
-    private let loadedObjects = HeavyCache<PIFObjectReference, any PIFObject>(timeToLive: Tuning.pifCacheTTL)
+    private let loadedObjects = HeavyCache<PIFObjectReference, CachedObject>(timeToLive: Tuning.pifCacheTTL)
+
+    private let refreshParentObjects: Bool
 
     @_spi(Testing) public var loadedObjectCount: Int {
         loadedObjects.count
@@ -512,10 +558,12 @@ public final class IncrementalPIFLoader {
     /// - Parameters:
     ///   - internalNamespace: The internal namespace, used to derive a workspace-level namespace to load all objects into.
     ///   - cachePath: If provided, the path to a directory to use for persisting PIF objects, for use in incremental restoration.
-    public init(internalNamespace: MacroNamespace, cachePath: Path?, fs: any FSProxy = localFS) {
+    ///   - refreshParentObjects: If true, request current workspace and project contents even when their signatures are cached.
+    public init(internalNamespace: MacroNamespace, cachePath: Path?, fs: any FSProxy = localFS, refreshParentObjects: Bool = false) {
         self.userNamespace = MacroNamespace(parent: internalNamespace, debugDescription: "workspace")
         self.cachePath = cachePath
         self.fs = fs
+        self.refreshParentObjects = refreshParentObjects
 
         // FIXME: Eventually, we will want a much more sophisticated cache here,
         // with LRU eviction and versioning: <rdar://problem/28190187> Improve PIF data cache

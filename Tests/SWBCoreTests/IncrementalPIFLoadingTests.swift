@@ -17,6 +17,7 @@ import SWBUtil
 import SWBTestSupport
 @_spi(Testing) import SWBCore
 import SWBProtocol
+import SWBMacro
 
 /// Test of the incremental PIF loading mechanisms.
 @Suite(.serialized) fileprivate struct IncrementalPIFLoadingTests {
@@ -252,6 +253,121 @@ import SWBProtocol
             #expect(IncrementalPIFLoader.objectsLoaded.value == 3)
             #expect(IncrementalPIFLoader.objectsTransferred.value == 1)
         }
+    }
+
+    @Test(arguments: [false, true])
+    func refreshesParentsWithUnchangedSignatures(useDiskCache: Bool) throws {
+        let workspaceSignature = "WORKSPACE@v11_stable"
+        let projectSignature = "PROJECT@v11_stable"
+        let stableTargetSignature = "TARGET@v11_stable"
+        let oldTargetSignature = "TARGET@v11_old"
+        let newTargetSignature = "TARGET@v11_new"
+        let fs = PseudoFS()
+        let cachePath: Path? = useDiskCache ? Path.root.join("tmp/PIFCache") : nil
+
+        func makeLoader() -> IncrementalPIFLoader {
+            IncrementalPIFLoader(internalNamespace: BuiltinMacros.namespace, cachePath: cachePath, fs: fs, refreshParentObjects: true)
+        }
+
+        func objects(targetSignature: String, version: String, workspaceName: String = "aWorkspace") -> [PropertyListItem] {
+            [
+                .plDict([
+                    "type": "workspace", "signature": .plString(workspaceSignature),
+                    "contents": .plDict([
+                        "guid": "workspace", "name": .plString(workspaceName), "path": "/tmp/aWorkspace.xcworkspace",
+                        "projects": .plArray([.plString(projectSignature)]),
+                    ]),
+                ]),
+                .plDict([
+                    "type": "project", "signature": .plString(projectSignature),
+                    "contents": .plDict([
+                        "guid": "project", "path": "/tmp/aProject.xcodeproj",
+                        "targets": .plArray([.plString(targetSignature), .plString(stableTargetSignature)]),
+                        "groupTree": .plDict(["guid": "group", "type": "group", "name": "Sources", "sourceTree": "PROJECT_DIR", "path": "/tmp"]),
+                        "buildConfigurations": .plArray([]), "defaultConfigurationName": "Debug",
+                    ]),
+                ]),
+                .plDict([
+                    "type": "target", "signature": .plString(targetSignature),
+                    "contents": .plDict([
+                        "guid": "target", "name": "PackageTarget", "type": "aggregate",
+                        "buildConfigurations": .plArray([.plDict(["name": "Debug", "buildSettings": .plDict(["SWIFT_USER_MODULE_VERSION": .plString(version)])])]),
+                        "buildPhases": .plArray([]), "dependencies": .plArray([]),
+                    ]),
+                ]),
+                .plDict([
+                    "type": "target", "signature": .plString(stableTargetSignature),
+                    "contents": .plDict([
+                        "guid": "stable-target", "name": "StableTarget", "type": "aggregate",
+                        "buildConfigurations": .plArray([]), "buildPhases": .plArray([]), "dependencies": .plArray([]),
+                    ]),
+                ]),
+            ]
+        }
+
+        func transfer(_ objects: [PropertyListItem], to loader: IncrementalPIFLoader, expectedTargets: Set<String>) throws -> SWBCore.Workspace {
+            let session = loader.startLoading(workspaceSignature: workspaceSignature)
+            #expect(session.missingObjects.map { $0.signature } == [workspaceSignature])
+            try session.add(object: objects[0])
+            #expect(session.missingObjects.map { $0.signature } == [projectSignature])
+            try session.add(object: objects[1])
+            #expect(Set(session.missingObjects.map { $0.signature }) == expectedTargets)
+            for object in objects.dropFirst(2) {
+                guard case let .plDict(dictionary) = object, case let .plString(signature)? = dictionary["signature"] else {
+                    Issue.record("expected a target PIF object")
+                    continue
+                }
+                if expectedTargets.contains(signature) {
+                    try session.add(object: object)
+                }
+            }
+            #expect(Array(session.missingObjects).isEmpty)
+            return try session.load()
+        }
+
+        let loader = makeLoader()
+        let original = try transfer(objects(targetSignature: oldTargetSignature, version: "1.0"), to: loader, expectedTargets: [oldTargetSignature, stableTargetSignature])
+        let updatedLoader = useDiskCache ? makeLoader() : loader
+        let updatedObjects = objects(targetSignature: newTargetSignature, version: "1.1")
+        let updated = try transfer(updatedObjects, to: updatedLoader, expectedTargets: [newTargetSignature])
+        #expect(updated !== original)
+        #expect(updated.projects[0] !== original.projects[0])
+        #expect(updated.projects[0].targets[0].guid == original.projects[0].targets[0].guid)
+        #expect(updated.projects[0].targets[0].signature == newTargetSignature)
+        let settings = try #require(updated.projects[0].targets[0].buildConfigurations.first).buildSettings
+        #expect(MacroEvaluationScope(table: settings).evaluate(BuiltinMacros.SWIFT_USER_MODULE_VERSION) == "1.1")
+        if !useDiskCache {
+            #expect(updated.projects[0].targets[1] === original.projects[0].targets[1])
+        }
+
+        let unchanged = try transfer(updatedObjects, to: updatedLoader, expectedTargets: [])
+        #expect(unchanged === updated)
+
+        let renamed = try transfer(objects(targetSignature: newTargetSignature, version: "1.1", workspaceName: "Renamed"), to: updatedLoader, expectedTargets: [])
+        #expect(renamed !== updated)
+        #expect(renamed.name == "Renamed")
+        #expect(renamed.projects[0] === updated.projects[0])
+    }
+
+    @Test
+    func refreshesUnchangedBinaryParentsWithoutReplacingWorkspace() throws {
+        let target = TestAggregateTarget("aTarget")
+        let project = TestProject("aProject", groupTree: TestGroup("Sources"), targets: [target])
+        let workspace = TestWorkspace("aWorkspace", projects: [project])
+        let objects = try workspace.toObjects()
+        let loader = IncrementalPIFLoader(internalNamespace: BuiltinMacros.namespace, cachePath: nil, refreshParentObjects: true)
+
+        let firstSession = loader.startLoading(workspaceSignature: workspace.signature)
+        for object in objects {
+            try firstSession.add(object: object)
+        }
+        let first = try firstSession.load()
+
+        let secondSession = loader.startLoading(workspaceSignature: workspace.signature)
+        try secondSession.add(object: objects[0])
+        try secondSession.add(object: objects[1])
+        #expect(Array(secondSession.missingObjects).isEmpty)
+        #expect(try secondSession.load() === first)
     }
 
     /// Check that references are rewired correctly on incremental loading.
