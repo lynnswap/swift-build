@@ -169,10 +169,12 @@ import Testing
     @Test(.requireSDKs(.macOS), arguments: [false, true])
     func identicalPIFAndMetadataReuseIndexSettings(usesAutomaticSDK: Bool) async throws {
         let workspace = makeIndexSettingsWorkspace(buildSettings: usesAutomaticSDK ? ["SDKROOT": "auto", "SUPPORTED_PLATFORMS": "macosx"] : [:])
-        let context = try await contextForTestData(workspace)
+        let initialContext = try await contextForTestData(workspace)
+        let session = Session(initialContext.core, "Test", cachePath: nil)
+        let context = try transferPIF(workspace, to: session)
+        context.updateUserInfo(try #require(initialContext.userInfo))
+        context.updateSystemInfo(try #require(initialContext.systemInfo))
         context.updateUserPreferences(.defaultForTesting)
-        let session = Session(context.core, "Test", cachePath: nil)
-        session.workspaceContext = context
         let inputs = DependencyGraphRequestInputs(workspaceContext: context)
         let entry = makeQueryContext(session, inputs: inputs)
         let cachedContext = entry.acquireWorkspaceContext()
@@ -181,10 +183,9 @@ import Testing
         #expect(try indexValue(in: settings) == "IndexTarget:Debug")
         entry.finished(using: cachedContext)
 
-        let reappliedContext = WorkspaceContext(core: context.core, workspace: try workspace.load(context.core), fs: context.fs, processExecutionCache: ProcessExecutionCache())
-        #expect(reappliedContext.workspace !== context.workspace)
+        let reappliedContext = try transferPIF(workspace, to: session)
+        #expect(reappliedContext.workspace === context.workspace)
         #expect(reappliedContext.workspace.signature == context.workspace.signature)
-        session.workspaceContext = reappliedContext
         reappliedContext.updateUserInfo(try #require(context.userInfo))
         session.invalidateDependencyGraphContext(for: \.userInfo, value: reappliedContext.userInfo)
         reappliedContext.updateSystemInfo(try #require(context.systemInfo))
@@ -199,6 +200,72 @@ import Testing
         defer { reappliedEntry.finished(using: reappliedWorkspaceContext) }
         #expect(reappliedWorkspaceContext === cachedContext)
         #expect(indexSettings(in: reappliedWorkspaceContext) === settings)
+    }
+
+    @Test(.requireSDKs(.macOS))
+    func changedTargetsUnderTheSameParentSignaturesUseFreshIndexSettingsAndResponses() async throws {
+        let original = makePackageVersionPIF("0.12.0")
+        let updated = makePackageVersionPIF("0.12.1")
+        let initialContext = try await contextForTestData(makeIndexSettingsWorkspace())
+        let session = Session(initialContext.core, "Test", cachePath: nil)
+        let originalContext = try transferPIF(original, to: session)
+        originalContext.updateUserInfo(try #require(initialContext.userInfo))
+        originalContext.updateSystemInfo(try #require(initialContext.systemInfo))
+        originalContext.updateUserPreferences(.defaultForTesting)
+        let originalInputs = DependencyGraphRequestInputs(workspaceContext: originalContext)
+        let originalEntry = WeakRef(makeQueryContext(session, inputs: originalInputs))
+        let cachedContext = try {
+            let entry = try #require(originalEntry.instance)
+            let context = entry.acquireWorkspaceContext()
+            defer { entry.finished(using: context) }
+            #expect(try indexValue(in: indexSettings(in: context)) == "0.12.0")
+            return WeakRef(context)
+        }()
+
+        let indexQueue = AsyncOperationQueue(concurrentTasks: 1)
+        let blocker = await holdQueue(indexQueue)
+        let coordinator = makeCoordinator(indexQueue: indexQueue)
+        let originalRecorder = OutcomeRecorder()
+        let updatedRecorder = OutcomeRecorder()
+        let request = makeDependencyGraphRequest()
+        coordinator.submit(lane: .index, priority: .utility, indexRequestKey: originalInputs.requestKey(for: request)) {
+            let entry = originalEntry.instance
+            let context = entry?.acquireWorkspaceContext() ?? originalInputs.makeWorkspaceContext()
+            defer { entry?.finished(using: context) }
+            return try makeResponse(indexValue(in: indexSettings(in: context)))
+        } completion: {
+            originalRecorder.record($0)
+        }
+
+        let updatedContext = try transferPIF(updated, to: session)
+        updatedContext.updateUserInfo(try #require(originalContext.userInfo))
+        updatedContext.updateSystemInfo(try #require(originalContext.systemInfo))
+        updatedContext.updateUserPreferences(originalContext.userPreferences)
+        #expect(updatedContext.workspace.signature == originalContext.workspace.signature)
+        #expect(updatedContext.workspace.projects[0].signature == originalContext.workspace.projects[0].signature)
+        #expect(updatedContext.workspace.projects[0].targets[0].guid == originalContext.workspace.projects[0].targets[0].guid)
+        #expect(updatedContext.workspace.projects[0].targets[0].signature != originalContext.workspace.projects[0].targets[0].signature)
+        #expect(originalEntry.instance == nil)
+        #expect(cachedContext.instance == nil)
+
+        let updatedInputs = DependencyGraphRequestInputs(workspaceContext: updatedContext)
+        let updatedEntry = makeQueryContext(session, inputs: updatedInputs)
+        let refreshedContext = updatedEntry.acquireWorkspaceContext()
+        #expect(try indexValue(in: indexSettings(in: refreshedContext)) == "0.12.1")
+        updatedEntry.finished(using: refreshedContext)
+        coordinator.submit(lane: .index, priority: .utility, indexRequestKey: updatedInputs.requestKey(for: request)) {
+            let context = updatedEntry.acquireWorkspaceContext()
+            defer { updatedEntry.finished(using: context) }
+            return try makeResponse(indexValue(in: indexSettings(in: context)))
+        } completion: {
+            updatedRecorder.record($0)
+        }
+
+        blocker.release.signal()
+        try await blocker.task.value
+        await coordinator.waitForQuiescence()
+        #expect(originalRecorder.outcomes == [.success(makeResponse("0.12.0"))])
+        #expect(updatedRecorder.outcomes == [.success(makeResponse("0.12.1"))])
     }
 
     @Test(.requireSDKs(.macOS))
@@ -1052,6 +1119,7 @@ private func makeIndexRequestKey(
     return DependencyGraphRequestCoordinator.RequestKey(
         core: ObjectIdentifier(owner),
         fs: ObjectIdentifier(owner),
+        workspace: ObjectIdentifier(owner),
         workspaceSignature: workspaceSignature,
         userInfo: nil,
         systemInfo: nil,
@@ -1108,6 +1176,56 @@ private func makeIndexSettingsWorkspace(buildSettings: [String: String] = [:]) -
             ]),
         ]),
     ])
+}
+
+private func makePackageVersionPIF(_ version: String) -> [PropertyListItem] {
+    let targetSignature = "TARGET@v11_\(version)"
+    return [
+        .plDict(["type": "workspace", "signature": "WORKSPACE@v11_workspace", "contents": .plDict([
+            "guid": "workspace", "name": "Test", "path": "/tmp/Test/Test.xcworkspace",
+            "projects": .plArray(["PROJECT@v11_project"]),
+        ])]),
+        .plDict(["type": "project", "signature": "PROJECT@v11_project", "contents": .plDict([
+            "guid": "project", "path": "/tmp/Test/Project.xcodeproj", "isPackage": "true",
+            "targets": .plArray([.plString(targetSignature)]),
+            "groupTree": .plDict(["guid": "group", "type": "group", "name": "Files", "sourceTree": "PROJECT_DIR", "path": ""]),
+            "buildConfigurations": .plArray([.plDict(["guid": "project-config", "name": "Debug", "buildSettings": .plDict(["SDKROOT": "macosx"])])]),
+            "defaultConfigurationName": "Debug", "developmentRegion": "English",
+        ])]),
+        .plDict(["type": "target", "signature": .plString(targetSignature), "contents": .plDict([
+            "guid": "target", "name": "IndexTarget", "type": "standard",
+            "productTypeIdentifier": "com.apple.product-type.tool",
+            "productReference": .plDict(["guid": "product", "name": "IndexTarget"]),
+            "buildPhases": .plArray([]), "buildRules": .plArray([]), "dependencies": .plArray([]),
+            "buildConfigurations": .plArray([.plDict(["guid": "target-config", "name": "Debug", "buildSettings": .plDict([
+                "SWIFT_USER_MODULE_VERSION": .plString(version), "INDEX_VALUE": "$(SWIFT_USER_MODULE_VERSION)",
+            ])])]),
+        ])]),
+    ]
+}
+
+private func transferPIF(_ workspace: TestWorkspace, to session: Session) throws -> WorkspaceContext {
+    try transferPIF(workspace.toObjects(), to: session)
+}
+
+private func transferPIF(_ objects: [PropertyListItem], to session: Session) throws -> WorkspaceContext {
+    let signature = try PIFLoader.extractWorkspaceSignature(objects: .plArray(objects))
+    let operation = try #require(session.startPIFTransfer(workspaceSignature: signature))
+    while true {
+        switch operation.continueOperation() {
+        case .complete:
+            return try #require(session.workspaceContext)
+        case .incomplete(let missingObjects):
+            for (signature, _) in missingObjects {
+                let object = try #require(objects.first { $0.dictValue?["signature"]?.stringValue == signature })
+                try operation.loadingSession.add(object: object)
+            }
+        case .failed(let error):
+            throw error
+        case .auditFailed(let diff):
+            throw StubError.error("Unexpected PIF audit failure: \(diff)")
+        }
+    }
 }
 
 private func indexSettings(in context: WorkspaceContext, configuration: String = "Debug", action: BuildAction = .indexBuild) -> Settings {

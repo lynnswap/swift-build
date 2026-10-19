@@ -160,8 +160,13 @@ public final class Session {
             }
             // PIF reapplication sends client information separately. Validate those fields
             // when each update arrives, while retaining a matching workspace's warm cache.
+            // WORKAROUND: Xcode can change target references without changing parent PIF
+            // signatures (https://github.com/lynnswap/swift-build/issues/61). Use the
+            // refreshed workspace identity for cached contexts and request coalescing until
+            // Xcode propagates those changes into parent signatures.
             if cached.key.core != ObjectIdentifier(workspaceContext.core)
                 || cached.key.fs != ObjectIdentifier(workspaceContext.fs)
+                || cached.key.workspace != ObjectIdentifier(workspaceContext.workspace)
                 || cached.key.workspaceSignature != workspaceContext.workspace.signature {
                 cachedDependencyGraphContext = nil
             }
@@ -206,7 +211,7 @@ public final class Session {
     init(_ core: Core, _ name: String, cachePath: Path?) {
         self.core = core
         self.name = name
-        self.incrementalPIFLoader = IncrementalPIFLoader(internalNamespace: core.specRegistry.internalMacroNamespace, cachePath: cachePath?.join("PIFCache"))
+        self.incrementalPIFLoader = IncrementalPIFLoader(internalNamespace: core.specRegistry.internalMacroNamespace, cachePath: cachePath?.join("PIFCache"), refreshParentObjects: true)
 
         // Allocate a session ID.
         UID = Session.sessionCount.withLock { sessionCount in

@@ -20,15 +20,17 @@ package final class DependencyGraphRequestCoordinator: Sendable {
     package struct RequestKey: Equatable, Sendable {
         let core: ObjectIdentifier
         let fs: ObjectIdentifier
+        let workspace: ObjectIdentifier
         let workspaceSignature: String
         let userInfo: UserInfo?
         let systemInfo: SystemInfo?
         let userPreferences: UserPreferences
         let request: ComputeDependencyGraphRequest
 
-        package init(core: ObjectIdentifier, fs: ObjectIdentifier, workspaceSignature: String, userInfo: UserInfo?, systemInfo: SystemInfo?, userPreferences: UserPreferences, request: ComputeDependencyGraphRequest) {
+        package init(core: ObjectIdentifier, fs: ObjectIdentifier, workspace: ObjectIdentifier, workspaceSignature: String, userInfo: UserInfo?, systemInfo: SystemInfo?, userPreferences: UserPreferences, request: ComputeDependencyGraphRequest) {
             self.core = core
             self.fs = fs
+            self.workspace = workspace
             self.workspaceSignature = workspaceSignature
             self.userInfo = userInfo
             self.systemInfo = systemInfo

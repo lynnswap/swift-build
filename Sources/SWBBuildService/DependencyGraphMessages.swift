@@ -132,7 +132,7 @@ package struct DependencyGraphRequestInputs: Sendable {
     }
 
     package func requestKey(for message: ComputeDependencyGraphRequest) -> DependencyGraphRequestCoordinator.RequestKey {
-        .init(core: ObjectIdentifier(core), fs: ObjectIdentifier(fs), workspaceSignature: workspace.signature, userInfo: userInfo, systemInfo: systemInfo, userPreferences: userPreferences, request: message)
+        .init(core: ObjectIdentifier(core), fs: ObjectIdentifier(fs), workspace: ObjectIdentifier(workspace), workspaceSignature: workspace.signature, userInfo: userInfo, systemInfo: systemInfo, userPreferences: userPreferences, request: message)
     }
 
     package func requestKey(for message: NonBlockingComputeDependencyGraphRequest) -> DependencyGraphRequestCoordinator.RequestKey {
