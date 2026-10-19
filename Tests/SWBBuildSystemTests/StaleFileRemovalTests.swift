@@ -660,7 +660,7 @@ fileprivate struct StaleFileRemovalTests: CoreBasedTests {
                     TestFile("A.swift"),
                     TestFile("B.swift"),
                 ]), buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: settings)], targets: [
-                    TestStandardTarget("Foo", type: .swiftPMStaticTarget,
+                    TestStandardTarget("Foo", type: .objectFile,
                                        buildPhases: [TestSourcesBuildPhase(["Foo.swift"])],
                                        dynamicTargetVariantName: "Foo-dynamic"),
                     TestStandardTarget("Foo-dynamic", type: .framework,
