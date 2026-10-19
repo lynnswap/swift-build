@@ -641,18 +641,18 @@ fileprivate struct StaleFileRemovalTests: CoreBasedTests {
                 "DSTROOT": buildDir.join("Install").str,
             ]
             let workspace = TestWorkspace("Workspace", sourceRoot: tmpDir, projects: [
-                TestProject("Consumers", groupTree: TestGroup("Sources", children: [
+                TestPackageProject("Consumers", groupTree: TestGroup("Sources", children: [
                     TestFile("Direct.swift"),
                     TestFile("Diamond.swift"),
                 ]), buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: settings)], targets: [
                     TestStandardTarget("Direct", type: .commandLineTool, buildPhases: [
                         TestSourcesBuildPhase(["Direct.swift"]),
-                        TestFrameworksBuildPhase([TestBuildFile(.target("Foo")), TestBuildFile(.target("Other"))]),
-                    ], dependencies: ["Foo", "Other"]),
+                        TestFrameworksBuildPhase([TestBuildFile(.target("FooProduct")), TestBuildFile(.target("Other"))]),
+                    ], dependencies: ["FooProduct", "Other"]),
                     TestStandardTarget("Diamond", type: .commandLineTool, buildPhases: [
                         TestSourcesBuildPhase(["Diamond.swift"]),
-                        TestFrameworksBuildPhase([TestBuildFile(.target("Foo")), TestBuildFile(.target("A")), TestBuildFile(.target("B"))]),
-                    ], dependencies: ["Foo", "A", "B"]),
+                        TestFrameworksBuildPhase([TestBuildFile(.target("FooProduct")), TestBuildFile(.target("A")), TestBuildFile(.target("B"))]),
+                    ], dependencies: ["FooProduct", "A", "B"]),
                 ]),
                 TestPackageProject("Package", groupTree: TestGroup("Sources", children: [
                     TestFile("Foo.swift"),
@@ -660,6 +660,9 @@ fileprivate struct StaleFileRemovalTests: CoreBasedTests {
                     TestFile("A.swift"),
                     TestFile("B.swift"),
                 ]), buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: settings)], targets: [
+                    TestPackageProductTarget("FooProduct",
+                                             frameworksBuildPhase: TestFrameworksBuildPhase([TestBuildFile(.target("Foo"))]),
+                                             dependencies: ["Foo"]),
                     TestStandardTarget("Foo", type: .objectFile,
                                        buildPhases: [TestSourcesBuildPhase(["Foo.swift"])],
                                        dynamicTargetVariantName: "Foo-dynamic"),
