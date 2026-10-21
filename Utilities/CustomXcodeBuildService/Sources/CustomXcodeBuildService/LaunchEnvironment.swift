@@ -25,6 +25,12 @@ struct LaunchEnvironment {
         let concurrentResolution: String?
         let legacyService: String?
 
+        // Earlier releases set DisableConcurrentDependencyResolution=0 together with the
+        // service path, which overrode the user's Swift Build defaults. launchd does not
+        // record who set a value, so a 0 the user set next to the service path also counts
+        // as legacy; other values stay. Delete this once those releases are no longer in use.
+        var hasLegacyConcurrentResolution: Bool { service != nil && concurrentResolution == "0" }
+
         func requireOwnership(in store: InstallationStore) throws {
             guard legacyService == nil else {
                 throw ServiceError("SWBBUILDSERVICE_PATH is already set. Remove that override before using this command.")
@@ -33,11 +39,6 @@ struct LaunchEnvironment {
                 guard store.ownsService(at: service) else {
                     throw ServiceError("XCBBUILDSERVICE_PATH belongs to another setup: \(service). Remove that override first.")
                 }
-                guard concurrentResolution == nil || concurrentResolution == "0" else {
-                    throw ServiceError("DisableConcurrentDependencyResolution was changed outside this installation. Remove that override first.")
-                }
-            } else if concurrentResolution != nil {
-                throw ServiceError("DisableConcurrentDependencyResolution is already set without an owned service. Remove that override first.")
             }
         }
     }
