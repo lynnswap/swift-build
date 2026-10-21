@@ -141,8 +141,9 @@ struct InstallationManager {
         var report = "Selected service: \(service.rawValue)"
         if let customPackage { report += "\n" + Self.selectedPackageLine(customPackage) }
         let selectedServicePath = service == .custom ? store.service.path : nil
-        let selectionChanged = previous.selection != service || previous.settings.service != selectedServicePath || legacyCommandTarget != nil
-        return selectionChanged ? report + "\n" + Self.clientRestartInstructions : report
+        // Running clients keep a removed legacy value until they restart.
+        let clientsNeedRestart = previous.selection != service || previous.settings.service != selectedServicePath || legacyCommandTarget != nil || previous.settings.hasLegacyConcurrentResolution
+        return clientsNeedRestart ? report + "\n" + Self.clientRestartInstructions : report
     }
 
     func activate() throws -> String {
@@ -266,8 +267,8 @@ struct InstallationManager {
         do {
             try environment.requireGUI()
             let settings = try environment.settings()
-            let active = selected != nil && settings.service == store.service.path && settings.concurrentResolution == "0" && settings.legacyService == nil
-            let noOverrides = settings.service == nil && settings.concurrentResolution == nil && settings.legacyService == nil
+            let active = selected != nil && settings.service == store.service.path && settings.legacyService == nil
+            let noOverrides = settings.service == nil && settings.legacyService == nil
             let applied: String
             if noOverrides {
                 applied = "bundled (no custom launchd settings)"
@@ -281,7 +282,6 @@ struct InstallationManager {
                 lines.append("Launchd settings do not match the saved selection. Run use \(selectedService.rawValue) to reapply it.")
             }
             lines.append("XCBBUILDSERVICE_PATH: \(settings.service ?? "unset")")
-            lines.append("DisableConcurrentDependencyResolution: \(settings.concurrentResolution ?? "unset")")
             lines.append("SWBBUILDSERVICE_PATH: \(settings.legacyService ?? "unset")")
         } catch {
             lines.append("Launchd selection: unavailable")
@@ -350,10 +350,7 @@ struct InstallationManager {
             try environment.bootstrap(store.agent)
             transaction.undo { try environment.bootout() }
         } else {
-            if previous.settings.concurrentResolution != nil {
-                try environment.set("DisableConcurrentDependencyResolution", to: nil)
-                transaction.undo { try environment.set("DisableConcurrentDependencyResolution", to: previous.settings.concurrentResolution) }
-            }
+            try removeLegacyConcurrentResolution(previous.settings, transaction: transaction)
             if previous.settings.service != nil {
                 try environment.set("XCBBUILDSERVICE_PATH", to: nil)
                 transaction.undo { try environment.set("XCBBUILDSERVICE_PATH", to: previous.settings.service) }
@@ -386,8 +383,13 @@ struct InstallationManager {
         try updateServiceBundleLink(selected, transaction: transaction)
         try environment.set("XCBBUILDSERVICE_PATH", to: store.service.path)
         transaction.undo { try environment.set("XCBBUILDSERVICE_PATH", to: previous.service) }
-        try environment.set("DisableConcurrentDependencyResolution", to: "0")
-        transaction.undo { try environment.set("DisableConcurrentDependencyResolution", to: previous.concurrentResolution) }
+        try removeLegacyConcurrentResolution(previous, transaction: transaction)
+    }
+
+    private func removeLegacyConcurrentResolution(_ previous: LaunchEnvironment.Settings, transaction: Transaction) throws {
+        guard previous.hasLegacyConcurrentResolution else { return }
+        try environment.set("DisableConcurrentDependencyResolution", to: nil)
+        transaction.undo { try environment.set("DisableConcurrentDependencyResolution", to: "0") }
     }
 
     private func updateServiceBundleLink(_ selected: ReleasePackage, transaction: Transaction) throws {

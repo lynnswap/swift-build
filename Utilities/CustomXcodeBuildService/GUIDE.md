@@ -31,7 +31,7 @@ Selected custom package: v0.0.0-local (/Users/you/Library/Developer/CustomXcodeB
 | `Source`, `Built with Xcode` | Indented under `Installed` or `Selected custom package`: the commit that package was built from and the Xcode used to build it |
 | `Installed custom service` | Fixed path that Xcode starts the custom service from, through a link to the selected package |
 | `Launchd selection` | Service that the launchd environment gives to apps started from now on |
-| `XCBBUILDSERVICE_PATH`, `DisableConcurrentDependencyResolution`, `SWBBUILDSERVICE_PATH` | Current values in the launchd environment |
+| `XCBBUILDSERVICE_PATH`, `SWBBUILDSERVICE_PATH` | Current values in the launchd environment |
 | `Login job` | Whether the LaunchAgent that reapplies the selection at login is loaded |
 | `Running build services` | Build service processes of your user. The custom service has the `[managed custom service]` label. |
 
@@ -52,7 +52,6 @@ prints only the package version and does not read desktop settings.
 | Item | Change |
 | --- | --- |
 | `XCBBUILDSERVICE_PATH` in the launchd environment | Set to `~/Library/Developer/CustomXcodeBuildService/SWBBuildService.bundle/SWBBuildServiceBundle`, expanded to an absolute path. Xcode starts the service from this path. |
-| `DisableConcurrentDependencyResolution` in the launchd environment | Set to `0`, which enables parallel dependency resolution |
 | `~/Library/Developer/CustomXcodeBuildService/SWBBuildService.bundle` | Link to the whole service bundle of the selected package, including its resources and plugins |
 | `~/Library/LaunchAgents/io.github.lynnswap.custom-xcode-build-service.plist` | LaunchAgent that runs `activate` at login to set the environment again |
 
@@ -65,13 +64,18 @@ custom is selected, and the command path in it identifies the selected package.
 Homebrew or mise owns the package files; the command does not copy or delete
 them.
 
-`use bundled` removes both environment variables and the LaunchAgent. It works
-even if the selected package has been deleted. `uninstall` also removes the files
+`use bundled` removes `XCBBUILDSERVICE_PATH` and the LaunchAgent. It works even
+if the selected package has been deleted. `uninstall` also removes the files
 that the command keeps in `~/Library/Developer/CustomXcodeBuildService`, including
 files left by older standalone versions, and the
 `~/.local/bin/custom-xcode-build-service` link from those versions. The directory
 itself stays with its `.lock` and `.owner` files. `uninstall` refuses to run while
 Xcode, `xcodebuild`, or the custom service is running.
+
+Earlier releases also set `DisableConcurrentDependencyResolution` to `0` in the
+launchd environment, which overrode your `org.swift.swift-build` defaults.
+`use custom`, `use bundled`, and `uninstall` remove that value and ask you to
+restart apps, because apps that are already running keep it.
 
 ## Reload services
 

@@ -26,7 +26,7 @@ Selected custom package: v0.0.0-local (/Users/you/Library/Developer/CustomXcodeB
 | `Source`、`Built with Xcode` | `Installed` または `Selected custom package` の下に字下げして表示される。そのパッケージのビルド元のコミットと、ビルドに使った Xcode |
 | `Installed custom service` | Xcode がカスタム版のサービスを起動する固定のパス。選択中のパッケージへのリンクを経由する |
 | `Launchd selection` | これから起動するアプリに、launchd の環境変数が渡すサービス |
-| `XCBBUILDSERVICE_PATH`、`DisableConcurrentDependencyResolution`、`SWBBUILDSERVICE_PATH` | launchd の環境変数の現在の値 |
+| `XCBBUILDSERVICE_PATH`、`SWBBUILDSERVICE_PATH` | launchd の環境変数の現在の値 |
 | `Login job` | ログイン時に選択を設定し直す LaunchAgent が読み込まれているか |
 | `Running build services` | 自分のユーザーで動いているビルドサービスのプロセス。カスタム版のサービスには `[managed custom service]` が付く |
 
@@ -41,7 +41,6 @@ Selected custom package: v0.0.0-local (/Users/you/Library/Developer/CustomXcodeB
 | 項目 | 変更内容 |
 | --- | --- |
 | launchd の環境変数 `XCBBUILDSERVICE_PATH` | `~/Library/Developer/CustomXcodeBuildService/SWBBuildService.bundle/SWBBuildServiceBundle` を絶対パスにして設定する。Xcode はこのパスからサービスを起動する |
-| launchd の環境変数 `DisableConcurrentDependencyResolution` | `0` を設定し、依存関係の並列解決を有効にする |
 | `~/Library/Developer/CustomXcodeBuildService/SWBBuildService.bundle` | 選択中のパッケージのサービスバンドル全体（リソースとプラグインを含む）へのリンク |
 | `~/Library/LaunchAgents/io.github.lynnswap.custom-xcode-build-service.plist` | ログイン時に `activate` を実行し、環境変数を設定し直す LaunchAgent |
 
@@ -49,7 +48,9 @@ Selected custom package: v0.0.0-local (/Users/you/Library/Developer/CustomXcodeB
 
 選択を記録しているのは LaunchAgent だけです。LaunchAgent があればカスタム版が選択されていて、その中のコマンドのパスが選択中のパッケージを表します。パッケージのファイルは Homebrew か mise が管理していて、コマンドはそれらをコピーも削除もしません。
 
-`use bundled` は、2 つの環境変数と LaunchAgent を削除します。選択中のパッケージが削除されていても実行できます。`uninstall` はそれに加えて、コマンドが `~/Library/Developer/CustomXcodeBuildService` に置いているファイル（古い単体インストール版が残したファイルを含む）と、古いバージョンが作った `~/.local/bin/custom-xcode-build-service` のリンクを削除します。ディレクトリ自体は、`.lock` と `.owner` のファイルとともに残ります。Xcode、`xcodebuild`、カスタム版のサービスのどれかが動いている間は、`uninstall` は実行を拒否します。
+`use bundled` は、`XCBBUILDSERVICE_PATH` と LaunchAgent を削除します。選択中のパッケージが削除されていても実行できます。`uninstall` はそれに加えて、コマンドが `~/Library/Developer/CustomXcodeBuildService` に置いているファイル（古い単体インストール版が残したファイルを含む）と、古いバージョンが作った `~/.local/bin/custom-xcode-build-service` のリンクを削除します。ディレクトリ自体は、`.lock` と `.owner` のファイルとともに残ります。Xcode、`xcodebuild`、カスタム版のサービスのどれかが動いている間は、`uninstall` は実行を拒否します。
+
+以前のリリースは、launchd の環境変数 `DisableConcurrentDependencyResolution` にも `0` を設定していて、`org.swift.swift-build` の defaults の設定を上書きしていました。すでに起動しているアプリにはこの値が残るので、`use custom`、`use bundled`、`uninstall` は値を削除したうえで、アプリの再起動を求めます。
 
 ## 実行中のサービスを止める
 

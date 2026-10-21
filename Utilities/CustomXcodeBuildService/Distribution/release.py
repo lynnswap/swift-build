@@ -603,9 +603,7 @@ def smoke_build(payload, temporary, manifest, fixture=None):
     service = service_path(payload, manifest)
     environment = dict(os.environ)
     environment.pop("SWBBUILDSERVICE_PATH", None)
-    environment.update(
-        XCBBUILDSERVICE_PATH=str(service), DisableConcurrentDependencyResolution="0"
-    )
+    environment["XCBBUILDSERVICE_PATH"] = str(service)
     command = [
         "/usr/bin/xcrun",
         "xcodebuild",
@@ -683,9 +681,7 @@ let package = Package(name: "Smoke", targets: [
     environment = dict(os.environ)
     environment.pop("SWBBUILDSERVICE_PATH", None)
     service = service_path(payload, manifest)
-    environment.update(
-        XCBBUILDSERVICE_PATH=str(service), DisableConcurrentDependencyResolution="0"
-    )
+    environment["XCBBUILDSERVICE_PATH"] = str(service)
     for command in ("build", "run", "test"):
         subprocess.run(
             ["/usr/bin/xcrun", "swift", command, "--build-system", "swiftbuild",
@@ -783,9 +779,7 @@ print(sqliteVersionsMatch())
     environment = dict(os.environ)
     environment.pop("SWBBUILDSERVICE_PATH", None)
     service = service_path(payload, manifest)
-    environment.update(
-        XCBBUILDSERVICE_PATH=str(service), DisableConcurrentDependencyResolution="0"
-    )
+    environment["XCBBUILDSERVICE_PATH"] = str(service)
     run_xcodebuild(
         ["/usr/bin/xcrun", "xcodebuild", "-scheme", "Smoke", "-testPlan", "Smoke",
          "-destination", "platform=macOS,arch=arm64",

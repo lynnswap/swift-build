@@ -45,6 +45,14 @@ func repairingServiceEnvironmentRequestsClientRestart(command: String) throws {
     #expect(output.contains("Xcode Service (for MCP)"))
 }
 
+@Test func removingLegacyConcurrentResolutionRequestsClientRestart() throws {
+    let fixture = try Fixture()
+    _ = try fixture.enable(fixture.package("v1.0.0"))
+    fixture.runner.settings["DisableConcurrentDependencyResolution"] = "0"
+    #expect(try fixture.manager.use(.custom).contains("Restart Xcode"))
+    #expect(fixture.runner.settings == ["XCBBUILDSERVICE_PATH": fixture.store.service.path])
+}
+
 @Test func reloadReportsPartiallyCompletedStops() throws {
     let fixture = try Fixture()
     _ = try fixture.enable( fixture.package("v1.0.0"))
@@ -62,7 +70,7 @@ func repairingServiceEnvironmentRequestsClientRestart(command: String) throws {
     #expect(try fixture.store.packagedRelease()?.manifest.version == "v1.0.0")
 }
 
-@Test(arguments: ["XCBBUILDSERVICE_PATH", "SWBBUILDSERVICE_PATH", "DisableConcurrentDependencyResolution"])
+@Test(arguments: ["XCBBUILDSERVICE_PATH", "SWBBUILDSERVICE_PATH"])
 func refusesForeignEnvironment(key: String) throws {
     let fixture = try Fixture()
     fixture.runner.settings[key] = "foreign-value"
@@ -70,6 +78,15 @@ func refusesForeignEnvironment(key: String) throws {
     #expect(fixture.runner.settings == [key: "foreign-value"])
     #expect(try !fixture.store.exists(fixture.store.command))
     #expect(!fixture.runner.loaded)
+}
+
+@Test func keepsConcurrentResolutionSetByTheUser() throws {
+    let fixture = try Fixture()
+    fixture.runner.settings["DisableConcurrentDependencyResolution"] = "1"
+    _ = try fixture.enable(fixture.package("v1.0.0"))
+    #expect(fixture.runner.settings == ["XCBBUILDSERVICE_PATH": fixture.store.service.path, "DisableConcurrentDependencyResolution": "1"])
+    _ = try fixture.manager.use(.bundled)
+    #expect(fixture.runner.settings == ["DisableConcurrentDependencyResolution": "1"])
 }
 
 @Test func refusesExistingJobWithoutOwnedPlist() throws {
@@ -86,8 +103,7 @@ func refusesForeignEnvironment(key: String) throws {
     fixture.runner.settings = [:]
     fixture.runner.xcodeVersion = "Xcode 28.0\nBuild version 28A100\n"
     _ = try fixture.manager.activate()
-    #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == fixture.store.service.path)
-    #expect(fixture.runner.settings["DisableConcurrentDependencyResolution"] == "0")
+    #expect(fixture.runner.settings == ["XCBBUILDSERVICE_PATH": fixture.store.service.path])
 }
 
 @Test func statusDistinguishesSelectedAndRunningServices() throws {
@@ -126,7 +142,7 @@ func refusesForeignEnvironment(key: String) throws {
     try fixture.manager.environment.bootout()
     try fixture.manager.environment.bootstrap(fixture.store.agent)
     let settings = fixture.runner.settings
-    fixture.runner.failOnce = ["setenv", "DisableConcurrentDependencyResolution", "0"]
+    fixture.runner.failOnce = ["bootstrap", "gui/501", fixture.store.agent.path]
 
     #expect(throws: ServiceError.self) { try fixture.manager.use(.custom) }
 
@@ -241,8 +257,7 @@ func refusesForeignEnvironment(key: String) throws {
     _ = try fixture.manager.use(.custom)
 
     #expect(try fixture.store.selectedService() == .custom)
-    #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == fixture.store.service.path)
-    #expect(fixture.runner.settings["DisableConcurrentDependencyResolution"] == "0")
+    #expect(fixture.runner.settings == ["XCBBUILDSERVICE_PATH": fixture.store.service.path])
     #expect(fixture.runner.loaded)
     #expect(try fixture.store.exists(fixture.store.agent))
 }
@@ -595,7 +610,6 @@ func statusReportsLiveSettingsWhenInstalledStateIsDamaged(damage: String) throws
     } catch let error as ServiceError {
         let report = error.description
         #expect(report.contains("XCBBUILDSERVICE_PATH: \(fixture.store.service.path)"))
-        #expect(report.contains("DisableConcurrentDependencyResolution: 0"))
         #expect(report.contains("Login job: loaded"))
         #expect(report.contains("PID 123: \(installed.service.path)"))
         #expect(!report.contains("Installed: none"))
@@ -815,6 +829,7 @@ func installerMigratesStandaloneAndPreservesExistingCommandPath(relativeCommandL
     try fixture.link(fixture.package("v0.4.0"))
 
     #expect(try fixture.manager.migrateStandalone().contains("Selected service: custom"))
+    #expect(fixture.runner.settings == ["XCBBUILDSERVICE_PATH": fixture.store.service.path])
     #expect(try FileManager.default.destinationOfSymbolicLink(atPath: fixture.store.command.path) == fixture.store.homebrewCommand.path)
     #expect(try fixture.store.selectedPackage()?.manifest.version == "v0.4.0")
     #expect(try fixture.store.exists(legacy))
@@ -871,7 +886,7 @@ func installerMigratesStandaloneAndPreservesExistingCommandPath(relativeCommandL
     let agent = try Data(contentsOf: fixture.store.agent)
     let settings = fixture.runner.settings
     let command = try FileManager.default.destinationOfSymbolicLink(atPath: fixture.store.command.path)
-    fixture.runner.failOnce = ["setenv", "DisableConcurrentDependencyResolution", "0"]
+    fixture.runner.failOnce = ["unsetenv", "DisableConcurrentDependencyResolution"]
     #expect(throws: ServiceError.self) { try fixture.manager.migrateStandalone() }
     #expect(try Data(contentsOf: fixture.store.agent) == agent)
     #expect(fixture.runner.settings == settings)
