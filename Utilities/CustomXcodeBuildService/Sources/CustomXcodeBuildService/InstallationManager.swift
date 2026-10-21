@@ -138,7 +138,8 @@ struct InstallationManager {
                 try retireLegacyCommand(legacyCommandTarget, preservePath: preserveCommandPath, transaction: transaction)
             }
         }
-        let report = "Selected service: \(service.rawValue)"
+        var report = "Selected service: \(service.rawValue)"
+        if let customPackage { report += "\n" + Self.selectedPackageLine(customPackage) }
         let selectedServicePath = service == .custom ? store.service.path : nil
         let selectionChanged = previous.selection != service || previous.settings.service != selectedServicePath || legacyCommandTarget != nil
         return selectionChanged ? report + "\n" + Self.clientRestartInstructions : report
@@ -221,6 +222,7 @@ struct InstallationManager {
         case .success(let value):
             package = value
             lines.append("Installed: \(value?.manifest.version ?? "none")")
+            if let value { lines += Self.buildRecordLines(value) }
         case .failure(let error):
             package = nil
             lines.append("Installed: unavailable")
@@ -241,7 +243,8 @@ struct InstallationManager {
         case .success(let value):
             selected = value
             if let value {
-                lines.append("Selected custom package: \(value.manifest.version) (\(value.directory.path))")
+                lines.append(Self.selectedPackageLine(value))
+                lines += Self.buildRecordLines(value)
                 do { try value.validateForUse() }
                 catch { issues.append("Selected package error: \(error)") }
             }
@@ -251,8 +254,6 @@ struct InstallationManager {
             issues.append("Selected package error: \(error)")
         }
         if let package {
-            lines.append("Source: \(package.manifest.sourceRevision)")
-            lines.append("Built with Xcode: \(package.manifest.xcodeVersion) (\(package.manifest.xcodeBuildVersion))")
             lines.append("Installed custom service: \(store.service.path)")
             do {
                 try package.validateForUse()
@@ -363,6 +364,17 @@ struct InstallationManager {
                 transaction.undo { try agent.write(to: store.agent, options: .atomic) }
             }
         }
+    }
+
+    private static func selectedPackageLine(_ package: ReleasePackage) -> String {
+        "Selected custom package: \(package.manifest.version) (\(package.directory.path))"
+    }
+
+    private static func buildRecordLines(_ package: ReleasePackage) -> [String] {
+        [
+            "  Source: \(package.manifest.sourceRevision)",
+            "  Built with Xcode: \(package.manifest.xcodeVersion) (\(package.manifest.xcodeBuildVersion))",
+        ]
     }
 
     private static let clientRestartInstructions = """

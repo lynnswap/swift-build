@@ -761,7 +761,10 @@ func attachedProcessPreservesFailureStatus(terminated: Bool) throws {
 func anotherCLIReappliesTheSavedPackageWithoutChangingSelection(command: String) throws {
     let fixture = try Fixture()
     _ = try fixture.enable(fixture.package("v0.3.0"))
-    let local = try fixture.package("v0.0.0-local")
+    let localRevision = String(repeating: "c", count: 40)
+    let local = try fixture.package("v0.0.0-local", manifestChanges: [
+        "sourceRevision": localRevision, "xcodeVersion": "27.1", "xcodeBuildVersion": "27B100",
+    ])
     let localStore = InstallationStore(home: fixture.store.home, packageDirectory: local)
     let localManager = InstallationManager(store: localStore, environment: fixture.manager.environment)
     _ = try localManager.use(.custom)
@@ -780,8 +783,8 @@ func anotherCLIReappliesTheSavedPackageWithoutChangingSelection(command: String)
     #expect(fixture.store.service.resolvingSymlinksInPath() == localService)
     #expect(try fixture.store.selectedPackage()?.manifest.version == "v0.0.0-local")
     let status = try fixture.manager.status()
-    #expect(status.contains("Installed: v0.3.0"))
-    #expect(status.contains("Selected custom package: v0.0.0-local"))
+    #expect(status.contains("Installed: v0.3.0\n  Source: \(String(repeating: "a", count: 40))\n"))
+    #expect(status.contains("Selected custom package: v0.0.0-local (\(local.path))\n  Source: \(localRevision)\n  Built with Xcode: 27.1 (27B100)\n"))
 }
 
 @Test func localCLIReloadsAnUpgradedHomebrewSelectionAfterOldKegCleanup() throws {
@@ -921,7 +924,7 @@ func selectingAnotherMiseVersionOptionallyReloadsThePreviousPackage(reload: Bool
     let new = try package("v0.4.1")
     let newStore = InstallationStore(home: fixture.store.home, packageDirectory: new)
     let manager = InstallationManager(store: newStore, environment: fixture.manager.environment)
-    _ = try manager.use(.custom, reload: reload)
+    #expect(try manager.use(.custom, reload: reload).contains("Selected custom package: v0.4.1 (\(new.path))"))
     #expect(try newStore.selectedPackage()?.manifest.version == "v0.4.1")
     #expect(newStore.service.resolvingSymlinksInPath() == (try ReleasePackage(directory: new).service))
     #expect(fixture.runner.killedPIDs == (reload ? ["20"] : []))
