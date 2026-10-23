@@ -3566,8 +3566,6 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
                 // each path could either be a directory or a file path and needs to exist on the filesystem
                 let projectDir = scope.evaluate(BuiltinMacros.PROJECT_DIR)
                 let absolutePath = projectDir.join(developmentAssetsPath)
-                // Directory kind affects exclusions, but recursively hashing asset contents would invalidate unrelated builds.
-                workspaceContext.requireFreshContextForSettings()
 
                 // TODO: 50493364 (Development Resources: Check for accidentally added files)
                 if workspaceContext.fs.isDirectory(absolutePath) {

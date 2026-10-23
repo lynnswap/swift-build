@@ -152,46 +152,7 @@ public final class Session {
     package let dependencyGraphRequestCoordinator = DependencyGraphRequestCoordinator()
 
     /// The active workspace session
-    public internal(set) var workspaceContext: WorkspaceContext? {
-        didSet {
-            guard let workspaceContext, let cached = cachedDependencyGraphContext else {
-                cachedDependencyGraphContext = nil
-                return
-            }
-            // PIF reapplication sends client information separately. Validate those fields
-            // when each update arrives, while retaining a matching workspace's warm cache.
-            // WORKAROUND: Xcode can change target references without changing parent PIF
-            // signatures (https://github.com/lynnswap/swift-build/issues/61). Use the
-            // refreshed workspace identity for cached contexts and request coalescing until
-            // Xcode propagates those changes into parent signatures.
-            if cached.key.core != ObjectIdentifier(workspaceContext.core)
-                || cached.key.fs != ObjectIdentifier(workspaceContext.fs)
-                || cached.key.workspace != ObjectIdentifier(workspaceContext.workspace)
-                || cached.key.workspaceSignature != workspaceContext.workspace.signature {
-                cachedDependencyGraphContext = nil
-            }
-        }
-    }
-
-    private var cachedDependencyGraphContext: DependencyGraphContext?
-
-    package func dependencyGraphContext(for inputs: DependencyGraphRequestInputs, key: DependencyGraphRequestCoordinator.RequestKey) -> DependencyGraphContext {
-        if let cached = cachedDependencyGraphContext, cached.key == key { return cached }
-        // A different request replaces the slot instead of accumulating configurations.
-        let context = DependencyGraphContext(inputs: inputs, key: key)
-        cachedDependencyGraphContext = context
-        return context
-    }
-
-    package func invalidateDependencyGraphContext<Value: Equatable>(for field: KeyPath<DependencyGraphRequestInputs, Value>, value: Value) {
-        if let cached = cachedDependencyGraphContext, cached.inputs[keyPath: field] != value {
-            cachedDependencyGraphContext = nil
-        }
-    }
-
-    package func clearDependencyGraphContext() {
-        cachedDependencyGraphContext = nil
-    }
+    public internal(set) var workspaceContext: WorkspaceContext?
 
     /// The incremental PIF loader.
     private let incrementalPIFLoader: IncrementalPIFLoader

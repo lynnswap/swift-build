@@ -186,22 +186,11 @@ fileprivate extension SWBUtil.UserDefaults {
 // - Supports only path lookup
 // - Discovers (and caches) new SDKs on demand
 public struct WorkspaceContextSDKRegistry: SDKRegistryLookup, Sendable {
-    private let underlyingLookup: CascadingSDKRegistryLookup
-    private let externalSDKRegistry: SDKRegistry
-    private let hasOverridingSDKs: Bool
-
-    package var hasCustomSDKs: Bool {
-        hasOverridingSDKs || underlyingLookup.usesCustomSDKPath.withLock { $0 } || !externalSDKRegistry.allSDKs.isEmpty
-    }
+    private var underlyingLookup: CascadingSDKRegistryLookup
 
     /// Allows lookup(...) to search multiple SDK registries in order.
-    private final class CascadingSDKRegistryLookup: SDKRegistryLookup, Sendable {
+    private struct CascadingSDKRegistryLookup: SDKRegistryLookup, Sendable {
         let registries: [any SDKRegistryLookup]
-        let usesCustomSDKPath = SWBMutex(false)
-
-        init(registries: [any SDKRegistryLookup]) {
-            self.registries = registries
-        }
 
         private func lookupInEach(f: (any SDKRegistryLookup) throws -> SDK?) rethrows -> SDK? {
             for registry in registries {
@@ -228,7 +217,6 @@ public struct WorkspaceContextSDKRegistry: SDKRegistryLookup, Sendable {
 
     @_spi(Testing) public init(coreSDKRegistry: SDKRegistry, delegate: any SDKRegistryDelegate, userNamespace: MacroNamespace, overridingSDKsDir: Path?) {
         var result: [any SDKRegistryLookup] = []
-        hasOverridingSDKs = overridingSDKsDir != nil
 
         // 1. Overriding SDKs
         if let overridingSDKsDir {
@@ -242,7 +230,6 @@ public struct WorkspaceContextSDKRegistry: SDKRegistryLookup, Sendable {
 
         // 3. Discovered external SDKs.  This is the only registry which is allowed to add new SDKs (by path) after it's created.
         let registry = SDKRegistry(delegate: delegate, searchPaths: [], type: .external, hostOperatingSystem: coreSDKRegistry.hostOperatingSystem)
-        externalSDKRegistry = registry
         result.append(registry)
 
         underlyingLookup = CascadingSDKRegistryLookup(registries: result)
@@ -253,29 +240,11 @@ public struct WorkspaceContextSDKRegistry: SDKRegistryLookup, Sendable {
     }
 
     public func lookup(_ path: Path) -> SDK? {
-        let sdk = underlyingLookup.lookup(path)
-        recordSDKPath(path, sdk: sdk)
-        return sdk
+        return underlyingLookup.lookup(path)
     }
 
     public func lookup(nameOrPath: String, basePath: Path, activeRunDestination: RunDestinationInfo?) throws -> SDK? {
-        let sdk = try underlyingLookup.lookup(nameOrPath: nameOrPath, basePath: basePath, activeRunDestination: activeRunDestination)
-        // An unresolved "auto" is a platform-specialization placeholder, not a filesystem path.
-        if !hasOverridingSDKs && nameOrPath != "" && nameOrPath != "/" && nameOrPath != "auto" {
-            let path = Path(nameOrPath)
-            if !path.dirname.isEmpty {
-                recordSDKPath(path.isAbsolute ? path : basePath.join(path), sdk: sdk)
-            } else if try underlyingLookup.lookup(nameOrPath, activeRunDestination: activeRunDestination) == nil {
-                recordSDKPath(basePath.join(path), sdk: sdk)
-            }
-        }
-        return sdk
-    }
-
-    private func recordSDKPath(_ path: Path, sdk: SDK?) {
-        // Missing SDKs can appear later, and aliases can be retargeted without changing settings inputs.
-        if let sdk, path == sdk.path || path == (try? localFS.realpath(sdk.path)) { return }
-        underlyingLookup.usesCustomSDKPath.withLock { $0 = true }
+        return try underlyingLookup.lookup(nameOrPath: nameOrPath, basePath: basePath, activeRunDestination: activeRunDestination)
     }
 }
 
@@ -333,14 +302,6 @@ public final class WorkspaceContext: Sendable {
     }
     internal var workspaceSettingsCache: WorkspaceSettingsCache {
         _workspaceSettingsCache.value
-    }
-
-    private let _settingsRequireFreshContext = SWBMutex(false)
-    package var settingsRequireFreshContext: Bool {
-        _settingsRequireFreshContext.withLock { $0 }
-    }
-    internal func requireFreshContextForSettings() {
-        _settingsRequireFreshContext.withLock { $0 = true }
     }
 
     internal let macroConfigFileLoader: MacroConfigFileLoader
