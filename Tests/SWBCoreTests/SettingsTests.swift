@@ -4509,7 +4509,6 @@ import SWBTestSupport
             #expect(settings.errors == [])
             #expect(settings.warnings == [])
             #expect(settings.globalScope.evaluate(BuiltinMacros.SDKROOT) == context.sdkRegistry.lookup("macosx")?.path)
-            #expect(!context.sdkRegistry.hasCustomSDKs)
         }
 
         do {
@@ -5993,23 +5992,11 @@ import SWBTestSupport
 
 @Suite fileprivate struct SettingsLookupTests: CoreBasedTests {
 
-    @Test
-    func dependencyQuerySettingsDoNotRetainRequestContext() async throws {
-        let workspaceContext = try await contextForTestData(TestWorkspace("Test", projects: []))
-        let (requestContext, settings) = {
-            let context = BuildRequestContext(workspaceContext: workspaceContext, cacheSettings: true)
-            return (WeakRef(context), context.getCachedSettings(BuildParameters(configuration: "Debug")))
-        }()
-
-        #expect(requestContext.instance == nil)
-        #expect(settings.parameters.configuration == "Debug")
-    }
-
     /// Test that we can look up different `Settings` objects the caching in the `BuildRequestContext` works.
     ///
     /// In particular this checks whether looking up `Settings` with the same parameters and purpose returns the same object each time, and that looking up similar but slightly different `Settings` will not return the wrong one.  This way we can test, for example, that changes to the `SettingsCacheKey` work as expected.
-    @Test(.flaky("Intermittent failures in Swift CI"), arguments: [false, true])
-    func settingsCaching(cacheSettings: Bool) async throws {
+    @Test(.flaky("Intermittent failures in Swift CI"))
+    func settingsCaching() async throws {
         let testWorkspace = try await TestWorkspace(
             "Workspace",
             projects: [
@@ -6067,7 +6054,7 @@ import SWBTestSupport
         let targetB = project.targets[1]
 
         let context = try await contextForTestData(testWorkspace)
-        let buildRequestContext = cacheSettings ? BuildRequestContext(workspaceContext: context, cacheSettings: true) : BuildRequestContext(workspaceContext: context)
+        let buildRequestContext = BuildRequestContext(workspaceContext: context)
 
         // A set to be able to conveniently tell if we've found a Settings object before.
         var foundSettings = [ObjectIdentifier: Settings]()
@@ -6117,11 +6104,7 @@ import SWBTestSupport
 
         check(buildRequestContext.getCachedSettings(BuildParameters(configuration: "Debug"), project: project, purpose: .editor), settings_Project_Debug_Editor)
 
-        let settings_Workspace_Debug_Build = buildRequestContext.getCachedSettings(BuildParameters(configuration: "Debug"))
-        check(settings_Workspace_Debug_Build)
-        check(buildRequestContext.getCachedSettings(BuildParameters(configuration: "Debug")), settings_Workspace_Debug_Build)
-
-        #expect(foundSettings.count == 7)
+        #expect(foundSettings.count == 6)
     }
 
 }

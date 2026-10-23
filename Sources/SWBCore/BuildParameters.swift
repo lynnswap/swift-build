@@ -124,18 +124,14 @@ public struct BuildParameters: Hashable, SerializableCodable, Sendable {
         self.environmentConfigOverrides = environmentConfigOverrides
         self.toolchainOverride = toolchainOverride
 
-        self.packageConfigurationOverride = Self.packageConfiguration(for: configuration)
-
-        self.precomputedHash = computedHashValue()
-    }
-
-    private static func packageConfiguration(for configuration: String?) -> String? {
         if let configuration = configuration?.lowercased() {
             let isDebug = configuration.contains("debug") || configuration.contains("development")
-            return isDebug ? "Debug" : "Release"
+            self.packageConfigurationOverride = isDebug ? "Debug" : "Release"
         } else {
-            return nil
+            self.packageConfigurationOverride = nil
         }
+
+        self.precomputedHash = computedHashValue()
     }
 
     public func hash(into hasher: inout Hasher) {
@@ -245,10 +241,6 @@ public struct BuildParameters: Hashable, SerializableCodable, Sendable {
 
 extension BuildParameters {
     public func mergingOverrides(_ overrides: [String: String]) -> BuildParameters {
-        if overrides.allSatisfy({ self.overrides[$0.key] == $0.value }),
-           packageConfigurationOverride == Self.packageConfiguration(for: configuration) {
-            return self
-        }
         return BuildParameters(
             action: action,
             configuration: configuration,
@@ -266,11 +258,6 @@ extension BuildParameters {
 
     // Returns these `BuildParameters` after filtering out any overrides.
     public var withoutOverrides: BuildParameters {
-        if overrides.isEmpty, commandLineOverrides.isEmpty, commandLineConfigOverridesPath == nil,
-           commandLineConfigOverrides.isEmpty, environmentConfigOverridesPath == nil, environmentConfigOverrides.isEmpty,
-           packageConfigurationOverride == Self.packageConfiguration(for: configuration) {
-            return self
-        }
         return BuildParameters(
             action: action,
             configuration: configuration,
@@ -288,10 +275,6 @@ extension BuildParameters {
 
     // Returns these `BuildParameters` after modifying `activeRunDestination` and `activeArchitecture`.
     public func replacing(activeRunDestination: RunDestinationInfo?, activeArchitecture: String?) -> BuildParameters {
-        if self.activeRunDestination == activeRunDestination, self.activeArchitecture == activeArchitecture,
-           packageConfigurationOverride == Self.packageConfiguration(for: configuration) {
-            return self
-        }
         return BuildParameters(
             action: action,
             configuration: configuration,
@@ -309,9 +292,6 @@ extension BuildParameters {
 
     /// Removes any of the potentially imposed settings **unless** those have been specified via explicit overrides which have come in via the initial build request.
     public func withoutImposedOverrides(_ buildRequest: BuildRequest, core: Core) -> BuildParameters {
-        if overrides.isEmpty, packageConfigurationOverride == Self.packageConfiguration(for: configuration) {
-            return self
-        }
         let settingsToRemove = SpecializationParameters.potentialImposedSettingNames(core: core).filter { setting in
             // FIXME: command line and environment overrides are not currently handled here. If/when we address rdar://80907686, this codepath should no longer be needed though.
             if buildRequest.parameters.overrides.contains(setting) { return false }
@@ -321,10 +301,6 @@ extension BuildParameters {
         var prunedOverrides = overrides
         for setting in settingsToRemove {
             prunedOverrides.removeValue(forKey: setting)
-        }
-
-        if prunedOverrides == overrides, packageConfigurationOverride == Self.packageConfiguration(for: configuration) {
-            return self
         }
 
         return BuildParameters(

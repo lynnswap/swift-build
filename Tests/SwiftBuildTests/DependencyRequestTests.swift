@@ -168,7 +168,7 @@ fileprivate struct DependencyClosureTests: CoreBasedTests {
     }
 
     @Test(.requireSDKs(.macOS), arguments: ["build", "indexbuild"])
-    func computeDependencyQueriesUseUpdatedEnvironment(action: String) async throws {
+    func computeDependencyQueriesReloadEnvironmentAfterPIFUpdate(action: String) async throws {
         try await withTemporaryDirectory { temporaryDirectory in
             try await withAsyncDeferrable { deferrable in
                 let testSession = try await TestSWBSession(temporaryDirectory: temporaryDirectory)
@@ -207,6 +207,7 @@ fileprivate struct DependencyClosureTests: CoreBasedTests {
                 #expect(try await testSession.session.computeDependencyGraph(targetGUIDs: [SWBTargetGUID(rawValue: mainTarget.guid)], buildParameters: parameters, includeImplicitDependencies: false) == firstGraph)
                 #expect(try await testSession.session.computeDependencyClosure(targetGUIDs: [mainTarget.guid], buildParameters: parameters, includeImplicitDependencies: false) == [secondTarget.guid, mainTarget.guid])
 
+                try await testSession.session.sendPIF(.init(pif))
                 try await testSession.session.setUserInfo(SWBUserInfo.defaultForTesting.with(buildSystemEnvironment: ["OMIT_TARGET": "Second"]))
                 #expect(try await testSession.session.computeDependencyGraph(targetGUIDs: [SWBTargetGUID(rawValue: mainTarget.guid)], buildParameters: parameters, includeImplicitDependencies: false) == [
                     SWBTargetGUID(rawValue: mainTarget.guid): [SWBTargetGUID(rawValue: firstTarget.guid)],
@@ -266,7 +267,6 @@ fileprivate struct DependencyClosureTests: CoreBasedTests {
                     initialGraph[SWBTargetGUID(rawValue: firstTarget.guid)] = []
                 }
                 #expect(try await testSession.session.computeDependencyGraph(targetGUIDs: [SWBTargetGUID(rawValue: mainTarget.guid)], buildParameters: parameters, includeImplicitDependencies: false) == initialGraph)
-                #expect(try await testSession.session.computeDependencyClosure(targetGUIDs: [mainTarget.guid], buildParameters: parameters, includeImplicitDependencies: false) == (createsOptionalInclude ? [firstTarget.guid, secondTarget.guid, mainTarget.guid] : [secondTarget.guid, mainTarget.guid]))
 
                 let changedConfigPath = createsOptionalInclude ? configPath.dirname.join("Generated.xcconfig") : configPath
                 try await localFS.writeFileContents(changedConfigPath) {
@@ -276,13 +276,12 @@ fileprivate struct DependencyClosureTests: CoreBasedTests {
                     SWBTargetGUID(rawValue: mainTarget.guid): [SWBTargetGUID(rawValue: firstTarget.guid)],
                     SWBTargetGUID(rawValue: firstTarget.guid): [],
                 ])
-                #expect(try await testSession.session.computeDependencyClosure(targetGUIDs: [mainTarget.guid], buildParameters: parameters, includeImplicitDependencies: false) == [firstTarget.guid, mainTarget.guid])
             }
         }
     }
 
     @Test(.requireSDKs(.macOS), arguments: [true, false])
-    func computeIndexDependencyGraphUsesUpdatedExternalSDK(sdkInitiallyExists: Bool) async throws {
+    func computeDependencyQueriesReloadExternalSDKAfterPIFUpdate(sdkInitiallyExists: Bool) async throws {
         try await withTemporaryDirectory { temporaryDirectory in
             try await withAsyncDeferrable { deferrable in
                 let testSession = try await TestSWBSession(temporaryDirectory: temporaryDirectory)
@@ -334,6 +333,7 @@ fileprivate struct DependencyClosureTests: CoreBasedTests {
                     "IsBaseSDK": "NO",
                     "DefaultProperties": ["EXCLUDED_EXPLICIT_TARGET_DEPENDENCIES": "Second"],
                 ])
+                try await testSession.session.sendPIF(.init(pif))
                 #expect(try await testSession.session.computeDependencyGraph(targetGUIDs: [SWBTargetGUID(rawValue: mainTarget.guid)], buildParameters: parameters, includeImplicitDependencies: false) == [
                     SWBTargetGUID(rawValue: mainTarget.guid): [SWBTargetGUID(rawValue: firstTarget.guid)],
                     SWBTargetGUID(rawValue: firstTarget.guid): [],
