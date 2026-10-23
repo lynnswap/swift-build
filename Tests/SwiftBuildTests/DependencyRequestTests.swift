@@ -167,8 +167,8 @@ fileprivate struct DependencyClosureTests: CoreBasedTests {
         }
     }
 
-    @Test(.requireSDKs(.macOS))
-    func computeIndexDependencyGraphUsesUpdatedEnvironment() async throws {
+    @Test(.requireSDKs(.macOS), arguments: ["build", "indexbuild"])
+    func computeDependencyQueriesReloadEnvironmentAfterPIFUpdate(action: String) async throws {
         try await withTemporaryDirectory { temporaryDirectory in
             try await withAsyncDeferrable { deferrable in
                 let testSession = try await TestSWBSession(temporaryDirectory: temporaryDirectory)
@@ -198,23 +198,27 @@ fileprivate struct DependencyClosureTests: CoreBasedTests {
                 ]).toObjects().propertyListItem
                 try await testSession.session.sendPIF(.init(pif))
 
-                let parameters = SWBBuildParameters(action: "indexbuild", configuration: "Debug", activeRunDestination: .anyMac)
+                let parameters = SWBBuildParameters(action: action, configuration: "Debug", activeRunDestination: .anyMac)
                 let firstGraph: [SWBTargetGUID: [SWBTargetGUID]] = [
                     SWBTargetGUID(rawValue: mainTarget.guid): [SWBTargetGUID(rawValue: secondTarget.guid)],
                     SWBTargetGUID(rawValue: secondTarget.guid): [],
                 ]
                 try await testSession.session.setUserInfo(SWBUserInfo.defaultForTesting.with(buildSystemEnvironment: ["OMIT_TARGET": "First"]))
                 #expect(try await testSession.session.computeDependencyGraph(targetGUIDs: [SWBTargetGUID(rawValue: mainTarget.guid)], buildParameters: parameters, includeImplicitDependencies: false) == firstGraph)
+                #expect(try await testSession.session.computeDependencyClosure(targetGUIDs: [mainTarget.guid], buildParameters: parameters, includeImplicitDependencies: false) == [secondTarget.guid, mainTarget.guid])
 
+                try await testSession.session.sendPIF(.init(pif))
                 try await testSession.session.setUserInfo(SWBUserInfo.defaultForTesting.with(buildSystemEnvironment: ["OMIT_TARGET": "Second"]))
                 #expect(try await testSession.session.computeDependencyGraph(targetGUIDs: [SWBTargetGUID(rawValue: mainTarget.guid)], buildParameters: parameters, includeImplicitDependencies: false) == [
                     SWBTargetGUID(rawValue: mainTarget.guid): [SWBTargetGUID(rawValue: firstTarget.guid)],
                     SWBTargetGUID(rawValue: firstTarget.guid): [],
                 ])
+                #expect(try await testSession.session.computeDependencyClosure(targetGUIDs: [mainTarget.guid], buildParameters: parameters, includeImplicitDependencies: false) == [firstTarget.guid, mainTarget.guid])
 
                 try await testSession.session.sendPIF(.init(pif))
                 try await testSession.session.setUserInfo(SWBUserInfo.defaultForTesting.with(buildSystemEnvironment: ["OMIT_TARGET": "First"]))
                 #expect(try await testSession.session.computeDependencyGraph(targetGUIDs: [SWBTargetGUID(rawValue: mainTarget.guid)], buildParameters: parameters, includeImplicitDependencies: false) == firstGraph)
+                #expect(try await testSession.session.computeDependencyClosure(targetGUIDs: [mainTarget.guid], buildParameters: parameters, includeImplicitDependencies: false) == [secondTarget.guid, mainTarget.guid])
             }
         }
     }
@@ -277,7 +281,7 @@ fileprivate struct DependencyClosureTests: CoreBasedTests {
     }
 
     @Test(.requireSDKs(.macOS), arguments: [true, false])
-    func computeIndexDependencyGraphUsesUpdatedExternalSDK(sdkInitiallyExists: Bool) async throws {
+    func computeDependencyQueriesReloadExternalSDKAfterPIFUpdate(sdkInitiallyExists: Bool) async throws {
         try await withTemporaryDirectory { temporaryDirectory in
             try await withAsyncDeferrable { deferrable in
                 let testSession = try await TestSWBSession(temporaryDirectory: temporaryDirectory)
@@ -329,11 +333,11 @@ fileprivate struct DependencyClosureTests: CoreBasedTests {
                     "IsBaseSDK": "NO",
                     "DefaultProperties": ["EXCLUDED_EXPLICIT_TARGET_DEPENDENCIES": "Second"],
                 ])
+                try await testSession.session.sendPIF(.init(pif))
                 #expect(try await testSession.session.computeDependencyGraph(targetGUIDs: [SWBTargetGUID(rawValue: mainTarget.guid)], buildParameters: parameters, includeImplicitDependencies: false) == [
                     SWBTargetGUID(rawValue: mainTarget.guid): [SWBTargetGUID(rawValue: firstTarget.guid)],
                     SWBTargetGUID(rawValue: firstTarget.guid): [],
                 ])
-                try await testSession.session.sendPIF(.init(pif))
                 #expect(try await testSession.session.computeDependencyClosure(targetGUIDs: [mainTarget.guid], buildParameters: parameters, includeImplicitDependencies: false) == [firstTarget.guid, mainTarget.guid])
             }
         }
