@@ -260,7 +260,8 @@ public struct WorkspaceContextSDKRegistry: SDKRegistryLookup, Sendable {
 
     public func lookup(nameOrPath: String, basePath: Path, activeRunDestination: RunDestinationInfo?) throws -> SDK? {
         let sdk = try underlyingLookup.lookup(nameOrPath: nameOrPath, basePath: basePath, activeRunDestination: activeRunDestination)
-        if !hasOverridingSDKs && nameOrPath != "" && nameOrPath != "/" {
+        // An unresolved "auto" is a platform-specialization placeholder, not a filesystem path.
+        if !hasOverridingSDKs && nameOrPath != "" && nameOrPath != "/" && nameOrPath != "auto" {
             let path = Path(nameOrPath)
             if !path.dirname.isEmpty {
                 recordSDKPath(path.isAbsolute ? path : basePath.join(path), sdk: sdk)

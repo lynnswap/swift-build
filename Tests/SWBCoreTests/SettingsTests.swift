@@ -4521,6 +4521,7 @@ import SWBTestSupport
             ])
             #expect(settings.warnings == [])
             #expect(settings.globalScope.evaluate(BuiltinMacros.SDKROOT).str == "auto")
+            #expect(!context.sdkRegistry.hasCustomSDKs)
         }
     }
 
