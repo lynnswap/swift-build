@@ -30,16 +30,19 @@ Selected custom package: v0.0.0-local (/Users/you/Library/Developer/CustomXcodeB
 | `Selected custom package` | Version and path of the selected package |
 | `Source`, `Built with Xcode` | Indented under `Installed` or `Selected custom package`: the commit that package was built from and the Xcode used to build it |
 | `Installed custom service` | Fixed path that Xcode starts the custom service from, through a link to the selected package |
-| `Launchd selection` | Service that the launchd environment gives to apps started from now on |
-| `XCBBUILDSERVICE_PATH`, `SWBBUILDSERVICE_PATH` | Current values in the launchd environment |
+| `Launchd selection` | Service selected in the GUI (`Aqua`) launchd environment for newly started processes |
+| `XCBBUILDSERVICE_PATH`, `SWBBUILDSERVICE_PATH` | Current values in the GUI launchd environment |
+| `Background launchd selection` | Service selected in the Background launchd environment for newly started processes |
+| `Background XCBBUILDSERVICE_PATH`, `Background SWBBUILDSERVICE_PATH` | Current values in the Background launchd environment |
 | `Login job` | Whether the LaunchAgent that reapplies the selection at login is loaded |
 | `Running build services` | Build service processes of your user. The custom service has the `[managed custom service]` label. |
 
-`Launchd selection` describes apps started from now on, not apps that are
-already running. `Running build services` lists the build service processes that
-are running. A process with the `[managed custom service]` label was started from
-a custom package, but the list does not show which package version the process
-loaded or which app started it.
+`Launchd selection` and `Background launchd selection` describe the environment
+that launchd gives to newly started processes. Running apps, shells, and tmux
+servers keep their existing environment. `Running build services` lists the
+build service processes that are running. A process with the
+`[managed custom service]` label was started from a custom package, but the list
+does not show which package version the process loaded or which app started it.
 
 If part of the inspection fails, `status` prints what it could read along with
 the errors and exits with a nonzero status. `custom-xcode-build-service --version`
@@ -51,9 +54,9 @@ prints only the package version and does not read desktop settings.
 
 | Item | Change |
 | --- | --- |
-| `XCBBUILDSERVICE_PATH` in the launchd environment | Set to `~/Library/Developer/CustomXcodeBuildService/SWBBuildService.bundle/SWBBuildServiceBundle`, expanded to an absolute path. Xcode starts the service from this path. |
+| `XCBBUILDSERVICE_PATH` in the GUI and Background launchd environments | Set to `~/Library/Developer/CustomXcodeBuildService/SWBBuildService.bundle/SWBBuildServiceBundle`, expanded to an absolute path. Xcode starts the service from this path. |
 | `~/Library/Developer/CustomXcodeBuildService/SWBBuildService.bundle` | Link to the whole service bundle of the selected package, including its resources and plugins |
-| `~/Library/LaunchAgents/io.github.lynnswap.custom-xcode-build-service.plist` | LaunchAgent that runs `activate` at login to set the environment again |
+| `~/Library/LaunchAgents/io.github.lynnswap.custom-xcode-build-service.plist` | LaunchAgent that runs `activate` at desktop login to reapply the selection in both launchd environments |
 
 Every custom package uses the same service path; selecting another package only
 changes the link. This is why switching between custom packages does not require
@@ -64,9 +67,10 @@ custom is selected, and the command path in it identifies the selected package.
 Homebrew or mise owns the package files; the command does not copy or delete
 them.
 
-`use bundled` removes `XCBBUILDSERVICE_PATH` and the LaunchAgent. It works even
-if the selected package has been deleted. `uninstall` also removes the files
-that the command keeps in `~/Library/Developer/CustomXcodeBuildService`, including
+`use bundled` removes `XCBBUILDSERVICE_PATH` from both launchd environments and
+removes the LaunchAgent. It works even if the selected package has been deleted.
+`uninstall` also removes the files that the command keeps in
+`~/Library/Developer/CustomXcodeBuildService`, including
 files left by older standalone versions, and the
 `~/.local/bin/custom-xcode-build-service` link from those versions. The directory
 itself stays with its `.lock` and `.owner` files. `uninstall` refuses to run while
@@ -105,11 +109,11 @@ upgrading.
 
 ## Select the service over SSH
 
-`use custom`, `use bundled`, and `uninstall` change settings in your macOS
-desktop session, so they need a logged-in desktop session. In that session, no
-administrator authentication is needed. From SSH or another background session,
-the command asks for `sudo`, enters your desktop session, and then applies the
-settings as your own user.
+`use custom`, `use bundled`, and `uninstall` update both the GUI and Background
+launchd environments and require a logged-in macOS desktop session. In that
+session, no administrator authentication is needed. From SSH or another
+background session, the command asks for `sudo`, enters your desktop session, and
+then applies the settings as your own user.
 
 `status` never asks for authentication. To read the desktop settings from a
 background session, run it with `sudo` and the full path:
@@ -158,7 +162,9 @@ python3 Utilities/CustomXcodeBuildService/Distribution/release.py verify-payload
 | Symptom | What to do |
 | --- | --- |
 | After you log in, Xcode uses its own service. | macOS can reopen Xcode before the LaunchAgent sets the environment. Run `status`, and if `Launchd selection` shows the custom service, restart Xcode. |
+| `Background launchd selection` does not match the saved selection. | Run `use custom` or `use bundled` to reapply your choice to both launchd environments, then restart the clients. This also applies settings left unset by older releases. |
 | MCP requests still use the previous service. | Xcode Service (for MCP) runs in the background and can keep running after you close Xcode or the AI app. When you restart apps after switching, quit Xcode Service as well, for example in Activity Monitor. |
+| Builds in tmux still use the previous selection. | A running tmux server keeps its environment. Save your work and stop the existing server, then start a new server from a restarted terminal. Adding a pane does not update the server's environment. |
 | The selected package was deleted, and Xcode cannot start the custom service. | Run `use bundled` with any copy of the command, such as a reinstalled Homebrew package. `use bundled` works without the selected package. The selection does not switch back by itself, because the LaunchAgent still points to the deleted command. |
 
 ## Migrate from a standalone installation

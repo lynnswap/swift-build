@@ -25,12 +25,14 @@ Selected custom package: v0.0.0-local (/Users/you/Library/Developer/CustomXcodeB
 | `Selected custom package` | 選択中のパッケージのバージョンとパス |
 | `Source`、`Built with Xcode` | `Installed` または `Selected custom package` の下に字下げして表示される。そのパッケージのビルド元のコミットと、ビルドに使った Xcode |
 | `Installed custom service` | Xcode がカスタム版のサービスを起動する固定のパス。選択中のパッケージへのリンクを経由する |
-| `Launchd selection` | これから起動するアプリに、launchd の環境変数が渡すサービス |
-| `XCBBUILDSERVICE_PATH`、`SWBBUILDSERVICE_PATH` | launchd の環境変数の現在の値 |
+| `Launchd selection` | GUI（`Aqua`）側の launchd から新しく起動するプロセスに適用されるサービス |
+| `XCBBUILDSERVICE_PATH`、`SWBBUILDSERVICE_PATH` | GUI 側の launchd の環境変数の現在の値 |
+| `Background launchd selection` | Background 側の launchd から新しく起動するプロセスに適用されるサービス |
+| `Background XCBBUILDSERVICE_PATH`、`Background SWBBUILDSERVICE_PATH` | Background 側の launchd の環境変数の現在の値 |
 | `Login job` | ログイン時に選択を設定し直す LaunchAgent が読み込まれているか |
 | `Running build services` | 自分のユーザーで動いているビルドサービスのプロセス。カスタム版のサービスには `[managed custom service]` が付く |
 
-`Launchd selection` が示すのは、これから起動するアプリの設定です。すでに起動しているアプリには当てはまりません。`Running build services` には、動いているビルドサービスのプロセスが並びます。`[managed custom service]` の付いたプロセスはカスタム版のパッケージから起動したものですが、どのバージョンを読み込んだかや、どのアプリが起動したかは分かりません。
+`Launchd selection` と `Background launchd selection` が示すのは、launchd から新しく起動するプロセスに渡される環境変数の設定です。起動済みのアプリ、シェル、tmux サーバーは元の環境変数を使い続けます。`Running build services` には、動いているビルドサービスのプロセスが並びます。`[managed custom service]` の付いたプロセスはカスタム版のパッケージから起動したものですが、どのバージョンを読み込んだかや、どのアプリが起動したかは分かりません。
 
 確認の一部が失敗した場合、`status` は読み取れた情報とエラーを表示し、0 以外の終了ステータスで終わります。`custom-xcode-build-service --version` は、パッケージのバージョンだけを表示します。デスクトップの設定は読みません。
 
@@ -40,15 +42,15 @@ Selected custom package: v0.0.0-local (/Users/you/Library/Developer/CustomXcodeB
 
 | 項目 | 変更内容 |
 | --- | --- |
-| launchd の環境変数 `XCBBUILDSERVICE_PATH` | `~/Library/Developer/CustomXcodeBuildService/SWBBuildService.bundle/SWBBuildServiceBundle` を絶対パスにして設定する。Xcode はこのパスからサービスを起動する |
+| GUI 側と Background 側の launchd の環境変数 `XCBBUILDSERVICE_PATH` | `~/Library/Developer/CustomXcodeBuildService/SWBBuildService.bundle/SWBBuildServiceBundle` を絶対パスにして設定する。Xcode はこのパスからサービスを起動する |
 | `~/Library/Developer/CustomXcodeBuildService/SWBBuildService.bundle` | 選択中のパッケージのサービスバンドル全体（リソースとプラグインを含む）へのリンク |
-| `~/Library/LaunchAgents/io.github.lynnswap.custom-xcode-build-service.plist` | ログイン時に `activate` を実行し、環境変数を設定し直す LaunchAgent |
+| `~/Library/LaunchAgents/io.github.lynnswap.custom-xcode-build-service.plist` | デスクトップへのログイン時に `activate` を実行し、GUI 側と Background 側の環境変数を設定し直す LaunchAgent |
 
 サービスのパスは、どのカスタム版のパッケージでも同じです。別のパッケージを選択しても、変わるのはリンクの指す先だけです。そのため、カスタム版どうしの切り替えでは、アプリを起動し直す必要がありません。
 
 選択を記録しているのは LaunchAgent だけです。LaunchAgent があればカスタム版が選択されていて、その中のコマンドのパスが選択中のパッケージを表します。パッケージのファイルは Homebrew か mise が管理していて、コマンドはそれらをコピーも削除もしません。
 
-`use bundled` は、`XCBBUILDSERVICE_PATH` と LaunchAgent を削除します。選択中のパッケージが削除されていても実行できます。`uninstall` はそれに加えて、コマンドが `~/Library/Developer/CustomXcodeBuildService` に置いているファイル（古い単体インストール版が残したファイルを含む）と、古いバージョンが作った `~/.local/bin/custom-xcode-build-service` のリンクを削除します。ディレクトリ自体は、`.lock` と `.owner` のファイルとともに残ります。Xcode、`xcodebuild`、カスタム版のサービスのどれかが動いている間は、`uninstall` は実行を拒否します。
+`use bundled` は、GUI 側と Background 側から `XCBBUILDSERVICE_PATH` を削除し、LaunchAgent も削除します。選択中のパッケージが削除されていても実行できます。`uninstall` はそれに加えて、コマンドが `~/Library/Developer/CustomXcodeBuildService` に置いているファイル（古い単体インストール版が残したファイルを含む）と、古いバージョンが作った `~/.local/bin/custom-xcode-build-service` のリンクを削除します。ディレクトリ自体は、`.lock` と `.owner` のファイルとともに残ります。Xcode、`xcodebuild`、カスタム版のサービスのどれかが動いている間は、`uninstall` は実行を拒否します。
 
 以前のリリースは、launchd の環境変数 `DisableConcurrentDependencyResolution` にも `0` を設定していて、`org.swift.swift-build` の defaults の設定を上書きしていました。すでに起動しているアプリにはこの値が残るので、`use custom`、`use bundled`、`uninstall` は値を削除したうえで、アプリの再起動を求めます。
 
@@ -69,7 +71,7 @@ Selected custom package: v0.0.0-local (/Users/you/Library/Developer/CustomXcodeB
 
 ## SSH から切り替える
 
-`use custom`、`use bundled`、`uninstall` は macOS のデスクトップセッションの設定を変えるので、デスクトップにログインしている必要があります。デスクトップセッションで実行する場合、管理者の認証はいりません。SSH などのバックグラウンドセッションから実行すると、コマンドは `sudo` を求め、デスクトップセッションに入ってから、元のユーザーとして設定を変えます。
+`use custom`、`use bundled`、`uninstall` は GUI 側と Background 側の launchd の環境変数を変更します。実行するには、macOS のデスクトップにログインしている必要があります。デスクトップセッションで実行する場合、管理者の認証はいりません。SSH などのバックグラウンドセッションから実行すると、コマンドは `sudo` を求め、デスクトップセッションに入ってから、元のユーザーとして設定を変えます。
 
 `status` が認証を求めることはありません。バックグラウンドセッションからデスクトップの設定を読むには、`sudo` を付けてフルパスで実行します。
 
@@ -108,7 +110,9 @@ python3 Utilities/CustomXcodeBuildService/Distribution/release.py verify-payload
 | 症状 | 対処 |
 | --- | --- |
 | ログインした後、Xcode が Xcode 同梱のサービスを使っている | macOS は、LaunchAgent が環境変数を設定する前に Xcode を開くことがあります。`status` を実行し、`Launchd selection` がカスタム版を示していれば、Xcode を起動し直します。 |
+| `Background launchd selection` が保存された選択と異なる | `use custom` か `use bundled` で両方の環境に選択を適用し直し、クライアントを起動し直します。古いリリースで Background 側が未設定だった場合も、この操作で反映されます。 |
 | MCP からのリクエストが以前のサービスを使っている | Xcode Service（MCP 用）はバックグラウンドで動き、Xcode や AI アプリを閉じても残ることがあります。切り替えた後にアプリを起動し直すときは、アクティビティモニタなどで Xcode Service も終了します。 |
+| tmux 内のビルドが以前の選択を使っている | 起動済みの tmux サーバーには元の環境変数が残ります。作業を保存して既存のサーバーを停止し、起動し直したターミナルで新しいサーバーを起動します。ペインを追加してもサーバーの環境変数は更新されません。 |
 | 選択中のパッケージを削除してしまい、Xcode がカスタム版のサービスを起動できない | 再インストールした Homebrew 版など、手元にあるどれかのコマンドで `use bundled` を実行します。`use bundled` は、選択中のパッケージがなくても動きます。LaunchAgent が削除されたコマンドを指したままなので、選択はひとりでには戻りません。 |
 
 ## 単体インストール版から移行する
