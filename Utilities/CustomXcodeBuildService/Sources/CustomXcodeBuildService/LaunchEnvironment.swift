@@ -13,13 +13,6 @@
 import Foundation
 
 struct LaunchEnvironment {
-    struct GUIRequired: Error, CustomStringConvertible {
-        let userID: UInt32
-        var description: String {
-            "Run this command with sudo to enter the logged-in macOS desktop session for user \(userID). Use the full path to custom-xcode-build-service."
-        }
-    }
-
     struct Settings {
         let service: String?
         let concurrentResolution: String?
@@ -48,28 +41,10 @@ struct LaunchEnvironment {
     var domain: String { "gui/\(userID)" }
     var job: String { "\(domain)/\(InstallationStore.label)" }
 
-    func requireGUI() throws {
-        let name = try command(["managername"]).trimmingCharacters(in: .whitespacesAndNewlines)
-        let uid = try command(["manageruid"]).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard name == "Aqua", UInt32(uid) == userID else {
-            throw GUIRequired(userID: userID)
-        }
-        _ = try command(["print", domain])
-    }
-
-    func runInGUI(_ executable: String, arguments: [String], currentUserID: UInt32) throws -> Int32 {
+    func runAsUser(_ executable: String, arguments: [String]) throws -> Int32 {
         guard userID != 0 else { throw ServiceError("A non-root installation user is required.") }
-        _ = try command(["print", domain])
-        // asuser switches the bootstrap and audit session, but not the credentials.
-        // Drop back to the original user before executing any installation code.
-        let command = [
-            "/bin/launchctl", "asuser", String(userID),
-            "/usr/bin/sudo", "-H", "-u", "#\(userID)", "--", executable,
-        ] + arguments
-        if currentUserID == 0 {
-            return try runner.runAttached(command[0], Array(command.dropFirst()))
-        }
-        return try runner.runAttached("/usr/bin/sudo", ["--"] + command)
+        // An explicit sudo invocation drops credentials before touching user files.
+        return try runner.runAttached("/usr/bin/sudo", ["-H", "-u", "#\(userID)", "--", executable] + arguments)
     }
 
     func settings(inBackground: Bool = false) throws -> Settings {
@@ -94,13 +69,16 @@ struct LaunchEnvironment {
         return true
     }
 
-    func bootstrap(_ agent: URL) throws { _ = try command(["bootstrap", domain, agent.path]) }
-    func bootout() throws { _ = try command(["bootout", job]) }
+    func bootstrap(_ agent: URL) throws {
+        _ = try runner.run("/bin/launchctl", ["bootstrap", domain, agent.path]).requireSuccess("launchctl bootstrap \(domain)")
+    }
 
-    private func command(_ arguments: [String], inBackground: Bool = false) throws -> String {
-        let result = try inBackground
-            ? runner.runInBackground("/bin/launchctl", arguments, userID: userID)
-            : runner.run("/bin/launchctl", arguments)
+    func bootout() throws {
+        _ = try runner.run("/bin/launchctl", ["bootout", job]).requireSuccess("launchctl bootout \(job)")
+    }
+
+    private func command(_ arguments: [String], inBackground: Bool) throws -> String {
+        let result = try runner.runInSession("/bin/launchctl", arguments, session: inBackground ? .background : .gui, userID: userID)
         return try result.requireSuccess("\(inBackground ? "Background " : "")launchctl \(arguments.first ?? "")")
     }
 }

@@ -15,10 +15,17 @@ import Foundation
 import Testing
 @testable import CustomXcodeBuildService
 
-@Test func repeatedSelectionDoesNotRequestAnotherClientRestart() throws {
+@Test(arguments: ["Aqua", "Background"])
+func repeatedSelectionDoesNotRequestAnotherClientRestart(session: String) throws {
     let fixture = try Fixture()
     _ = try fixture.enable( fixture.package("v1.0.0"))
+    fixture.runner.managerName = session
+    let mutations = fixture.runner.launchctlMutations.count
+    let backgroundMutations = fixture.runner.backgroundLaunchctlMutations.count
     #expect(try !fixture.manager.use(.custom).contains("Restart Xcode"))
+    #expect(!fixture.runner.launchctlMutations.dropFirst(mutations).contains { $0.first == "setenv" })
+    #expect(fixture.runner.backgroundLaunchctlMutations.count == backgroundMutations)
+    #expect(fixture.runner.attachedCommands.isEmpty)
     #expect(try fixture.manager.use(.bundled).contains("Restart Xcode"))
     #expect(try !fixture.manager.use(.bundled).contains("Restart Xcode"))
     #expect(try fixture.manager.use(.custom).contains("Restart Xcode"))
@@ -133,6 +140,7 @@ func refusesForeignEnvironment(key: String) throws {
 
 @Test func statusDistinguishesSelectedAndRunningServices() throws {
     let fixture = try Fixture()
+    fixture.runner.managerName = "Background"
     _ = try fixture.enable( fixture.package("v1.0.0"))
     let selected = try #require(try fixture.store.packagedRelease())
     fixture.runner.processes = "123 /Applications/Xcode.app/Contents/SharedFrameworks/XCBuild.framework/Versions/A/PlugIns/XCBBuildService.bundle/Contents/MacOS/XCBBuildService\n456 \(selected.service.path)\n789 /bin/zsh\n"
@@ -146,6 +154,7 @@ func refusesForeignEnvironment(key: String) throws {
     #expect(!status.contains("PID 789"))
     #expect(throws: ServiceError.self) { try fixture.manager.uninstall() }
     #expect(fixture.runner.loaded)
+    #expect(fixture.runner.attachedCommands.isEmpty)
 }
 
 @Test func statusDoesNotRequireAWriteableLockFile() throws {
@@ -254,11 +263,11 @@ func failedBackgroundUpdateRestoresPreviousSelection(afterMutation: Bool) throws
     #expect(throws: ServiceError.self) { try fixture.manager.status() }
 }
 
-@Test func missingDesktopSessionDoesNotRelaunchTheCommand() throws {
+@Test func missingDesktopSessionFailsWithoutRequestingAdministratorAuthentication() throws {
     let fixture = try Fixture()
-    fixture.runner.failOnce = ["print", "gui/501"]
+    fixture.runner.unavailableSession = .gui
     #expect(throws: ServiceError.self) {
-        try fixture.manager.environment.runInGUI("/tmp/custom-xcode-build-service", arguments: ["install"], currentUserID: 501)
+        try fixture.enable(fixture.package("v1.0.0"))
     }
     #expect(fixture.runner.attachedCommands.isEmpty)
     #expect(fixture.runner.launchctlMutations.isEmpty)
@@ -268,11 +277,11 @@ func failedBackgroundUpdateRestoresPreviousSelection(afterMutation: Bool) throws
     #expect(try CustomXcodeBuildService.installationUserID(currentUserID: 501, sudoUserID: "502") == 501)
 }
 
-@Test func guiRelaunchDoesNotInstallAsRoot() throws {
+@Test func userRelaunchDoesNotInstallAsRoot() throws {
     let fixture = try Fixture()
     let environment = LaunchEnvironment(runner: fixture.runner, userID: 0)
     #expect(throws: ServiceError.self) {
-        try environment.runInGUI("/tmp/custom-xcode-build-service", arguments: ["install"], currentUserID: 0)
+        try environment.runAsUser("/tmp/custom-xcode-build-service", arguments: ["use", "custom"])
     }
     #expect(fixture.runner.attachedCommands.isEmpty)
 }
@@ -472,7 +481,7 @@ final class FakeRunner: ProcessRunning {
     var failOnceBackground: [String]?
     var failAfterBackgroundMutation = false
     var managerName = "Aqua"
-    var managerUserID = "501"
+    var unavailableSession: LaunchSession?
     var launchctlMutations: [[String]] = []
     var backgroundLaunchctlMutations: [[String]] = []
     var attachedCommands: [[String]] = []
@@ -483,10 +492,15 @@ final class FakeRunner: ProcessRunning {
         return attachedStatus
     }
 
-    func runInBackground(_ executable: String, _ arguments: [String], userID: UInt32) throws -> ProcessResult {
+    func runInSession(_ executable: String, _ arguments: [String], session: LaunchSession, userID: UInt32) throws -> ProcessResult {
         guard executable == "/bin/launchctl", userID == 501 else {
-            throw ServiceError("Unexpected background command \(executable) for user \(userID)")
+            throw ServiceError("Unexpected session command \(executable) for user \(userID)")
         }
+        guard session != unavailableSession else { throw ServiceError("Session \(session.rawValue) is unavailable") }
+        return try session == .gui ? runLaunchctl(arguments) : runInBackground(arguments)
+    }
+
+    private func runInBackground(_ arguments: [String]) throws -> ProcessResult {
         if arguments == failOnceBackground {
             failOnceBackground = nil
             return .init(status: 5, output: "injected background failure")
@@ -524,10 +538,15 @@ final class FakeRunner: ProcessRunning {
             return .init(status: 0, output: "")
         }
         guard executable == "/bin/launchctl" else { throw ServiceError("Unexpected command \(executable)") }
+        if managerName == "Background", ["getenv", "setenv", "unsetenv"].contains(arguments[0]) {
+            return try runInBackground(arguments)
+        }
+        return try runLaunchctl(arguments)
+    }
+
+    private func runLaunchctl(_ arguments: [String]) throws -> ProcessResult {
         if arguments == failOnce { failOnce = nil; return .init(status: 5, output: "injected failure") }
         switch arguments[0] {
-        case "managername": return .init(status: 0, output: managerName + "\n")
-        case "manageruid": return .init(status: 0, output: managerUserID + "\n")
         case "getenv": return .init(status: 0, output: settings[arguments[1]].map { $0 + "\n" } ?? "")
         case "setenv":
             launchctlMutations.append(arguments)
@@ -755,7 +774,7 @@ func statusReportsLiveSettingsWhenInstalledStateIsDamaged(damage: String) throws
 }
 
 
-@Test(arguments: ["background", "domain", "environment", "background-environment", "login-job", "processes", "ownership", "lock"])
+@Test(arguments: ["domain", "environment", "background-environment", "login-job", "processes", "ownership", "lock"])
 func statusPreservesOtherObservationsWhenOneSourceFails(failure: String) throws {
     let fixture = try Fixture()
     _ = try fixture.enable( fixture.package("v1.0.0"))
@@ -764,8 +783,7 @@ func statusPreservesOtherObservationsWhenOneSourceFails(failure: String) throws 
     let mutations = fixture.runner.launchctlMutations
     let backgroundMutations = fixture.runner.backgroundLaunchctlMutations
     switch failure {
-    case "background": fixture.runner.managerName = "Background"
-    case "domain": fixture.runner.failOnce = ["print", "gui/501"]
+    case "domain": fixture.runner.unavailableSession = .gui
     case "environment": fixture.runner.failOnce = ["getenv", "XCBBUILDSERVICE_PATH"]
     case "background-environment": fixture.runner.failOnceBackground = ["getenv", "XCBBUILDSERVICE_PATH"]
     case "login-job": fixture.runner.failOnce = ["print", fixture.manager.environment.job]
@@ -782,7 +800,7 @@ func statusPreservesOtherObservationsWhenOneSourceFails(failure: String) throws 
         #expect(report.contains("Installed: v1.0.0"))
         #expect(report.contains(failure == "processes" ? "Running build services: unavailable" : "PID 123:"))
         #expect(report.contains(failure == "login-job" ? "Login job: unavailable" : "Login job: loaded"))
-        if ["background", "domain", "environment"].contains(failure) {
+        if ["domain", "environment"].contains(failure) {
             #expect(report.contains("Launchd selection: unavailable"))
         } else {
             #expect(report.contains("XCBBUILDSERVICE_PATH: \(fixture.store.service.path)"))
@@ -817,31 +835,29 @@ func serviceSelectionDoesNotDependOnCleaningInterruptedStaging(command: String) 
 
 @Test func unusedActivationAndAbsentUninstallDoNotRequireAGUISession() throws {
     let fixture = try Fixture()
-    fixture.runner.managerName = "Background"
+    fixture.runner.unavailableSession = .gui
     #expect(try fixture.manager.uninstall() == "No custom build service is installed.")
-    fixture.runner.managerName = "Aqua"
+    fixture.runner.unavailableSession = nil
     _ = try fixture.enable( fixture.package("v1.0.0"))
     _ = try fixture.manager.use(.bundled)
-    fixture.runner.managerName = "Background"
+    fixture.runner.unavailableSession = .gui
     let mutations = fixture.runner.launchctlMutations
     #expect(try fixture.manager.activate().contains("no custom activation is needed"))
     #expect(fixture.runner.launchctlMutations == mutations)
 }
 
 
-@Test(arguments: [Int32(0), 1, 130], [UInt32(0), 501])
-func guiRelaunchDropsAdministratorCredentialsAndPreservesArgumentsAndExitStatus(status: Int32, currentUserID: UInt32) throws {
+@Test(arguments: [Int32(0), 1, 130])
+func explicitSudoInvocationDropsAdministratorCredentialsAndPreservesArgumentsAndExitStatus(status: Int32) throws {
     let fixture = try Fixture()
     fixture.runner.managerName = "Background"
     fixture.runner.attachedStatus = status
     let executable = "/tmp/release with spaces/bin/custom-xcode-build-service"
     let arguments = ["use", "custom"]
 
-    #expect(try fixture.manager.environment.runInGUI(executable, arguments: arguments, currentUserID: currentUserID) == status)
+    #expect(try fixture.manager.environment.runAsUser(executable, arguments: arguments) == status)
 
-    let prefix = currentUserID == 0 ? [] : ["/usr/bin/sudo", "--"]
-    #expect(fixture.runner.attachedCommands == [prefix + [
-        "/bin/launchctl", "asuser", "501",
+    #expect(fixture.runner.attachedCommands == [[
         "/usr/bin/sudo", "-H", "-u", "#501", "--", executable,
     ] + arguments])
     #expect(fixture.runner.launchctlMutations.isEmpty)
@@ -978,7 +994,7 @@ func installerMigratesStandaloneAndPreservesExistingCommandPath(relativeCommandL
     let legacy = try fixture.standaloneInstallation()
     _ = try fixture.manager.use(.bundled)
     try fixture.link(fixture.package("v0.4.0"))
-    fixture.runner.failOnce = ["managername"]
+    fixture.runner.unavailableSession = .gui
 
     _ = try fixture.manager.migrateStandalone()
     #expect(try fixture.store.selectedService() == .bundled)
@@ -1065,6 +1081,9 @@ func selectingAnotherMiseVersionOptionallyReloadsThePreviousPackage(reload: Bool
     let oldStore = InstallationStore(home: fixture.store.home, packageDirectory: old)
     let oldManager = InstallationManager(store: oldStore, environment: fixture.manager.environment)
     _ = try oldManager.use(.custom)
+    fixture.runner.managerName = "Background"
+    let mutations = fixture.runner.launchctlMutations.count
+    let backgroundMutations = fixture.runner.backgroundLaunchctlMutations.count
     let oldService = try ReleasePackage(directory: old).service
     let unrelated = try ReleasePackage(directory: fixture.package("v0.0.0-local")).service
     fixture.runner.processes = "20 \(oldService.path)\n30 \(unrelated.path)\n"
@@ -1079,6 +1098,9 @@ func selectingAnotherMiseVersionOptionallyReloadsThePreviousPackage(reload: Bool
     fixture.runner.killedPIDs = []
     _ = try manager.use(.custom, reload: true)
     #expect(fixture.runner.killedPIDs.isEmpty)
+    #expect(!fixture.runner.launchctlMutations.dropFirst(mutations).contains { $0.first == "setenv" })
+    #expect(fixture.runner.backgroundLaunchctlMutations.count == backgroundMutations)
+    #expect(fixture.runner.attachedCommands.isEmpty)
 }
 
 @Test func failedSelectionDoesNotStopThePreviousService() throws {

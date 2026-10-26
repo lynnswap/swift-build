@@ -23,9 +23,18 @@ struct ProcessResult {
     }
 }
 
+enum LaunchSession: String {
+    case gui = "Aqua"
+    case background = "Background"
+
+    func domain(userID: UInt32) -> String {
+        "\(self == .gui ? "gui" : "user")/\(userID)"
+    }
+}
+
 protocol ProcessRunning {
     func run(_ executable: String, _ arguments: [String]) throws -> ProcessResult
-    func runInBackground(_ executable: String, _ arguments: [String], userID: UInt32) throws -> ProcessResult
+    func runInSession(_ executable: String, _ arguments: [String], session: LaunchSession, userID: UInt32) throws -> ProcessResult
     func runAttached(_ executable: String, _ arguments: [String]) throws -> Int32
 }
 
@@ -36,8 +45,7 @@ struct ProcessRunner: ProcessRunning {
         guard argv.allSatisfy({ $0 != nil }) else { throw POSIXError(.ENOMEM) }
         argv.append(nil)
         var pid: pid_t = 0
-        // Foundation.Process creates a separate process group. Interactive sudo
-        // must inherit our foreground group and controlling terminal instead.
+        // Keep terminal I/O and signals in the caller's foreground process group.
         let error = posix_spawn(&pid, executable, nil, nil, &argv, environ)
         guard error == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(error)) }
         var information = siginfo_t()
@@ -65,12 +73,12 @@ struct ProcessRunner: ProcessRunning {
 }
 
 extension ProcessRunner {
-    func runInBackground(_ executable: String, _ arguments: [String], userID: UInt32) throws -> ProcessResult {
+    func runInSession(_ executable: String, _ arguments: [String], session: LaunchSession, userID: UInt32) throws -> ProcessResult {
         let files = FileManager.default
         let directory = files.temporaryDirectory.appendingPathComponent("custom-build-environment-\(UUID().uuidString)")
         try files.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         let label = "io.github.lynnswap.custom-xcode-build-service.environment.\(UUID().uuidString)"
-        let domain = "user/\(userID)"
+        let domain = session.domain(userID: userID)
         let job = "\(domain)/\(label)"
         var loaded = false
         let result: Result<ProcessResult, any Error>
@@ -97,7 +105,7 @@ extension ProcessRunner {
             """
             let properties: [String: Any] = [
                 "Label": label,
-                "LimitLoadToSessionType": "Background",
+                "LimitLoadToSessionType": session.rawValue,
                 "ProgramArguments": ["/bin/sh", "-c", script, "launchd-environment", output.path, completion.path, executable] + arguments,
                 "RunAtLoad": true,
             ]
@@ -115,12 +123,12 @@ extension ProcessRunner {
             } while ready < 0 && errno == EINTR
             guard ready >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
             guard ready > 0, descriptor.revents & Int16(POLLIN) != 0 else {
-                throw ServiceError("Timed out waiting for Background command in \(job).")
+                throw ServiceError("Timed out waiting for \(session.rawValue) command in \(job).")
             }
             var buffer = [UInt8](repeating: 0, count: 32)
             let count = read(reader, &buffer, buffer.count)
             guard count > 0, let status = Int32(String(decoding: buffer.prefix(count), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)) else {
-                throw ServiceError("Cannot read Background command exit status from \(job).")
+                throw ServiceError("Cannot read \(session.rawValue) command exit status from \(job).")
             }
             result = .success(ProcessResult(status: status, output: String(decoding: try Data(contentsOf: output), as: UTF8.self)))
         } catch {
@@ -137,10 +145,10 @@ extension ProcessRunner {
         if !failures.isEmpty {
             let operation: String
             switch result {
-            case .success(let value): operation = "Background command finished (\(value.status)): \(value.output)"
+            case .success(let value): operation = "\(session.rawValue) command finished (\(value.status)): \(value.output)"
             case .failure(let error): operation = String(describing: error)
             }
-            throw ServiceError("\(operation)\nBackground command cleanup failed: \(failures.joined(separator: "; "))")
+            throw ServiceError("\(operation)\n\(session.rawValue) command cleanup failed: \(failures.joined(separator: "; "))")
         }
         return try result.get()
     }
