@@ -61,7 +61,6 @@ struct InstallationManager {
 
     func use(_ service: BuildService, reload: Bool = false) throws -> String {
         try requireUser()
-        try environment.requireGUI()
         if service == .custom {
             guard let package = try store.packagedRelease() else {
                 throw ServiceError("No packaged service is available. Reinstall this package with Homebrew or mise.")
@@ -89,7 +88,6 @@ struct InstallationManager {
         try requireUser()
         return try store.withExistingLock(access: .modify) {
             if try store.hasStandaloneSelection() {
-                try environment.requireGUI()
                 return try select(.custom, preserveCommandPath: true)
             }
             guard let previous = try store.legacyCommandTarget() else {
@@ -154,7 +152,6 @@ struct InstallationManager {
             guard try store.selectedService() == .custom else {
                 return "Xcode's bundled service is selected; no custom activation is needed."
             }
-            try environment.requireGUI()
             guard let selected = try store.selectedPackage() else { throw ServiceError("No custom build service is installed.") }
             try selected.validateForUse()
             let settings = try launchSettings()
@@ -167,7 +164,6 @@ struct InstallationManager {
     func uninstall() throws -> String {
         try requireUser()
         return try store.withExistingLock(access: .modify) {
-            try environment.requireGUI()
             try store.validateCommand()
             let launchState = try readLaunchState()
             let hadCommand = try store.exists(store.command)
@@ -270,7 +266,6 @@ struct InstallationManager {
             let selectionLabel = inBackground ? "Background launchd selection" : "Launchd selection"
             let prefix = inBackground ? "Background " : ""
             do {
-                if !inBackground { try environment.requireGUI() }
                 let settings = try environment.settings(inBackground: inBackground)
                 let active = selected != nil && settings.service == store.service.path && settings.legacyService == nil
                 let noOverrides = settings.service == nil && settings.legacyService == nil
@@ -397,9 +392,11 @@ struct InstallationManager {
     private func apply(_ selected: ReleasePackage, previous: [(inBackground: Bool, value: LaunchEnvironment.Settings)], transaction: Transaction) throws {
         try updateServiceBundleLink(selected, transaction: transaction)
         for (inBackground, settings) in previous {
-            // The command can succeed before helper cleanup fails; restore either way.
-            transaction.undo { try environment.set("XCBBUILDSERVICE_PATH", to: settings.service, inBackground: inBackground) }
-            try environment.set("XCBBUILDSERVICE_PATH", to: store.service.path, inBackground: inBackground)
+            if settings.service != store.service.path {
+                // The command can succeed before helper cleanup fails; restore either way.
+                transaction.undo { try environment.set("XCBBUILDSERVICE_PATH", to: settings.service, inBackground: inBackground) }
+                try environment.set("XCBBUILDSERVICE_PATH", to: store.service.path, inBackground: inBackground)
+            }
             try removeLegacyConcurrentResolution(settings, inBackground: inBackground, transaction: transaction)
         }
     }

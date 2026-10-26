@@ -110,17 +110,15 @@ upgrading.
 ## Select the service over SSH
 
 `use custom`, `use bundled`, and `uninstall` update both the GUI and Background
-launchd environments and require a logged-in macOS desktop session. In that
-session, no administrator authentication is needed. From SSH or another
-background session, the command asks for `sudo`, enters your desktop session, and
-then applies the settings as your own user.
+launchd environments and require a logged-in macOS desktop session. All commands,
+including `status`, run as your own user without administrator authentication,
+including from SSH or another background session.
 
-`status` never asks for authentication. To read the desktop settings from a
-background session, run it with `sudo` and the full path:
-
-```sh
-sudo "$(brew --prefix lynnswap/tap/custom-xcode-build-service)/bin/custom-xcode-build-service" status
-```
+The command uses temporary LaunchAgents in the target user's GUI and Background
+sessions to read and change their environment variables. It removes each agent
+after the operation. When `XCBBUILDSERVICE_PATH` already has the selected value,
+the command leaves it unchanged. A package update changes the service bundle link
+and the CLI used at login to point to the new package.
 
 ## Verify the mise archive
 

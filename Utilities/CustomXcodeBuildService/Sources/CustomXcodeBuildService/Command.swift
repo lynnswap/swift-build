@@ -78,9 +78,8 @@ enum Command: Equatable {
                  Packaged files remain; remove them with Homebrew or mise.
     activate     Reapply the saved custom selection at login.
 
-    Selection requires a desktop login. From a Background session, the command
-    requests administrator authentication, enters that session, then runs as you.
-    Status never requests authentication. Use sudo with its full path for GUI status.
+    Selection requires a desktop login. All commands run as your own user without
+    administrator authentication, including from a Background session.
     After switching services, restart Xcode, Xcode Service (for MCP), terminal
     applications, and AI agents so they inherit the new selection.
     Interrupted requests may need to be retried. Installing or upgrading does

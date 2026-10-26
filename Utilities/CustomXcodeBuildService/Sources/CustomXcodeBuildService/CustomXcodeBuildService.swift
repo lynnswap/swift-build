@@ -24,7 +24,7 @@ struct CustomXcodeBuildService {
             let userID = try installationUserID(currentUserID: currentUserID, sudoUserID: ProcessInfo.processInfo.environment["SUDO_UID"])
             let environment = LaunchEnvironment(runner: runner, userID: userID)
             if currentUserID == 0 {
-                exit(try relaunch(command, in: environment, currentUserID: currentUserID))
+                exit(try environment.runAsUser(executableURL().path, arguments: Array(CommandLine.arguments.dropFirst())))
             }
             let manager = InstallationManager(
                 store: InstallationStore(
@@ -33,11 +33,7 @@ struct CustomXcodeBuildService {
                 ),
                 environment: environment
             )
-            do { print(try run(command, manager: manager)) }
-            catch is LaunchEnvironment.GUIRequired {
-                FileHandle.standardError.write(Data("Entering your macOS desktop session. Administrator authentication may be required; installation runs as your user.\n".utf8))
-                exit(try relaunch(command, in: environment, currentUserID: currentUserID))
-            }
+            print(try run(command, manager: manager))
         } catch {
             FileHandle.standardError.write(Data("error: \(error)\n".utf8))
             exit(EXIT_FAILURE)
@@ -59,11 +55,6 @@ struct CustomXcodeBuildService {
         case .reload: return try manager.reload()
         case .help: return Command.helpText
         }
-    }
-
-    private static func relaunch(_ command: Command, in environment: LaunchEnvironment, currentUserID: UInt32) throws -> Int32 {
-        let arguments = Array(CommandLine.arguments.dropFirst())
-        return try environment.runInGUI(executableURL().path, arguments: arguments, currentUserID: currentUserID)
     }
 
     static func installationUserID(currentUserID: UInt32, sudoUserID: String?) throws -> UInt32 {

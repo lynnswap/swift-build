@@ -71,13 +71,9 @@ Selected custom package: v0.0.0-local (/Users/you/Library/Developer/CustomXcodeB
 
 ## SSH から切り替える
 
-`use custom`、`use bundled`、`uninstall` は GUI 側と Background 側の launchd の環境変数を変更します。実行するには、macOS のデスクトップにログインしている必要があります。デスクトップセッションで実行する場合、管理者の認証はいりません。SSH などのバックグラウンドセッションから実行すると、コマンドは `sudo` を求め、デスクトップセッションに入ってから、元のユーザーとして設定を変えます。
+`use custom`、`use bundled`、`uninstall` は GUI 側と Background 側の launchd の環境変数を変更します。実行するには、macOS のデスクトップにログインしている必要があります。SSH などのバックグラウンドセッションから実行する場合も、`status` を含むすべてのコマンドは通常のユーザー権限で動作し、管理者認証を求めません。
 
-`status` が認証を求めることはありません。バックグラウンドセッションからデスクトップの設定を読むには、`sudo` を付けてフルパスで実行します。
-
-```sh
-sudo "$(brew --prefix lynnswap/tap/custom-xcode-build-service)/bin/custom-xcode-build-service" status
-```
+環境変数を読み書きするために、同じユーザーの GUI 側と Background 側に一時的な LaunchAgent を起動し、処理後に削除します。`XCBBUILDSERVICE_PATH` がすでに選択した値になっている場合は書き換えません。パッケージの更新では、サービスのバンドルへのリンクと、ログイン時に実行する CLI の参照先を新しいパッケージへ切り替えます。
 
 ## mise のアーカイブを検証する
 
