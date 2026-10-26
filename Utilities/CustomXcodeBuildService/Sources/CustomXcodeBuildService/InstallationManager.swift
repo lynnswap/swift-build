@@ -81,7 +81,7 @@ struct InstallationManager {
         }
         if let result = try store.withExistingLock(access: .modify, { try select(service) }) { return result }
         let previous = try readLaunchState()
-        if previous.selection == .bundled, previous.settings.service == nil { return "Selected service: bundled" }
+        if previous.selection == .bundled, previous.settings.allSatisfy({ $0.value.service == nil }) { return "Selected service: bundled" }
         return try store.withInstallationLock { try select(service) }
     }
 
@@ -142,7 +142,9 @@ struct InstallationManager {
         if let customPackage { report += "\n" + Self.selectedPackageLine(customPackage) }
         let selectedServicePath = service == .custom ? store.service.path : nil
         // Running clients keep a removed legacy value until they restart.
-        let clientsNeedRestart = previous.selection != service || previous.settings.service != selectedServicePath || legacyCommandTarget != nil || previous.settings.hasLegacyConcurrentResolution
+        let clientsNeedRestart = previous.selection != service || legacyCommandTarget != nil || previous.settings.contains {
+            $0.value.service != selectedServicePath || $0.value.hasLegacyConcurrentResolution
+        }
         return clientsNeedRestart ? report + "\n" + Self.clientRestartInstructions : report
     }
 
@@ -155,8 +157,7 @@ struct InstallationManager {
             try environment.requireGUI()
             guard let selected = try store.selectedPackage() else { throw ServiceError("No custom build service is installed.") }
             try selected.validateForUse()
-            let settings = try environment.settings()
-            try settings.requireOwnership(in: store)
+            let settings = try launchSettings()
             try Transaction.perform { transaction in try apply(selected, previous: settings, transaction: transaction) }
             return "Activated \(selected.manifest.version) for newly started clients."
         }) else { throw ServiceError("No custom build service is installed.") }
@@ -172,7 +173,7 @@ struct InstallationManager {
             let hadCommand = try store.exists(store.command)
             let oldCommandTarget = hadCommand ? try FileManager.default.destinationOfSymbolicLink(atPath: store.command.path) : ""
             let hadPayloads = try store.exists(store.current) || store.exists(store.versions)
-            guard hadPayloads || launchState.selection == .custom || hadCommand || launchState.loaded || launchState.settings.service != nil else {
+            guard hadPayloads || launchState.selection == .custom || hadCommand || launchState.loaded || launchState.settings.contains(where: { $0.value.service != nil }) else {
                 try store.removePayloads()
                 return "No custom build service is installed."
             }
@@ -193,7 +194,7 @@ struct InstallationManager {
             // select a service whose resources are being deleted.
             try store.removePayloads()
             let report = "Removed user settings and legacy payloads. Selected service: bundled. Packaged files are unchanged; remove them with Homebrew or mise."
-            return launchState.selection == .custom || launchState.settings.service != nil ? report + "\n" + Self.clientRestartInstructions : report
+            return launchState.selection == .custom || launchState.settings.contains(where: { $0.value.service != nil }) ? report + "\n" + Self.clientRestartInstructions : report
         } ?? "No custom build service is installed."
     }
 
@@ -264,28 +265,33 @@ struct InstallationManager {
             }
             catch { issues.append("Installation error: \(error)") }
         }
-        do {
-            try environment.requireGUI()
-            let settings = try environment.settings()
-            let active = selected != nil && settings.service == store.service.path && settings.legacyService == nil
-            let noOverrides = settings.service == nil && settings.legacyService == nil
-            let applied: String
-            if noOverrides {
-                applied = "bundled (no custom launchd settings)"
-            } else if !issues.isEmpty {
-                applied = "unverified (installed release or selection unavailable)"
-            } else {
-                applied = active ? "custom release selected for future processes" : "conflicting or incomplete custom settings"
+        let selectionIsVerified = issues.isEmpty
+        for inBackground in [false, true] {
+            let selectionLabel = inBackground ? "Background launchd selection" : "Launchd selection"
+            let prefix = inBackground ? "Background " : ""
+            do {
+                if !inBackground { try environment.requireGUI() }
+                let settings = try environment.settings(inBackground: inBackground)
+                let active = selected != nil && settings.service == store.service.path && settings.legacyService == nil
+                let noOverrides = settings.service == nil && settings.legacyService == nil
+                let applied: String
+                if noOverrides {
+                    applied = "bundled (no custom launchd settings)"
+                } else if !selectionIsVerified {
+                    applied = "unverified (installed release or selection unavailable)"
+                } else {
+                    applied = active ? "custom release selected for future processes" : "conflicting or incomplete custom settings"
+                }
+                lines.append("\(selectionLabel): \(applied)")
+                if selectionIsVerified, let selectedService, !(selectedService == .custom ? active : noOverrides) {
+                    lines.append("\(prefix)Launchd settings do not match the saved selection. Run use \(selectedService.rawValue) to reapply it.")
+                }
+                lines.append("\(prefix)XCBBUILDSERVICE_PATH: \(settings.service ?? "unset")")
+                lines.append("\(prefix)SWBBUILDSERVICE_PATH: \(settings.legacyService ?? "unset")")
+            } catch {
+                lines.append("\(selectionLabel): unavailable")
+                issues.append("\(prefix)Launchd environment error: \(error)")
             }
-            lines.append("Launchd selection: \(applied)")
-            if issues.isEmpty, let selectedService, !(selectedService == .custom ? active : noOverrides) {
-                lines.append("Launchd settings do not match the saved selection. Run use \(selectedService.rawValue) to reapply it.")
-            }
-            lines.append("XCBBUILDSERVICE_PATH: \(settings.service ?? "unset")")
-            lines.append("SWBBUILDSERVICE_PATH: \(settings.legacyService ?? "unset")")
-        } catch {
-            lines.append("Launchd selection: unavailable")
-            issues.append("Launchd environment error: \(error)")
         }
         do { lines.append("Login job: \(try environment.isLoaded() ? "loaded" : "not loaded")") }
         catch {
@@ -315,13 +321,20 @@ struct InstallationManager {
     private struct LaunchState {
         let selection: BuildService
         var loaded: Bool
-        let settings: LaunchEnvironment.Settings
+        let settings: [(inBackground: Bool, value: LaunchEnvironment.Settings)]
+    }
+
+    private func launchSettings() throws -> [(inBackground: Bool, value: LaunchEnvironment.Settings)] {
+        try [false, true].map { inBackground in
+            let settings = try environment.settings(inBackground: inBackground)
+            try settings.requireOwnership(in: store)
+            return (inBackground, settings)
+        }
     }
 
     private func readLaunchState() throws -> LaunchState {
         let selection = try store.selectedService()
-        let settings = try environment.settings()
-        try settings.requireOwnership(in: store)
+        let settings = try launchSettings()
         let loaded = try environment.isLoaded()
         guard !loaded || selection == .custom else {
             throw ServiceError("An unrelated job already uses \(InstallationStore.label).")
@@ -350,10 +363,12 @@ struct InstallationManager {
             try environment.bootstrap(store.agent)
             transaction.undo { try environment.bootout() }
         } else {
-            try removeLegacyConcurrentResolution(previous.settings, transaction: transaction)
-            if previous.settings.service != nil {
-                try environment.set("XCBBUILDSERVICE_PATH", to: nil)
-                transaction.undo { try environment.set("XCBBUILDSERVICE_PATH", to: previous.settings.service) }
+            for (inBackground, settings) in previous.settings {
+                try removeLegacyConcurrentResolution(settings, inBackground: inBackground, transaction: transaction)
+                if settings.service != nil {
+                    transaction.undo { try environment.set("XCBBUILDSERVICE_PATH", to: settings.service, inBackground: inBackground) }
+                    try environment.set("XCBBUILDSERVICE_PATH", to: nil, inBackground: inBackground)
+                }
             }
             if previous.selection == .custom {
                 let agent = try Data(contentsOf: store.agent)
@@ -379,17 +394,20 @@ struct InstallationManager {
     Start terminal-based agents from the restarted terminal so they inherit the new environment.
     """
 
-    private func apply(_ selected: ReleasePackage, previous: LaunchEnvironment.Settings, transaction: Transaction) throws {
+    private func apply(_ selected: ReleasePackage, previous: [(inBackground: Bool, value: LaunchEnvironment.Settings)], transaction: Transaction) throws {
         try updateServiceBundleLink(selected, transaction: transaction)
-        try environment.set("XCBBUILDSERVICE_PATH", to: store.service.path)
-        transaction.undo { try environment.set("XCBBUILDSERVICE_PATH", to: previous.service) }
-        try removeLegacyConcurrentResolution(previous, transaction: transaction)
+        for (inBackground, settings) in previous {
+            // The command can succeed before helper cleanup fails; restore either way.
+            transaction.undo { try environment.set("XCBBUILDSERVICE_PATH", to: settings.service, inBackground: inBackground) }
+            try environment.set("XCBBUILDSERVICE_PATH", to: store.service.path, inBackground: inBackground)
+            try removeLegacyConcurrentResolution(settings, inBackground: inBackground, transaction: transaction)
+        }
     }
 
-    private func removeLegacyConcurrentResolution(_ previous: LaunchEnvironment.Settings, transaction: Transaction) throws {
+    private func removeLegacyConcurrentResolution(_ previous: LaunchEnvironment.Settings, inBackground: Bool, transaction: Transaction) throws {
         guard previous.hasLegacyConcurrentResolution else { return }
-        try environment.set("DisableConcurrentDependencyResolution", to: nil)
-        transaction.undo { try environment.set("DisableConcurrentDependencyResolution", to: "0") }
+        transaction.undo { try environment.set("DisableConcurrentDependencyResolution", to: "0", inBackground: inBackground) }
+        try environment.set("DisableConcurrentDependencyResolution", to: nil, inBackground: inBackground)
     }
 
     private func updateServiceBundleLink(_ selected: ReleasePackage, transaction: Transaction) throws {

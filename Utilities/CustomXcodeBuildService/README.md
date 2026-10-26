@@ -9,8 +9,8 @@ gives Xcode fixes and features that its bundled service does not have yet. See
 each version.
 
 You switch with the `custom-xcode-build-service` command. The selection applies to
-all projects of your macOS user account and stays after you log in again. Xcode
-itself is not modified.
+all projects of your macOS user account, in both GUI and Background launchd
+environments, and stays after you log in again. Xcode itself is not modified.
 
 Requirements:
 
@@ -86,6 +86,9 @@ their own Macs.
 - After switching between Xcode's service and the custom service, restart Xcode,
   Xcode Service (for MCP), terminals, and AI agents. Start terminal-based agents
   from a restarted terminal.
+- If you use tmux, save your work and stop the existing server, then start a new
+  server from the restarted terminal. Adding a pane does not update the server's
+  environment.
 - Switching from one custom package to another needs no restart.
   `use custom --reload` asks the previous service to exit, and the next request
   uses the new one.

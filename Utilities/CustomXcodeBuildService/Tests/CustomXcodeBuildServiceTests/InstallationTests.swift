@@ -33,13 +33,17 @@ func repairingServiceEnvironmentRequestsClientRestart(command: String) throws {
     let output: String
     if command == "custom" {
         fixture.runner.settings = [:]
+        fixture.runner.backgroundSettings = [:]
         output = try fixture.manager.use(.custom)
         #expect(fixture.runner.settings == customSettings)
+        #expect(fixture.runner.backgroundSettings == customSettings)
     } else {
         _ = try fixture.manager.use(.bundled)
         fixture.runner.settings = customSettings
+        fixture.runner.backgroundSettings = customSettings
         output = try command == "bundled" ? fixture.manager.use(.bundled) : fixture.manager.uninstall()
         #expect(fixture.runner.settings.isEmpty)
+        #expect(fixture.runner.backgroundSettings.isEmpty)
     }
     #expect(output.contains("Restart Xcode"))
     #expect(output.contains("Xcode Service (for MCP)"))
@@ -49,8 +53,10 @@ func repairingServiceEnvironmentRequestsClientRestart(command: String) throws {
     let fixture = try Fixture()
     _ = try fixture.enable(fixture.package("v1.0.0"))
     fixture.runner.settings["DisableConcurrentDependencyResolution"] = "0"
+    fixture.runner.backgroundSettings["DisableConcurrentDependencyResolution"] = "0"
     #expect(try fixture.manager.use(.custom).contains("Restart Xcode"))
     #expect(fixture.runner.settings == ["XCBBUILDSERVICE_PATH": fixture.store.service.path])
+    #expect(fixture.runner.backgroundSettings == ["XCBBUILDSERVICE_PATH": fixture.store.service.path])
 }
 
 @Test func reloadReportsPartiallyCompletedStops() throws {
@@ -80,13 +86,30 @@ func refusesForeignEnvironment(key: String) throws {
     #expect(!fixture.runner.loaded)
 }
 
+@Test func refusesForeignBackgroundEnvironmentBeforeChangingSelection() throws {
+    let fixture = try Fixture()
+    fixture.runner.backgroundSettings["XCBBUILDSERVICE_PATH"] = "/another/service"
+
+    #expect(throws: ServiceError.self) { try fixture.enable(fixture.package("v1.0.0")) }
+
+    #expect(fixture.runner.settings.isEmpty)
+    #expect(fixture.runner.backgroundSettings == ["XCBBUILDSERVICE_PATH": "/another/service"])
+    #expect(fixture.runner.launchctlMutations.isEmpty)
+    #expect(fixture.runner.backgroundLaunchctlMutations.isEmpty)
+    #expect(try !fixture.store.exists(fixture.store.agent))
+    #expect(try fixture.store.serviceBundleLink() == nil)
+}
+
 @Test func keepsConcurrentResolutionSetByTheUser() throws {
     let fixture = try Fixture()
     fixture.runner.settings["DisableConcurrentDependencyResolution"] = "1"
+    fixture.runner.backgroundSettings["DisableConcurrentDependencyResolution"] = "2"
     _ = try fixture.enable(fixture.package("v1.0.0"))
     #expect(fixture.runner.settings == ["XCBBUILDSERVICE_PATH": fixture.store.service.path, "DisableConcurrentDependencyResolution": "1"])
+    #expect(fixture.runner.backgroundSettings == ["XCBBUILDSERVICE_PATH": fixture.store.service.path, "DisableConcurrentDependencyResolution": "2"])
     _ = try fixture.manager.use(.bundled)
     #expect(fixture.runner.settings == ["DisableConcurrentDependencyResolution": "1"])
+    #expect(fixture.runner.backgroundSettings == ["DisableConcurrentDependencyResolution": "2"])
 }
 
 @Test func refusesExistingJobWithoutOwnedPlist() throws {
@@ -101,9 +124,11 @@ func refusesForeignEnvironment(key: String) throws {
     let fixture = try Fixture()
     _ = try fixture.enable( fixture.package("v1.0.0"))
     fixture.runner.settings = [:]
+    fixture.runner.backgroundSettings = [:]
     fixture.runner.xcodeVersion = "Xcode 28.0\nBuild version 28A100\n"
     _ = try fixture.manager.activate()
     #expect(fixture.runner.settings == ["XCBBUILDSERVICE_PATH": fixture.store.service.path])
+    #expect(fixture.runner.backgroundSettings == ["XCBBUILDSERVICE_PATH": fixture.store.service.path])
 }
 
 @Test func statusDistinguishesSelectedAndRunningServices() throws {
@@ -113,6 +138,8 @@ func refusesForeignEnvironment(key: String) throws {
     fixture.runner.processes = "123 /Applications/Xcode.app/Contents/SharedFrameworks/XCBuild.framework/Versions/A/PlugIns/XCBBuildService.bundle/Contents/MacOS/XCBBuildService\n456 \(selected.service.path)\n789 /bin/zsh\n"
     let status = try fixture.manager.status()
     #expect(status.contains("custom release selected for future processes"))
+    #expect(status.contains("Background launchd selection: custom release selected for future processes"))
+    #expect(status.contains("Background XCBBUILDSERVICE_PATH: \(fixture.store.service.path)"))
     #expect(status.contains("PID 123: /Applications/Xcode.app"))
     #expect(status.contains("Selected service: custom"))
     #expect(status.contains("PID 456: \(selected.service.path) [managed custom service]"))
@@ -142,17 +169,48 @@ func refusesForeignEnvironment(key: String) throws {
     try fixture.manager.environment.bootout()
     try fixture.manager.environment.bootstrap(fixture.store.agent)
     let settings = fixture.runner.settings
+    let backgroundSettings = fixture.runner.backgroundSettings
     fixture.runner.failOnce = ["bootstrap", "gui/501", fixture.store.agent.path]
 
     #expect(throws: ServiceError.self) { try fixture.manager.use(.custom) }
 
     #expect(try Data(contentsOf: fixture.store.agent) == data)
     #expect(fixture.runner.settings == settings)
+    #expect(fixture.runner.backgroundSettings == backgroundSettings)
     #expect(fixture.runner.loaded)
     #expect(fixture.runner.loadedAgent == properties as NSDictionary)
     _ = try fixture.manager.use(.bundled)
     #expect(fixture.runner.settings.isEmpty)
+    #expect(fixture.runner.backgroundSettings.isEmpty)
     #expect(try !fixture.store.exists(fixture.store.agent))
+}
+
+@Test(arguments: [false, true])
+func failedBackgroundUpdateRestoresPreviousSelection(afterMutation: Bool) throws {
+    let fixture = try Fixture()
+    _ = try fixture.enable(fixture.package("v1.0.0"))
+    fixture.runner.settings = [:]
+    fixture.runner.backgroundSettings = [:]
+    let agent = try Data(contentsOf: fixture.store.agent)
+    let loadedAgent = fixture.runner.loadedAgent
+    let serviceBundle = try fixture.store.serviceBundleLink()
+    let backgroundSettings = fixture.runner.backgroundSettings
+    let next = InstallationStore(home: fixture.store.home, packageDirectory: try fixture.package("v1.1.0"))
+    let manager = InstallationManager(store: next, environment: fixture.manager.environment)
+    if afterMutation {
+        fixture.runner.failAfterBackgroundMutation = true
+    } else {
+        fixture.runner.failOnceBackground = ["setenv", "XCBBUILDSERVICE_PATH", fixture.store.service.path]
+    }
+
+    #expect(throws: ServiceError.self) { try manager.use(.custom) }
+
+    #expect(fixture.runner.settings.isEmpty)
+    #expect(fixture.runner.backgroundSettings == backgroundSettings)
+    #expect(try Data(contentsOf: fixture.store.agent) == agent)
+    #expect(try fixture.store.serviceBundleLink() == serviceBundle)
+    #expect(fixture.runner.loaded)
+    #expect(fixture.runner.loadedAgent == loadedAgent)
 }
 
 @Test func loginActivationDoesNotRewriteOrReloadItsOwnAgent() throws {
@@ -161,14 +219,18 @@ func refusesForeignEnvironment(key: String) throws {
     let agent = try Data(contentsOf: fixture.store.agent)
     let loaded = fixture.runner.loadedAgent
     let mutations = fixture.runner.launchctlMutations.count
+    let backgroundMutations = fixture.runner.backgroundLaunchctlMutations.count
     fixture.runner.settings = [:]
+    fixture.runner.backgroundSettings = [:]
 
     _ = try fixture.manager.activate()
 
     #expect(try Data(contentsOf: fixture.store.agent) == agent)
     #expect(fixture.runner.loadedAgent == loaded)
     #expect(fixture.runner.launchctlMutations.dropFirst(mutations).allSatisfy { $0.first == "setenv" })
+    #expect(fixture.runner.backgroundLaunchctlMutations.dropFirst(backgroundMutations).allSatisfy { $0.first == "setenv" })
     #expect(fixture.runner.settings["XCBBUILDSERVICE_PATH"] == fixture.store.service.path)
+    #expect(fixture.runner.backgroundSettings["XCBBUILDSERVICE_PATH"] == fixture.store.service.path)
 }
 
 @Test func uninstallPreservesUnrelatedFilesInInstallationRoot() throws {
@@ -179,6 +241,7 @@ func refusesForeignEnvironment(key: String) throws {
     _ = try fixture.manager.uninstall()
     #expect(try String(contentsOf: foreign, encoding: .utf8) == "preserve")
     #expect(fixture.runner.settings.isEmpty)
+    #expect(fixture.runner.backgroundSettings.isEmpty)
     #expect(!fixture.runner.loaded)
     #expect(try !fixture.store.exists(fixture.store.versions))
     #expect(try !fixture.store.exists(fixture.store.command))
@@ -239,6 +302,7 @@ func refusesForeignEnvironment(key: String) throws {
 
     #expect(try fixture.store.selectedService() == .bundled)
     #expect(fixture.runner.settings.isEmpty)
+    #expect(fixture.runner.backgroundSettings.isEmpty)
     #expect(!fixture.runner.loaded)
     #expect(try !fixture.store.exists(fixture.store.agent))
     #expect(try fixture.store.packagedRelease()?.directory == installed.directory)
@@ -247,17 +311,21 @@ func refusesForeignEnvironment(key: String) throws {
     #expect(status.contains("Installed: v1.0.0"))
     #expect(status.contains("Selected service: bundled"))
     #expect(status.contains("Launchd selection: bundled"))
+    #expect(status.contains("Background launchd selection: bundled"))
     #expect(status.contains("PID 456: \(installed.service.path) [managed custom service]"))
     #expect(!status.contains("do not match the saved selection"))
     let mutations = fixture.runner.launchctlMutations
+    let backgroundMutations = fixture.runner.backgroundLaunchctlMutations
     _ = try fixture.manager.use(.bundled)
     #expect(fixture.runner.launchctlMutations == mutations)
+    #expect(fixture.runner.backgroundLaunchctlMutations == backgroundMutations)
 
     _ = try fixture.manager.use(.custom)
     _ = try fixture.manager.use(.custom)
 
     #expect(try fixture.store.selectedService() == .custom)
     #expect(fixture.runner.settings == ["XCBBUILDSERVICE_PATH": fixture.store.service.path])
+    #expect(fixture.runner.backgroundSettings == ["XCBBUILDSERVICE_PATH": fixture.store.service.path])
     #expect(fixture.runner.loaded)
     #expect(try fixture.store.exists(fixture.store.agent))
 }
@@ -269,13 +337,36 @@ func refusesForeignEnvironment(key: String) throws {
     try fixture.write("{broken", to: fixture.store.current.appendingPathComponent("manifest.json"))
     fixture.runner.xcodeStatus = 1
     fixture.runner.settings = ["XCBBUILDSERVICE_PATH": "/another/service"]
+    fixture.runner.backgroundSettings = ["XCBBUILDSERVICE_PATH": "/another/background-service"]
     let mutations = fixture.runner.launchctlMutations
+    let backgroundMutations = fixture.runner.backgroundLaunchctlMutations
 
     #expect(try fixture.manager.activate().contains("no custom activation is needed"))
 
     #expect(fixture.runner.settings == ["XCBBUILDSERVICE_PATH": "/another/service"])
+    #expect(fixture.runner.backgroundSettings == ["XCBBUILDSERVICE_PATH": "/another/background-service"])
     #expect(fixture.runner.launchctlMutations == mutations)
+    #expect(fixture.runner.backgroundLaunchctlMutations == backgroundMutations)
     #expect(!fixture.runner.loaded)
+}
+
+@Test func statusReportsAndSelectionRepairsOnlyMissingBackgroundSettings() throws {
+    let fixture = try Fixture()
+    _ = try fixture.enable(fixture.package("v1.0.0"))
+    fixture.runner.backgroundSettings = [:]
+    let settings = fixture.runner.settings
+    let mutations = fixture.runner.backgroundLaunchctlMutations
+
+    let report = try fixture.manager.status()
+
+    #expect(report.contains("Launchd selection: custom release selected for future processes"))
+    #expect(report.contains("Background launchd selection: bundled"))
+    #expect(report.contains("Background XCBBUILDSERVICE_PATH: unset"))
+    #expect(report.contains("do not match the saved selection"))
+    #expect(fixture.runner.backgroundLaunchctlMutations == mutations)
+    #expect(try fixture.manager.use(.custom).contains("Restart Xcode"))
+    #expect(fixture.runner.settings == settings)
+    #expect(fixture.runner.backgroundSettings == settings)
 }
 
 final class Fixture {
@@ -368,6 +459,7 @@ final class Fixture {
 
 final class FakeRunner: ProcessRunning {
     var settings: [String: String] = [:]
+    var backgroundSettings: [String: String] = [:]
     var loaded = false
     var loadedAgent: NSDictionary?
     var xcodeVersion = "Xcode 27.0\nBuild version 27A5252f\n"
@@ -377,15 +469,43 @@ final class FakeRunner: ProcessRunning {
     var killedPIDs: [String] = []
     var killFailures: Set<String> = []
     var failOnce: [String]?
+    var failOnceBackground: [String]?
+    var failAfterBackgroundMutation = false
     var managerName = "Aqua"
     var managerUserID = "501"
     var launchctlMutations: [[String]] = []
+    var backgroundLaunchctlMutations: [[String]] = []
     var attachedCommands: [[String]] = []
     var attachedStatus: Int32 = 0
 
     func runAttached(_ executable: String, _ arguments: [String]) throws -> Int32 {
         attachedCommands.append([executable] + arguments)
         return attachedStatus
+    }
+
+    func runInBackground(_ executable: String, _ arguments: [String], userID: UInt32) throws -> ProcessResult {
+        guard executable == "/bin/launchctl", userID == 501 else {
+            throw ServiceError("Unexpected background command \(executable) for user \(userID)")
+        }
+        if arguments == failOnceBackground {
+            failOnceBackground = nil
+            return .init(status: 5, output: "injected background failure")
+        }
+        switch arguments[0] {
+        case "getenv": return .init(status: 0, output: backgroundSettings[arguments[1]].map { $0 + "\n" } ?? "")
+        case "setenv":
+            backgroundLaunchctlMutations.append(arguments)
+            backgroundSettings[arguments[1]] = arguments[2]
+        case "unsetenv":
+            backgroundLaunchctlMutations.append(arguments)
+            backgroundSettings[arguments[1]] = nil
+        default: throw ServiceError("Unexpected background launchctl arguments \(arguments)")
+        }
+        if failAfterBackgroundMutation {
+            failAfterBackgroundMutation = false
+            throw ServiceError("injected background cleanup failure")
+        }
+        return .init(status: 0, output: "")
     }
 
     func run(_ executable: String, _ arguments: [String]) throws -> ProcessResult {
@@ -593,6 +713,8 @@ func statusReportsLiveSettingsWhenInstalledStateIsDamaged(damage: String) throws
     fixture.runner.processes = "123 \(installed.service.path)\n"
     let settings = fixture.runner.settings
     let mutations = fixture.runner.launchctlMutations
+    let backgroundSettings = fixture.runner.backgroundSettings
+    let backgroundMutations = fixture.runner.backgroundLaunchctlMutations
     if damage.contains("manifest") {
         try fixture.write("{broken", to: installed.directory.appendingPathComponent("manifest.json"))
     }
@@ -610,6 +732,7 @@ func statusReportsLiveSettingsWhenInstalledStateIsDamaged(damage: String) throws
     } catch let error as ServiceError {
         let report = error.description
         #expect(report.contains("XCBBUILDSERVICE_PATH: \(fixture.store.service.path)"))
+        #expect(report.contains("Background XCBBUILDSERVICE_PATH: \(fixture.store.service.path)"))
         #expect(report.contains("Login job: loaded"))
         #expect(report.contains("PID 123: \(installed.service.path)"))
         #expect(!report.contains("Installed: none"))
@@ -627,20 +750,24 @@ func statusReportsLiveSettingsWhenInstalledStateIsDamaged(damage: String) throws
     }
     #expect(fixture.runner.settings == settings)
     #expect(fixture.runner.launchctlMutations == mutations)
+    #expect(fixture.runner.backgroundSettings == backgroundSettings)
+    #expect(fixture.runner.backgroundLaunchctlMutations == backgroundMutations)
 }
 
 
-@Test(arguments: ["background", "domain", "environment", "login-job", "processes", "ownership", "lock"])
+@Test(arguments: ["background", "domain", "environment", "background-environment", "login-job", "processes", "ownership", "lock"])
 func statusPreservesOtherObservationsWhenOneSourceFails(failure: String) throws {
     let fixture = try Fixture()
     _ = try fixture.enable( fixture.package("v1.0.0"))
     let installed = try #require(try fixture.store.packagedRelease())
     fixture.runner.processes = "123 \(installed.service.path)\n"
     let mutations = fixture.runner.launchctlMutations
+    let backgroundMutations = fixture.runner.backgroundLaunchctlMutations
     switch failure {
     case "background": fixture.runner.managerName = "Background"
     case "domain": fixture.runner.failOnce = ["print", "gui/501"]
     case "environment": fixture.runner.failOnce = ["getenv", "XCBBUILDSERVICE_PATH"]
+    case "background-environment": fixture.runner.failOnceBackground = ["getenv", "XCBBUILDSERVICE_PATH"]
     case "login-job": fixture.runner.failOnce = ["print", fixture.manager.environment.job]
     case "processes": fixture.runner.processStatus = 5
     case "ownership": try fixture.write("unrecognized", to: fixture.store.root.appendingPathComponent(".owner"))
@@ -660,8 +787,13 @@ func statusPreservesOtherObservationsWhenOneSourceFails(failure: String) throws 
         } else {
             #expect(report.contains("XCBBUILDSERVICE_PATH: \(fixture.store.service.path)"))
         }
+        if failure == "background-environment" {
+            #expect(report.contains("Background launchd selection: unavailable"))
+            #expect(report.contains("Launchd selection: custom release selected for future processes"))
+        }
     }
     #expect(fixture.runner.launchctlMutations == mutations)
+    #expect(fixture.runner.backgroundLaunchctlMutations == backgroundMutations)
 }
 
 

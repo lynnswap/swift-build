@@ -4,7 +4,7 @@
 
 Xcode のビルドサービスを、このフォーク（[lynnswap/swift-build](https://github.com/lynnswap/swift-build)）でビルドした Swift Build に切り替えるツールです。Xcode 同梱のサービスにまだない修正や機能を使えます。変更内容は [Releases](https://github.com/lynnswap/swift-build/releases) を参照してください。
 
-切り替えには `custom-xcode-build-service` コマンドを使います。選択は macOS のユーザー単位ですべてのプロジェクトに適用され、ログインし直しても維持されます。Xcode 本体は変更しません。
+切り替えには `custom-xcode-build-service` コマンドを使います。選択は macOS のユーザー単位ですべてのプロジェクトに適用され、GUI 側と Background 側の launchd の両方に設定されます。ログインし直しても維持されます。Xcode 本体は変更しません。
 
 動作環境:
 
@@ -68,6 +68,7 @@ Xcode のビルドサービスを、このフォーク（[lynnswap/swift-build](
 
 - `use custom` は、実行したコマンドが入っているパッケージを選択します。`status`、`reload`、`use bundled`、`uninstall` は、インストール済みのどのコピーから実行しても同じです。
 - Xcode 同梱のサービスとカスタム版を切り替えたら、Xcode、Xcode Service（MCP 用）、ターミナル、AI エージェントを起動し直します。ターミナルで使うエージェントは、起動し直したターミナルから起動します。
+- tmux を使う場合は、作業を保存して既存のサーバーを停止し、起動し直したターミナルで新しいサーバーを起動します。ペインを追加してもサーバーの環境変数は更新されません。
 - カスタム版どうしの切り替えでは、起動し直す必要はありません。`use custom --reload` で以前のサービスに終了を要求すると、次のリクエストから新しいサービスが使われます。
 - `reload` と `--reload` は終了を要求するだけで、終了するまでは待ちません。古いパッケージは、表示された PID が `status` に出なくなってから削除します。
 - `swift build` などの SwiftPM のコマンドには影響しません。

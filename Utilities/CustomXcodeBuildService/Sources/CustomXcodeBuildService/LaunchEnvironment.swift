@@ -72,18 +72,18 @@ struct LaunchEnvironment {
         return try runner.runAttached("/usr/bin/sudo", ["--"] + command)
     }
 
-    func settings() throws -> Settings {
-        try Settings(service: value("XCBBUILDSERVICE_PATH"), concurrentResolution: value("DisableConcurrentDependencyResolution"), legacyService: value("SWBBUILDSERVICE_PATH"))
+    func settings(inBackground: Bool = false) throws -> Settings {
+        try Settings(service: value("XCBBUILDSERVICE_PATH", inBackground: inBackground), concurrentResolution: value("DisableConcurrentDependencyResolution", inBackground: inBackground), legacyService: value("SWBBUILDSERVICE_PATH", inBackground: inBackground))
     }
 
-    private func value(_ key: String) throws -> String? {
-        let output = try command(["getenv", key])
+    private func value(_ key: String, inBackground: Bool) throws -> String? {
+        let output = try command(["getenv", key], inBackground: inBackground)
         let value = output.hasSuffix("\n") ? String(output.dropLast()) : output
         return value.isEmpty ? nil : value
     }
 
-    func set(_ key: String, to value: String?) throws {
-        _ = try command(value.map { ["setenv", key, $0] } ?? ["unsetenv", key])
+    func set(_ key: String, to value: String?, inBackground: Bool = false) throws {
+        _ = try command(value.map { ["setenv", key, $0] } ?? ["unsetenv", key], inBackground: inBackground)
     }
 
     func isLoaded() throws -> Bool {
@@ -97,7 +97,10 @@ struct LaunchEnvironment {
     func bootstrap(_ agent: URL) throws { _ = try command(["bootstrap", domain, agent.path]) }
     func bootout() throws { _ = try command(["bootout", job]) }
 
-    private func command(_ arguments: [String]) throws -> String {
-        try runner.run("/bin/launchctl", arguments).requireSuccess("launchctl \(arguments.first ?? "")")
+    private func command(_ arguments: [String], inBackground: Bool = false) throws -> String {
+        let result = try inBackground
+            ? runner.runInBackground("/bin/launchctl", arguments, userID: userID)
+            : runner.run("/bin/launchctl", arguments)
+        return try result.requireSuccess("\(inBackground ? "Background " : "")launchctl \(arguments.first ?? "")")
     }
 }
