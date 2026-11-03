@@ -17,9 +17,10 @@ python3 Utilities/CustomXcodeBuildService/Distribution/publish_release.py start 
   --repo lynnswap/swift-build --target FULL_COMMIT_SHA --notes-file /path/to/notes.md
 ```
 
-This creates or reuses the matching Draft and dispatches the
+This creates or reuses the matching Draft and approved version tag, then dispatches the
 [release workflow](../../.github/workflows/custom-xcode-build-service-release.yml)
-from the default branch. Local tag pushes do not start publication.
+from the default branch. The version tag is available before validation starts.
+Local tag pushes do not start publication.
 
 The workflow builds the approved commit once. It runs the management CLI tests,
 checks Xcode compatibility, and installs the same archive through Homebrew and
@@ -27,8 +28,8 @@ mise on macOS 26. The mise check uses the GitHub backend with a local HTTP URL f
 the unpublished candidate; it does not need a public tag or change desktop settings.
 
 After these checks pass, review the Draft and artifact link in the summary and
-approve `release-publish`. The publisher uploads those tested bytes, creates the
-approved tag, verifies the uploaded digests, and publishes the release. The assets are:
+approve `release-publish`. The publisher uploads those tested bytes, verifies the
+existing tag and uploaded digests, and publishes the release. The assets are:
 
 - `custom-xcode-build-service-darwin-arm64.tar.gz`: CLI, service, resources, manifest, and licenses.
 - `custom-xcode-build-service.rb`: Homebrew recipe for that archive.
@@ -63,16 +64,23 @@ build and verification jobs, their artifact IDs, and checksums are reused. Artif
 are retained for 35 days; GitHub's rerun window is 30 days. If either has expired,
 start a new run with the same approved Draft and commit and verify its new candidate.
 
-An upload or tag failure can leave partial Draft assets or the tag in place. The
+If tag creation fails, update the caller's GitHub CLI credentials or address the
+tag rule failure and repeat the same start command. A matching Draft is reused.
+An upload failure can leave partial Draft assets and the tag in place. The
 publisher reports the remaining state, validates approval again, and retries only
 the prepared release. An already published release is not overwritten. Changed
 approval content requires a new reviewed request.
 
 ## Publication credentials
 
+The local start command uses the caller's GitHub CLI credentials to create the
+approved tag. These need **Contents: write** and **Workflows: write** when the
+target includes workflow changes.
+
 Register the source publication GitHub App on `swift-build` with **Contents: read
-and write** and **Workflows: read and write**. Workflow permission is needed when
-a release target introduces workflow changes. Store its Client ID in
+and write** and **Workflows: read and write**. Workflow permission is still needed
+when the release target differs from the default branch's workflow files, even
+if the tag already exists. Store its Client ID in
 `SOURCE_RELEASE_APP_CLIENT_ID` and PEM key in `SOURCE_RELEASE_APP_PRIVATE_KEY` in
 the `release-publish` Environment.
 
