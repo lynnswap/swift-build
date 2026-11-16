@@ -163,6 +163,7 @@ python3 Utilities/CustomXcodeBuildService/Distribution/release.py verify-payload
 | `Background launchd selection` does not match the saved selection. | Run `use custom` or `use bundled` to reapply your choice to both launchd environments, then restart the clients. This also applies settings left unset by older releases. |
 | MCP requests still use the previous service. | Xcode Service (for MCP) runs in the background and can keep running after you close Xcode or the AI app. When you restart apps after switching, quit Xcode Service as well, for example in Activity Monitor. |
 | Builds in tmux still use the previous selection. | A running tmux server keeps its environment. Save your work and stop the existing server, then start a new server from a restarted terminal. Adding a pane does not update the server's environment. |
+| A command from v0.5.6 or earlier reports `Refusing to overwrite an unrelated LaunchAgent`. | Later releases write a LaunchAgent that those releases cannot read. Run `use bundled` with the newer command, then `use custom` with the older one. |
 | The selected package was deleted, and Xcode cannot start the custom service. | Run `use bundled` with any copy of the command, such as a reinstalled Homebrew package. `use bundled` works without the selected package. The selection does not switch back by itself, because the LaunchAgent still points to the deleted command. |
 
 ## Migrate from a standalone installation

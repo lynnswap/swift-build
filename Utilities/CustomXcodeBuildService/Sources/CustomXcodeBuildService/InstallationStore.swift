@@ -162,19 +162,32 @@ struct InstallationStore {
               let actual = try PropertyListSerialization.propertyList(from: Data(contentsOf: agent), format: nil) as? [String: Any],
               actual["Label"] as? String == Self.label,
               let arguments = actual["ProgramArguments"] as? [String],
-              arguments.count == 2, arguments[1] == "activate",
-              URL(fileURLWithPath: arguments[0]).lastPathComponent == "custom-xcode-build-service",
+              let executable = Self.activationExecutable(in: arguments),
+              URL(fileURLWithPath: executable).lastPathComponent == "custom-xcode-build-service",
               (actual["Program"] == nil || actual["Program"] as? String == arguments.first),
               actual["BundleProgram"] == nil else {
             throw ServiceError("Refusing to overwrite an unrelated LaunchAgent: \(agent.path)")
         }
-        return URL(fileURLWithPath: arguments[0])
+        return URL(fileURLWithPath: executable)
+    }
+
+    // macOS pins the code hash of the program launchd starts for this job and kills
+    // the first launch after that file changes, so starting the command directly
+    // loses the activation at the first login after every package upgrade. /bin/sh
+    // does not change with the package.
+    private static let activationScript = #"exec "$0" activate"#
+
+    private static func activationExecutable(in arguments: [String]) -> String? {
+        if arguments.count == 4, Array(arguments.prefix(3)) == ["/bin/sh", "-c", activationScript] { return arguments[3] }
+        // Releases through v0.5.6 started the command directly.
+        if arguments.count == 2, arguments[1] == "activate" { return arguments[0] }
+        return nil
     }
 
     var agentProperties: [String: Any] {
         [
             "Label": Self.label,
-            "ProgramArguments": [persistentExecutable.path, "activate"],
+            "ProgramArguments": ["/bin/sh", "-c", Self.activationScript, persistentExecutable.path],
             "RunAtLoad": true,
             "LimitLoadToSessionType": "Aqua",
             "StandardOutPath": root.appendingPathComponent("activation.log").path,
