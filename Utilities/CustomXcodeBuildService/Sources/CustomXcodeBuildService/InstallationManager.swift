@@ -152,10 +152,21 @@ struct InstallationManager {
             guard try store.selectedService() == .custom else {
                 return "Xcode's bundled service is selected; no custom activation is needed."
             }
-            guard let selected = try store.selectedPackage() else { throw ServiceError("No custom build service is installed.") }
+            guard let executable = try store.selectedExecutable(), let selected = try store.selectedPackage() else {
+                throw ServiceError("No custom build service is installed.")
+            }
             try selected.validateForUse()
             let settings = try launchSettings()
-            try Transaction.perform { transaction in try apply(selected, previous: settings, transaction: transaction) }
+            try Transaction.perform { transaction in
+                // Homebrew upgrades replace the package without running use custom, so
+                // activation also brings an earlier release's agent up to date. launchd
+                // reads the rewritten file at the next login.
+                let agent = try Data(contentsOf: store.agent)
+                if try store.writeAgent(preserving: agent, activating: executable) {
+                    transaction.undo { try agent.write(to: store.agent, options: .atomic) }
+                }
+                try apply(selected, previous: settings, transaction: transaction)
+            }
             return "Activated \(selected.manifest.version) for newly started clients."
         }) else { throw ServiceError("No custom build service is installed.") }
         return result

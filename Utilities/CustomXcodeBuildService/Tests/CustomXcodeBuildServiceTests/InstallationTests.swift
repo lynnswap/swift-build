@@ -593,7 +593,7 @@ final class FakeRunner: ProcessRunning {
     #expect(try !fixture.store.exists(fixture.store.staging))
     #expect(try fixture.store.service.resolvingSymlinksInPath() == ReleasePackage(directory: package).service)
     let agent = try #require(PropertyListSerialization.propertyList(from: Data(contentsOf: fixture.store.agent), format: nil) as? [String: Any])
-    #expect(agent["ProgramArguments"] as? [String] == [fixture.store.persistentExecutable.path, "activate"])
+    #expect(agent["ProgramArguments"] as? [String] == ["/bin/sh", "-c", #"exec "$0" activate"#, fixture.store.persistentExecutable.path])
     _ = try fixture.manager.uninstall()
     #expect(try fixture.store.exists(package.appendingPathComponent("manifest.json")))
     #expect(try fixture.store.packagedRelease()?.manifest.version == "v0.3.0")
@@ -906,6 +906,17 @@ func attachedProcessPreservesFailureStatus(terminated: Bool) throws {
     #expect(try store.service.resolvingSymlinksInPath() == ReleasePackage(directory: local).service)
     _ = try fixture.manager.use(.bundled)
     #expect(fixture.runner.settings.isEmpty)
+}
+
+@Test func activationUpdatesAnEarlierReleasesLoginProgram() throws {
+    let fixture = try Fixture()
+    _ = try fixture.enable(fixture.package("v0.3.0"))
+    let current = try Data(contentsOf: fixture.store.agent)
+    var properties = fixture.store.agentProperties
+    properties["ProgramArguments"] = [fixture.store.persistentExecutable.path, "activate"]
+    try PropertyListSerialization.data(fromPropertyList: properties, format: .xml, options: 0).write(to: fixture.store.agent)
+    _ = try fixture.manager.activate()
+    #expect(try Data(contentsOf: fixture.store.agent) == current)
 }
 
 @Test func foreignLoginProgramIsNotOverwritten() throws {
