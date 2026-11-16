@@ -20,6 +20,7 @@ import SwiftBuildTestSupport
 import func SWBBuildService.commandLineDisplayString
 import SWBBuildSystem
 import SWBCore
+import struct SWBProtocol.ArenaInfo
 import struct SWBProtocol.RunDestinationInfo
 import struct SWBProtocol.TargetDescription
 import struct SWBProtocol.TargetDependencyRelationship
@@ -766,4 +767,303 @@ fileprivate struct PackageBuildOperationTests: CoreBasedTests {
         }
     }
 
+}
+
+extension PackageBuildOperationTests {
+    /// Builds a command line tool which links a package object with sources (`Lib`) and a header-only package object
+    /// (`HeaderOnly`, which has nothing to compile and nothing to link, so produces no product), either directly or
+    /// through a package product.
+    private func checkHeaderOnlyPackageTargetIsNotLinked(throughPackageProduct: Bool) async throws {
+        try await withTemporaryDirectory { tmpDirPath async throws -> Void in
+            func configurations(_ name: String) -> [TestBuildConfiguration] {
+                [TestBuildConfiguration("Debug", buildSettings: [
+                    "PRODUCT_NAME": name,
+                    "SDKROOT": "auto",
+                    "SDK_VARIANT": "auto",
+                    "SUPPORTED_PLATFORMS": "$(AVAILABLE_PLATFORMS)",
+                    "CODE_SIGNING_ALLOWED": "NO",
+                ])]
+            }
+            func makeTool(links: [String], dependencies: [TestTargetDependency]) async throws -> TestStandardTarget {
+                TestStandardTarget(
+                    "Tool", type: .commandLineTool,
+                    buildConfigurations: configurations("Tool"),
+                    buildPhases: [
+                        TestSourcesBuildPhase(["main.c"]),
+                        TestFrameworksBuildPhase(links.map { TestBuildFile(.target($0)) }),
+                    ],
+                    dependencies: dependencies)
+            }
+
+            let libTarget = TestStandardTarget(
+                "Lib", type: .objectFile,
+                buildConfigurations: configurations("Lib"),
+                buildPhases: [TestSourcesBuildPhase(["lib.c"])])
+            let headerOnlyTarget = TestStandardTarget(
+                "HeaderOnly", type: .objectFile,
+                buildConfigurations: configurations("HeaderOnly"),
+                buildPhases: [TestHeadersBuildPhase([TestBuildFile("HeaderOnly.h", headerVisibility: .public)])])
+            let groupTree = TestGroup("Package", children: [TestFile("main.c"), TestFile("lib.c"), TestFile("HeaderOnly.h")])
+
+            let project: TestPackageProject
+            if throughPackageProduct {
+                let product = TestPackageProductTarget(
+                    "LibProduct",
+                    frameworksBuildPhase: TestFrameworksBuildPhase([
+                        TestBuildFile(.target("Lib")),
+                        TestBuildFile(.target("HeaderOnly")),
+                    ]),
+                    buildConfigurations: configurations("LibProduct"),
+                    dependencies: ["Lib", "HeaderOnly"])
+                project = TestPackageProject(
+                    "rootPkg", groupTree: groupTree,
+                    targets: [try await makeTool(links: ["LibProduct"], dependencies: ["LibProduct"]), product, libTarget, headerOnlyTarget])
+            } else {
+                project = TestPackageProject(
+                    "rootPkg", groupTree: groupTree,
+                    targets: [try await makeTool(links: ["Lib", "HeaderOnly"], dependencies: ["Lib", "HeaderOnly"]), libTarget, headerOnlyTarget])
+            }
+
+            let testWorkspace = TestWorkspace("Test", sourceRoot: tmpDirPath.join("Test"), projects: [project])
+            let tester = try await BuildOperationTester(getCore(), testWorkspace, simulated: false)
+            let packageDir = testWorkspace.sourceRoot.join("rootPkg")
+            try await tester.fs.writeFileContents(packageDir.join("main.c")) { stream in
+                stream.write("void lib_func(void);\nint main(void) { lib_func(); return 0; }\n")
+            }
+            try await tester.fs.writeFileContents(packageDir.join("lib.c")) { stream in
+                stream.write("void lib_func(void) {}\n")
+            }
+            try await tester.fs.writeFileContents(packageDir.join("HeaderOnly.h")) { stream in
+                stream.write("#define HEADER_ONLY 1\n")
+            }
+
+            try await tester.checkBuild(parameters: BuildParameters(configuration: "Debug"), runDestination: .macOS, persistent: true) { results in
+                // Without the fix this fails with "Build input file cannot be found" for the header-only target's product.
+                results.checkNoErrors()
+            }
+        }
+    }
+
+    @Test(.requireSDKs(.macOS))
+    func headerOnlyPackageTargetIsNotLinked() async throws {
+        try await checkHeaderOnlyPackageTargetIsNotLinked(throughPackageProduct: false)
+    }
+
+    @Test(.requireSDKs(.macOS))
+    func headerOnlyPackageTargetReachedThroughPackageProductIsNotLinked() async throws {
+        try await checkHeaderOnlyPackageTargetIsNotLinked(throughPackageProduct: true)
+    }
+
+    /// Builds a command line tool which links a package object with sources (`Lib`) and a second package object
+    /// (`Filtered`) whose only source is either built for the current platform or filtered out for it. A target whose
+    /// sources are all filtered out compiles nothing, so it has no product to link even though its build phase has files.
+    private func checkPackageTargetWithPlatformFilteredSources(isSourceFilteredOut: Bool) async throws {
+        try await withTemporaryDirectory { tmpDirPath async throws -> Void in
+            func configurations(_ name: String) -> [TestBuildConfiguration] {
+                [TestBuildConfiguration("Debug", buildSettings: [
+                    "PRODUCT_NAME": name,
+                    "SDKROOT": "auto",
+                    "SDK_VARIANT": "auto",
+                    "SUPPORTED_PLATFORMS": "$(AVAILABLE_PLATFORMS)",
+                    "CODE_SIGNING_ALLOWED": "NO",
+                ])]
+            }
+
+            let filters: Set<SWBTestSupport.PlatformFilter> = isSourceFilteredOut ? [SWBTestSupport.PlatformFilter(platform: "linux")] : []
+            let tool = TestStandardTarget(
+                "Tool", type: .commandLineTool,
+                buildConfigurations: configurations("Tool"),
+                buildPhases: [
+                    TestSourcesBuildPhase(["main.c"]),
+                    TestFrameworksBuildPhase([TestBuildFile(.target("Lib")), TestBuildFile(.target("Filtered"))]),
+                ],
+                dependencies: ["Lib", "Filtered"])
+            let libTarget = TestStandardTarget(
+                "Lib", type: .objectFile,
+                buildConfigurations: configurations("Lib"),
+                buildPhases: [TestSourcesBuildPhase(["lib.c"])])
+            let filteredTarget = TestStandardTarget(
+                "Filtered", type: .objectFile,
+                buildConfigurations: configurations("Filtered"),
+                buildPhases: [TestSourcesBuildPhase([TestBuildFile("filtered.c", platformFilters: filters)])])
+            let groupTree = TestGroup("Package", children: [TestFile("main.c"), TestFile("lib.c"), TestFile("filtered.c")])
+            let project = TestPackageProject("rootPkg", groupTree: groupTree, targets: [tool, libTarget, filteredTarget])
+
+            let testWorkspace = TestWorkspace("Test", sourceRoot: tmpDirPath.join("Test"), projects: [project])
+            let tester = try await BuildOperationTester(getCore(), testWorkspace, simulated: false)
+            let packageDir = testWorkspace.sourceRoot.join("rootPkg")
+            try await tester.fs.writeFileContents(packageDir.join("main.c")) { stream in
+                if isSourceFilteredOut {
+                    // The filtered target's symbol is not referenced: nothing provides it.
+                    stream.write("void lib_func(void);\nint main(void) { lib_func(); return 0; }\n")
+                } else {
+                    // The control references the symbol, so this only links if the target's object really is linked.
+                    stream.write("void lib_func(void);\nvoid filtered_func(void);\nint main(void) { lib_func(); filtered_func(); return 0; }\n")
+                }
+            }
+            try await tester.fs.writeFileContents(packageDir.join("lib.c")) { stream in
+                stream.write("void lib_func(void) {}\n")
+            }
+            try await tester.fs.writeFileContents(packageDir.join("filtered.c")) { stream in
+                stream.write("void filtered_func(void) {}\n")
+            }
+
+            try await tester.checkBuild(parameters: BuildParameters(configuration: "Debug"), runDestination: .macOS, persistent: true) { results in
+                // When the source is filtered out this fails with "Build input file cannot be found" for the target's product
+                // if the link still waits for it.
+                results.checkNoErrors()
+            }
+        }
+    }
+
+    @Test(.requireSDKs(.macOS))
+    func packageTargetWithOnlyPlatformFilteredSourcesIsNotLinked() async throws {
+        try await checkPackageTargetWithPlatformFilteredSources(isSourceFilteredOut: true)
+    }
+
+    @Test(.requireSDKs(.macOS))
+    func packageTargetWithUnfilteredSourcesIsLinked() async throws {
+        try await checkPackageTargetWithPlatformFilteredSources(isSourceFilteredOut: false)
+    }
+
+    /// A package framework embedded through the diamond resolution leaves out its module and .tbd.
+    private func checkDynamicPackageProductIsEmbeddedAndSigned(supportsTextBasedAPI: Bool, runDestination: SWBCore.RunDestinationInfo = .macOS) async throws {
+        try await withTemporaryDirectory { (tmpDirPath: Path) async throws -> Void in
+            let swiftVersionValue = try await swiftVersion
+            let testWorkspace = TestWorkspace(
+                "Test",
+                sourceRoot: tmpDirPath.join("Test"),
+                projects: [
+                    TestProject(
+                        "AppProject",
+                        groupTree: TestGroup("Sources", children: [
+                            TestFile("main.swift"),
+                            TestFile("Fwk.swift"),
+                        ]),
+                        buildConfigurations: [
+                            TestBuildConfiguration("Debug", buildSettings: [
+                                "CODE_SIGN_IDENTITY": "-",
+                                "GENERATE_INFOPLIST_FILE": "YES",
+                                "PRODUCT_BUNDLE_IDENTIFIER": "com.example.$(PRODUCT_NAME:rfc1034identifier)",
+                                "PRODUCT_NAME": "$(TARGET_NAME)",
+                                "SDKROOT": runDestination.sdk,
+                                "SWIFT_VERSION": swiftVersionValue,
+                            ]),
+                        ],
+                        targets: [
+                            TestStandardTarget(
+                                "App",
+                                type: .application,
+                                buildPhases: [
+                                    TestSourcesBuildPhase(["main.swift"]),
+                                    TestFrameworksBuildPhase([
+                                        TestBuildFile(.target("Fwk")),
+                                        TestBuildFile(.target("PackageLibProduct")),
+                                    ]),
+                                ],
+                                dependencies: ["Fwk", "PackageLibProduct"]
+                            ),
+                            TestStandardTarget(
+                                "Fwk",
+                                type: .framework,
+                                buildPhases: [
+                                    TestSourcesBuildPhase(["Fwk.swift"]),
+                                    TestFrameworksBuildPhase([
+                                        TestBuildFile(.target("PackageLibProduct")),
+                                    ]),
+                                ],
+                                dependencies: ["PackageLibProduct"]
+                            ),
+                        ]
+                    ),
+                    TestPackageProject(
+                        "aPackage",
+                        groupTree: TestGroup("Sources", children: [TestFile("PackageLib.swift")]),
+                        buildConfigurations: [
+                            TestBuildConfiguration("Debug", buildSettings: [
+                                "CODE_SIGN_IDENTITY": "",
+                                "CODE_SIGNING_REQUIRED": "NO",
+                                "GENERATE_INFOPLIST_FILE": "YES",
+                                "PRODUCT_BUNDLE_IDENTIFIER": "com.example.$(PRODUCT_NAME:rfc1034identifier)",
+                                "PRODUCT_NAME": "$(TARGET_NAME)",
+                                "SDKROOT": "auto",
+                                "SDK_VARIANT": "auto",
+                                "SUPPORTED_PLATFORMS": "$(AVAILABLE_PLATFORMS)",
+                                "SUPPORTS_TEXT_BASED_API": supportsTextBasedAPI ? "YES" : "NO",
+                                "SWIFT_VERSION": swiftVersionValue,
+                            ]),
+                        ],
+                        targets: [
+                            TestPackageProductTarget(
+                                "PackageLibProduct",
+                                frameworksBuildPhase: TestFrameworksBuildPhase([
+                                    TestBuildFile(.target("PackageLib")),
+                                ]),
+                                dynamicTargetVariantName: "PackageLibProduct-dynamic",
+                                dependencies: ["PackageLib"]
+                            ),
+                            TestStandardTarget(
+                                "PackageLib",
+                                type: .objectFile,
+                                buildPhases: [TestSourcesBuildPhase(["PackageLib.swift"])]
+                            ),
+                            TestStandardTarget(
+                                "PackageLibProduct-dynamic",
+                                type: .framework,
+                                buildConfigurations: [
+                                    TestBuildConfiguration("Debug", buildSettings: [
+                                        "PRODUCT_NAME": "PackageLib",
+                                        "SWIFT_MODULE_NAME": "PackageLib",
+                                    ]),
+                                ],
+                                buildPhases: [TestSourcesBuildPhase(["PackageLib.swift"])],
+                                productReferenceName: "$(WRAPPER_NAME)"
+                            ),
+                        ]
+                    ),
+                ]
+            )
+            let tester = try await BuildOperationTester(getCore(), testWorkspace, simulated: false)
+            try await tester.fs.writeFileContents(testWorkspace.sourceRoot.join("AppProject/main.swift")) { stream in
+                stream.write("import Fwk\nimport PackageLib\nprint(fwkValue(), packageValue())\n")
+            }
+            try await tester.fs.writeFileContents(testWorkspace.sourceRoot.join("AppProject/Fwk.swift")) { stream in
+                stream.write("import PackageLib\npublic func fwkValue() -> Int { packageValue() + 1 }\n")
+            }
+            try await tester.fs.writeFileContents(testWorkspace.sourceRoot.join("aPackage/PackageLib.swift")) { stream in
+                stream.write("public func packageValue() -> Int { 42 }\n")
+            }
+
+            let parameters = BuildParameters(configuration: "Debug", arena: ArenaInfo.buildArena(derivedDataRoot: tmpDirPath.join("DerivedData")))
+            let productsDir = try await tmpDirPath.join("DerivedData/Build/Products/Debug\(runDestination.builtProductsDirSuffix(core: getCore()))")
+            let isMacOS = runDestination.platform == "macosx"
+            let frameworkContents = isMacOS ? "Versions/A/" : ""
+            try await tester.checkBuild(parameters: parameters, runDestination: runDestination, signableTargets: ["App"]) { results in
+                results.checkNoErrors()
+
+                let embeddedFramework = productsDir.join(isMacOS ? "App.app/Contents/Frameworks" : "App.app/Frameworks").join("PackageLib.framework")
+                #expect(tester.fs.exists(embeddedFramework.join("\(frameworkContents)PackageLib")))
+                #expect(tester.fs.exists(productsDir.join("PackageLib.framework/\(frameworkContents)PackageLib.tbd")) == supportsTextBasedAPI)
+                #expect(tester.fs.exists(productsDir.join("PackageLib.framework/\(frameworkContents)Modules")))
+                #expect(!tester.fs.exists(embeddedFramework.join("\(frameworkContents)Modules")))
+                #expect(!tester.fs.exists(embeddedFramework.join("\(frameworkContents)PackageLib.tbd")))
+                #expect(!tester.fs.exists(embeddedFramework.join("PackageLib.tbd")))
+            }
+        }
+    }
+
+    @Test(.requireSDKs(.macOS))
+    func dynamicPackageProductWithTextBasedAPIIsEmbeddedAndSigned() async throws {
+        try await checkDynamicPackageProductIsEmbeddedAndSigned(supportsTextBasedAPI: true)
+    }
+
+    @Test(.requireSDKs(.macOS))
+    func dynamicPackageProductWithoutTextBasedAPIIsEmbeddedAndSigned() async throws {
+        try await checkDynamicPackageProductIsEmbeddedAndSigned(supportsTextBasedAPI: false)
+    }
+
+    @Test(.requireSDKs(.iOS))
+    func dynamicPackageProductWithTextBasedAPIIsEmbeddedAndSignedForIOSSimulator() async throws {
+        try await checkDynamicPackageProductIsEmbeddedAndSigned(supportsTextBasedAPI: true, runDestination: .iOSSimulator)
+    }
 }

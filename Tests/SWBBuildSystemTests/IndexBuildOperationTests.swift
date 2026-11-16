@@ -33,6 +33,99 @@ fileprivate struct IndexBuildOperationTests: CoreBasedTests {
         return ArenaInfo(derivedDataPath: path.dirname, buildProductsPath: path, buildIntermediatesPath: path, pchPath: path, indexRegularBuildProductsPath: nil, indexRegularBuildIntermediatesPath: nil, indexPCHPath: path, indexDataStoreFolderPath: nil, indexEnableDataStore: false)
     }
 
+    /// Preparing a target that depends on a macOS framework makes the framework's headers and module reachable through
+    /// the bundle's top-level symlinks, which is how dependents find them.
+    @Test(.requireSDKs(.macOS))
+    func targetedPreparationCreatesFrameworkStructureSymlinks() async throws {
+        try await withTemporaryDirectory { tmpDirPath in
+            let testWorkspace = try await TestWorkspace(
+                "Test",
+                sourceRoot: tmpDirPath.join("Test"),
+                projects: [
+                    TestProject(
+                        "aProject",
+                        groupTree: TestGroup(
+                            "SomeFiles",
+                            children: [
+                                TestFile("main.c"),
+                                TestFile("FwkTarget.h"),
+                                TestFile("fwk.c"),
+                            ]),
+                        buildConfigurations: [
+                            TestBuildConfiguration(
+                                "Debug",
+                                buildSettings: [
+                                    "PRODUCT_NAME": "$(TARGET_NAME)",
+                                    "GENERATE_INFOPLIST_FILE": "YES",
+                                    "ALWAYS_SEARCH_USER_PATHS": "NO",
+                                    "DEFINES_MODULE": "YES",
+                                    "CODE_SIGNING_ALLOWED": "NO",
+                                ])],
+                        targets: [
+                            TestStandardTarget(
+                                "AppTarget",
+                                type: .commandLineTool,
+                                buildConfigurations: [
+                                    TestBuildConfiguration("Debug"),
+                                ],
+                                buildPhases: [
+                                    TestSourcesBuildPhase([
+                                        "main.c",
+                                    ]),
+                                    TestFrameworksBuildPhase([
+                                        "FwkTarget.framework",
+                                    ]),
+                                ],
+                                dependencies: ["FwkTarget"]),
+                            TestStandardTarget(
+                                "FwkTarget",
+                                type: .framework,
+                                buildConfigurations: [
+                                    TestBuildConfiguration("Debug"),
+                                ],
+                                buildPhases: [
+                                    TestHeadersBuildPhase([
+                                        TestBuildFile("FwkTarget.h", headerVisibility: .public),
+                                    ]),
+                                    TestSourcesBuildPhase([
+                                        "fwk.c",
+                                    ]),
+                                ]),
+                        ]),
+                ])
+
+            let tester = try await BuildOperationTester(getCore(), testWorkspace, simulated: false)
+            try await tester.fs.writeFileContents(testWorkspace.sourceRoot.join("aProject/main.c")) { stream in
+                stream <<< "#include <FwkTarget/FwkTarget.h>\nint main(void) { return fwk(); }\n"
+            }
+            try await tester.fs.writeFileContents(testWorkspace.sourceRoot.join("aProject/FwkTarget.h")) { stream in
+                stream <<< "int fwk(void);\n"
+            }
+            try await tester.fs.writeFileContents(testWorkspace.sourceRoot.join("aProject/fwk.c")) { stream in
+                stream <<< "#include \"FwkTarget.h\"\nint fwk(void) { return 0; }\n"
+            }
+
+            let parameters = BuildParameters(action: .indexBuild, configuration: "Debug", arena: arenaInfo(from: tmpDirPath.join("build")))
+            let buildTargets = tester.workspace.allTargets.map { BuildRequest.BuildTargetInfo(parameters: parameters, target: $0) }
+            // Prepare only the dependent target, as the IDE does.
+            let appTarget = try #require(tester.workspace.allTargets.first { $0.name == "AppTarget" })
+            let request = BuildRequest(parameters: parameters, buildTargets: buildTargets, continueBuildingAfterErrors: true, useParallelTargets: true, useImplicitDependencies: false, useDryRun: false, buildCommand: .prepareForIndexing(buildOnlyTheseTargets: [appTarget], enableIndexBuildArena: true))
+            try await tester.checkBuild(parameters: parameters, runDestination: .macOS, buildRequest: request, persistent: true) { results in
+                results.checkNoErrors()
+            }
+
+            let frameworks = try tester.fs.traverse(tmpDirPath.join("build")) { path -> Path? in
+                path.basename == "FwkTarget.framework" ? path : nil
+            }
+            let framework = try #require(frameworks.only, "expected the framework bundle to be prepared")
+            for name in ["Headers", "Modules", "Versions/Current"] {
+                #expect(tester.fs.isSymlink(framework.join(name)), "expected '\(name)' to be a symlink in \(framework.str)")
+            }
+            #expect(tester.fs.exists(framework.join("Headers/FwkTarget.h")))
+            #expect(tester.fs.exists(framework.join("Modules/module.modulemap")))
+        }
+    }
+
     @Test(.requireSDKs(.macOS), arguments: [false, true], [false, true])
     func swiftExplicitModulesInIndexArenaExecutes(bridgingHeader: Bool, longCommandLine: Bool) async throws {
         try await withTemporaryDirectory { tmpDirPath in
@@ -146,6 +239,14 @@ fileprivate struct IndexBuildOperationTests: CoreBasedTests {
                     results.checkTask(.matchTargetName("FwkTarget"), .matchRuleItem("SwiftDriver Compilation Requirements")) { task in
                         frameworkCompilationRequirementsTask = task
                     }
+                    // Writing each sidecar changes that target's index compiler arguments, which clients are told about.
+                    #expect(Set(results.getIndexOptionsChangedTargets().map(\.target.name)) == ["AppTarget", "FwkTarget", "CoreTarget"])
+                }
+
+                // Re-preparing with nothing changed rewrites identical sidecars, so no index options change.
+                try await tester.checkBuild(parameters: parameters, runDestination: .macOS, buildRequest: request, persistent: true) { results in
+                    results.checkNoErrors()
+                    #expect(results.getIndexOptionsChangedTargets().isEmpty)
                 }
 
                 // The sidecar records the Swift module invocation, including when a PCH job precedes it.
@@ -2018,6 +2119,124 @@ fileprivate struct IndexBuildOperationTests: CoreBasedTests {
             try await tester.checkBuild(runDestination: .macOS, buildRequest: buildRequest, persistent: true) { results in
                 #expect(!tester.fs.exists(arena.buildProductsPath))
             }
+        }
+    }
+
+    // Check that clearing the build caches also removes the index build's module cache.
+    @Test(.requireSDKs(.macOS))
+    func clearCachesRemovesIndexModuleCache() async throws {
+        try await withTemporaryDirectory { tmpDir in
+            let core = try await getCore()
+
+            let app = TestStandardTarget(
+                "App",
+                type: .commandLineTool,
+                buildConfigurations: [
+                    TestBuildConfiguration("Debug"),
+                ],
+                buildPhases: [
+                    TestSourcesBuildPhase(["test.swift"]),
+                ]
+            )
+
+            let testWorkspace = try await TestWorkspace("Test", sourceRoot: tmpDir, projects: [
+                TestProject(
+                    "aProject",
+                    groupTree: TestGroup(
+                        "SomeFiles",
+                        children: [
+                            TestFile("test.swift"),
+                        ]),
+                    buildConfigurations: [
+                        TestBuildConfiguration("Debug", buildSettings: [
+                            "PRODUCT_NAME": "$(TARGET_NAME)",
+                            "SDKROOT": "macosx",
+                            "SUPPORTED_PLATFORMS": "macosx",
+                            "SWIFT_VERSION": swiftVersion,
+                        ]),
+                    ],
+                    targets: [app])
+            ])
+
+            let SRCROOT = testWorkspace.sourceRoot.join("aProject")
+            let tester = try await BuildOperationTester(core, testWorkspace, simulated: false)
+
+            try await tester.fs.writeFileContents(SRCROOT.join("test.swift")) { $0 <<< "// test.swift" }
+
+            let derivedData = tester.workspace.path.dirname
+            let indexModuleCache = derivedData.join("IndexModuleCache.noindex")
+            try await tester.checkIndexBuild(prepareTargets: [app.guid], persistent: true) { results in
+                #expect(results.buildRequest.parameters.arena?.derivedDataPath == derivedData)
+                // The index build plans to create its module cache, but a prepare build only runs the tasks needed to prepare the targets, which do not include this one.
+                #expect(results.tasks.contains { $0.ruleInfo == ["CreateBuildDirectory", indexModuleCache.str] })
+            }
+
+            // Put a module in the cache, as a compile would. The compiler creates the folder on demand, so it is not marked as created by the build system, but clearing the caches still deletes it because it is in DerivedData.
+            try tester.fs.createDirectory(indexModuleCache.join("CONTEXTHASH"), recursive: true)
+            try await tester.fs.writeFileContents(indexModuleCache.join("CONTEXTHASH/Mod-HASH.pcm")) { $0 <<< "pcm" }
+
+            // Clearing the caches uses the regular build's settings, in which MODULE_CACHE_DIR is not the index build's module cache.
+            let parameters = BuildParameters(configuration: "Debug", arena: .buildArena(derivedDataRoot: derivedData))
+            let buildRequest = BuildRequest(parameters: parameters, buildTargets: tester.workspace.projects[0].targets.map({ BuildRequest.BuildTargetInfo(parameters: parameters, target: $0) }), continueBuildingAfterErrors: false, useParallelTargets: true, useImplicitDependencies: false, useDryRun: false, buildCommand: .cleanCaches(style: .regular))
+            try await tester.checkBuild(runDestination: .macOS, buildRequest: buildRequest, persistent: true) { results in
+                results.checkNoDiagnostics()
+            }
+            #expect(!tester.fs.exists(indexModuleCache))
+        }
+    }
+
+    // Check that a prepare starts a build session of the index build's module cache, not of the regular build's.
+    @Test(.requireSDKs(.macOS))
+    func prepareStartsBuildSessionOfIndexModuleCache() async throws {
+        try await withTemporaryDirectory { tmpDir in
+            let core = try await getCore()
+
+            let app = TestStandardTarget(
+                "App",
+                type: .commandLineTool,
+                buildConfigurations: [
+                    TestBuildConfiguration("Debug"),
+                ],
+                buildPhases: [
+                    TestSourcesBuildPhase(["test.swift"]),
+                ]
+            )
+
+            let testWorkspace = try await TestWorkspace("Test", sourceRoot: tmpDir, projects: [
+                TestProject(
+                    "aProject",
+                    groupTree: TestGroup(
+                        "SomeFiles",
+                        children: [
+                            TestFile("test.swift"),
+                        ]),
+                    buildConfigurations: [
+                        TestBuildConfiguration("Debug", buildSettings: [
+                            "PRODUCT_NAME": "$(TARGET_NAME)",
+                            "SDKROOT": "macosx",
+                            "SUPPORTED_PLATFORMS": "macosx",
+                            "SWIFT_VERSION": swiftVersion,
+                        ]),
+                    ],
+                    targets: [app])
+            ])
+
+            let SRCROOT = testWorkspace.sourceRoot.join("aProject")
+            let tester = try await BuildOperationTester(core, testWorkspace, simulated: false)
+
+            try await tester.fs.writeFileContents(SRCROOT.join("test.swift")) { $0 <<< "// test.swift" }
+
+            let derivedData = tester.workspace.path.dirname
+            try await tester.checkIndexBuild(prepareTargets: [app.guid], persistent: true) { results in
+                results.checkNoDiagnostics()
+            }
+
+            // The compilers validate the modules of the index build's module cache once per session of the index build.
+            let sessionFile = derivedData.join("IndexModuleCache.noindex/Session.modulevalidation")
+            #expect(tester.fs.exists(sessionFile))
+            let contents = try tester.fs.read(sessionFile).asString
+            #expect(contents.contains(": Module build session file for module cache at ") && contents.contains("/IndexModuleCache.noindex"), "\(contents)")
+            #expect(!tester.fs.exists(derivedData.join("ModuleCache.noindex/Session.modulevalidation")))
         }
     }
 }

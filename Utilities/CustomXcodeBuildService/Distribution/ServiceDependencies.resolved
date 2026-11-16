@@ -1,5 +1,5 @@
 {
-  "originHash" : "d6c150afd2ae95384fceeaf112f6b443d71884cf41eb319f0c7d51299e19ac23",
+  "originHash" : "510ea64fdf0aed37fbc4f3313d8206017189b3625f4e939784ce3ad1e5fe1b43",
   "pins" : [
     {
       "identity" : "swift-argument-parser",
@@ -16,7 +16,7 @@
       "location" : "https://github.com/swiftlang/swift-driver.git",
       "state" : {
         "branch" : "main",
-        "revision" : "e1d6a2fefe27dd2d7cfae18154a250c846743deb"
+        "revision" : "e8eff1e4bbd2238a4c9addc84264c3317026ef90"
       }
     },
     {
@@ -25,7 +25,16 @@
       "location" : "https://github.com/swiftlang/swift-llbuild.git",
       "state" : {
         "branch" : "main",
-        "revision" : "091c78d63c93e16fb6a0b129034f210b05949848"
+        "revision" : "082a80d73c7acc76020c0619981af8eca8122d82"
+      }
+    },
+    {
+      "identity" : "swift-subprocess",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swiftlang/swift-subprocess.git",
+      "state" : {
+        "revision" : "dbe21bd7dfd4ffef8c32588918542a8abfa1b54c",
+        "version" : "1.0.2"
       }
     },
     {
@@ -33,8 +42,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-system.git",
       "state" : {
-        "revision" : "869129b7bf4ecc57b97d0193ad29690ca2134750",
-        "version" : "1.8.1"
+        "revision" : "640e5755b5826f4437eaeedd366fd776737db62c",
+        "version" : "1.9.0"
       }
     },
     {
@@ -42,8 +51,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/swiftlang/swift-toolchain-sqlite",
       "state" : {
-        "revision" : "cc7ea00f730c2234a332cd264c6e5cdbb6c4f971",
-        "version" : "1.0.12"
+        "revision" : "d9b11cb79071d5ab992ff47dfd2e8d6e19418d97",
+        "version" : "1.0.13"
       }
     },
     {
@@ -52,7 +61,7 @@
       "location" : "https://github.com/swiftlang/swift-tools-protocols.git",
       "state" : {
         "branch" : "main",
-        "revision" : "4d330be3a09595b3fbe7731c1f6fbc6d7a470bd4"
+        "revision" : "e8e645bb9c948ff28b957a3a819934322fe5f37f"
       }
     },
     {
@@ -61,7 +70,7 @@
       "location" : "https://github.com/swiftlang/swift-tools-support-core.git",
       "state" : {
         "branch" : "main",
-        "revision" : "c574915fe88e942e4c4c93376f022daa2ecf05f9"
+        "revision" : "7b9e1dfb908da2ef952159ddf3cbda353f748510"
       }
     }
   ],

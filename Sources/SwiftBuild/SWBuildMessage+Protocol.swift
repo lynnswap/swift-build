@@ -36,6 +36,10 @@ extension SwiftBuildMessage {
         self = .preparedForIndex(.init(targetGUID: message.targetGUID, resultInfo: .init(timestamp: message.info.timestamp)))
     }
 
+    init(_ message: BuildOperationTargetIndexOptionsChanged) {
+        self = .indexOptionsChanged(.init(configuredTargetGUID: message.configuredTargetGUID, targetGUID: message.targetGUID))
+    }
+
     init(_ message: BuildOperationBacktraceFrameEmitted) {
         self = .backtraceFrame(.init(message))
     }
@@ -205,7 +209,7 @@ extension SwiftBuildMessage.TaskCompleteInfo.Result {
 
 extension SwiftBuildMessage.TaskCompleteInfo.Metrics {
     init(_ status: BuildOperationTaskEnded.Metrics) {
-        self.init(utime: status.utime, stime: status.stime, maxRSS: status.maxRSS, wcStartTime: status.wcStartTime, wcDuration: status.wcDuration)
+        self.init(measuredUtime: status.utime, measuredStime: status.stime, measuredMaxRSS: status.maxRSS, wcStartTime: status.wcStartTime, wcDuration: status.wcDuration)
     }
 }
 

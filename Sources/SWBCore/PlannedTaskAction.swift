@@ -329,8 +329,9 @@ public protocol TaskActionCreationDelegate
     func createEmbedSwiftStdLibTaskAction() -> any PlannedTaskAction
     func createFileCopyTaskAction(_ context: FileCopyTaskActionContext) -> any PlannedTaskAction
     func createGenerateEmbedInCodeAccessorTaskAction() -> any PlannedTaskAction
-    func createGenericCachingTaskAction(enableCacheDebuggingRemarks: Bool, enableTaskSandboxEnforcement: Bool, sandboxDirectory: Path, extraSandboxSubdirectories: [Path], developerDirectory: Path, casOptions: CASOptions) -> any PlannedTaskAction
+    func createGenericCachingTaskAction(enableCacheDebuggingRemarks: Bool, enableTaskSandboxEnforcement: Bool, sandboxDirectory: Path, preserveSandboxDirectory: Bool, extraSandboxSubdirectories: [Path], developerDirectory: Path, casOptions: CASOptions) -> any PlannedTaskAction
     func createInfoPlistProcessorTaskAction(_ contextPath: Path) -> any PlannedTaskAction
+    func createIngestCASFSRootTaskAction() -> any PlannedTaskAction
     func createMergeInfoPlistTaskAction() -> any PlannedTaskAction
     func createLinkAssetCatalogTaskAction() -> any PlannedTaskAction
     func createLSRegisterURLTaskAction() -> any PlannedTaskAction
@@ -339,6 +340,7 @@ public protocol TaskActionCreationDelegate
     func createProcessProductProvisioningProfileTaskAction() -> any PlannedTaskAction
     func createRegisterExecutionPolicyExceptionTaskAction() -> any PlannedTaskAction
     func createSwiftHeaderToolTaskAction() -> any PlannedTaskAction
+    func createTouchTaskAction() -> any PlannedTaskAction
     func createValidateProductTaskAction() -> any PlannedTaskAction
     func createConstructStubExecutorInputFileListTaskAction() -> any PlannedTaskAction
     func createClangCompileTaskAction() -> any PlannedTaskAction

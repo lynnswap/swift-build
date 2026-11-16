@@ -79,7 +79,9 @@ extension ProjectModel {
             case SWIFT_BRIDGING_HEADER_IS_INTERNAL
             case GENERATED_HEADER_UNDERLYING_MODULE_INCLUDE_BASE
             case SWIFT_OPTIMIZATION_LEVEL
+            case SWIFT_CROSS_MODULE_OPTIMIZATION
             case SWIFT_VERSION
+            case SWIFT_COMPILATION_MODE
             case SYMBOL_GRAPH_EXTRACTOR_OUTPUT_DIR
             case TARGET_NAME
             case TARGET_TEMP_DIR_SUFFIX
@@ -156,6 +158,7 @@ extension ProjectModel {
             case SWIFT_SDK_TOOLSETS
             case SWIFT_WARNINGS_AS_WARNINGS_GROUPS
             case SWIFT_WARNINGS_AS_ERRORS_GROUPS
+            case SWIFT_INCLUDE_PATHS
         }
 
         @available(*, deprecated, message: "Use subscripts to set platform-specific SingleValueSetting/MultipleValueSettings instead")

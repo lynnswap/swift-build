@@ -49,6 +49,7 @@ add_library(SWBUtil
   Headermap.swift
   HeavyCache.swift
   IndexStore.swift
+  InFlightTasks.swift
   Int.swift
   InterningArena.swift
   IO.swift
@@ -75,12 +76,19 @@ add_library(SWBUtil
   Path.swift
   PathWindows.swift
   PbxCp.swift
+  PipeIO.swift
+  PipeIO+Epoll.swift
+  PipeIO+KQueue.swift
+  PipeIO+Unix.swift
+  PipeIO+Windows.swift
   PluginManager.swift
   PluginManagerCommon.swift
   POSIX.swift
   PrefixMapper.swift
   Process+Async.swift
   Process.swift
+  ProcessController+Subprocess.swift
+  ProcessController.swift
   ProcessInfo.swift
   Promise.swift
   PropertyList.swift
@@ -118,6 +126,10 @@ target_link_libraries(SWBUtil PUBLIC
   SWBLibc
   ArgumentParser
   $<$<NOT:$<PLATFORM_ID:Darwin>>:SwiftSystem::SystemPackage>)
+if(TARGET SwiftSubprocess::Subprocess)
+  target_link_libraries(SWBUtil PUBLIC
+    SwiftSubprocess::Subprocess)
+endif()
 
 set_target_properties(SWBUtil PROPERTIES
   INTERFACE_INCLUDE_DIRECTORIES ${CMAKE_Swift_MODULE_DIRECTORY})

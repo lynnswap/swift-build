@@ -502,8 +502,8 @@ public final class SwiftDriverJobTaskAction: TaskAction, BuildValueValidatingTas
                 let swiftModuleDependencyGraph = dynamicExecutionDelegate.operationContext.swiftModuleDependencyGraph
                 cas = try swiftModuleDependencyGraph.getCASDatabases(casOptions: casOpts, compilerLocation: payload.compilerLocation)
 
-                let casKey = ClangCachingPruneDataTaskKey(
-                    path: payload.compilerLocation.compilerOrLibraryPath,
+                let casKey = CompilationCachingPruneDataTaskKey(
+                    libPath: payload.compilerLocation.compilerOrLibraryPath,
                     casOptions: casOpts
                 )
                 dynamicExecutionDelegate.operationContext.compilationCachingDataPruner.pruneCAS(
@@ -531,7 +531,7 @@ public final class SwiftDriverJobTaskAction: TaskAction, BuildValueValidatingTas
                     return .succeeded
             }
 
-            try await spawn(commandLine: options.commandLine, environment: environment, workingDirectory: task.workingDirectory, dynamicExecutionDelegate: dynamicExecutionDelegate, clientDelegate: clientDelegate, processDelegate: delegate)
+            try await spawn(commandLine: options.commandLine, environment: environment, workingDirectory: task.workingDirectory, canSafelyInterrupt: ProcessInfo.processInfo.hostOperatingSystem().canSafelyInterruptCompilerProcesses, dynamicExecutionDelegate: dynamicExecutionDelegate, clientDelegate: clientDelegate, processDelegate: delegate)
 
             // Generate crash reproducoer.
             if delegate.wasSignaled {

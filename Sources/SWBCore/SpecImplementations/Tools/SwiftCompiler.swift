@@ -383,7 +383,7 @@ public struct SwiftLocalizationPayload: Serializable, Sendable {
 
 public struct SwiftDriverPayload: Serializable, TaskPayload, Encodable {
     public let uniqueID: String
-    public let compilerLocation: LibSwiftDriver.CompilerLocation
+    /// The version tag of the Swift compiler, e.g. `swiftlang-6.3.0.110.10`.
     public let compilerVersion: String
     public let moduleName: String
     public let outputPrefix: String
@@ -392,21 +392,26 @@ public struct SwiftDriverPayload: Serializable, TaskPayload, Encodable {
     public let variant: String
     public let slice: String
     public let cohortArchitectures: [String]
-    public let eagerCompilationEnabled: Bool
-    public let explicitModulesEnabled: Bool
     public let commandLine: [String]
     public let ruleInfo: [String]
-    public let isUsingWholeModuleOptimization: Bool
-    public let casOptions: CASOptions?
-    public let reportRequiredTargetDependencies: BooleanWarningLevel
+    /// Whether the planned build is cached using a key determined before dependency scanning (`SWIFT_ENABLE_PRESCAN_CACHING`).
+    public let enablePrescanCaching: Bool
     public let linkerResponseFilePath: Path?
-    public let linkerResponseFileFormat: ResponseFileFormat
     public let dependencyFilteringRootPath: Path?
-    public let verifyScannerDependencies: Bool
     public let scannerDiagnosticsOutputPath: Path?
     public let diagnosticAttachmentInfo: LibclangDiagnosticAttachmentInfo?
+    /// If set, the CASFS root for the scanner gets ingested before each planning of the driver.
+    public let casFSIngestion: SwiftCASFSIngestionInfo?
+    public let compilerLocation: LibSwiftDriver.CompilerLocation
+    public let eagerCompilationEnabled: Bool
+    public let explicitModulesEnabled: Bool
+    public let isUsingWholeModuleOptimization: Bool
+    public let reportRequiredTargetDependencies: BooleanWarningLevel
+    public let linkerResponseFileFormat: ResponseFileFormat
+    public let verifyScannerDependencies: Bool
+    public let casOptions: CASOptions?
 
-    internal init(uniqueID: String, compilerLocation: LibSwiftDriver.CompilerLocation, compilerVersion: String, moduleName: String, outputPrefix: String, tempDirPath: Path, explicitModulesTempDirPath: Path, variant: String, slice: String, cohortArchitectures: [String], eagerCompilationEnabled: Bool, explicitModulesEnabled: Bool, commandLine: [String], ruleInfo: [String], isUsingWholeModuleOptimization: Bool, casOptions: CASOptions?, reportRequiredTargetDependencies: BooleanWarningLevel, linkerResponseFilePath: Path?, linkerResponseFileFormat: ResponseFileFormat, dependencyFilteringRootPath: Path?, verifyScannerDependencies: Bool, scannerDiagnosticsOutputPath: Path?, diagnosticAttachmentInfo: LibclangDiagnosticAttachmentInfo?) {
+    @_spi(Testing) public init(uniqueID: String, compilerLocation: LibSwiftDriver.CompilerLocation, compilerVersion: String, moduleName: String, outputPrefix: String, tempDirPath: Path, explicitModulesTempDirPath: Path, variant: String, slice: String, cohortArchitectures: [String], eagerCompilationEnabled: Bool, explicitModulesEnabled: Bool, commandLine: [String], ruleInfo: [String], isUsingWholeModuleOptimization: Bool, casOptions: CASOptions?, enablePrescanCaching: Bool, reportRequiredTargetDependencies: BooleanWarningLevel, linkerResponseFilePath: Path?, linkerResponseFileFormat: ResponseFileFormat, dependencyFilteringRootPath: Path?, verifyScannerDependencies: Bool, scannerDiagnosticsOutputPath: Path?, diagnosticAttachmentInfo: LibclangDiagnosticAttachmentInfo?, casFSIngestion: SwiftCASFSIngestionInfo?) {
         self.uniqueID = uniqueID
         self.compilerLocation = compilerLocation
         self.compilerVersion = compilerVersion
@@ -423,6 +428,7 @@ public struct SwiftDriverPayload: Serializable, TaskPayload, Encodable {
         self.ruleInfo = ruleInfo
         self.isUsingWholeModuleOptimization = isUsingWholeModuleOptimization
         self.casOptions = casOptions
+        self.enablePrescanCaching = enablePrescanCaching
         self.reportRequiredTargetDependencies = reportRequiredTargetDependencies
         self.linkerResponseFilePath = linkerResponseFilePath
         self.linkerResponseFileFormat = linkerResponseFileFormat
@@ -430,10 +436,11 @@ public struct SwiftDriverPayload: Serializable, TaskPayload, Encodable {
         self.verifyScannerDependencies = verifyScannerDependencies
         self.scannerDiagnosticsOutputPath = scannerDiagnosticsOutputPath
         self.diagnosticAttachmentInfo = diagnosticAttachmentInfo
+        self.casFSIngestion = casFSIngestion
     }
 
     public init(from deserializer: any Deserializer) throws {
-        try deserializer.beginAggregate(23)
+        try deserializer.beginAggregate(25)
         self.uniqueID = try deserializer.deserialize()
         self.compilerLocation = try deserializer.deserialize()
         self.compilerVersion = try deserializer.deserialize()
@@ -450,6 +457,7 @@ public struct SwiftDriverPayload: Serializable, TaskPayload, Encodable {
         self.ruleInfo = try deserializer.deserialize()
         self.isUsingWholeModuleOptimization = try deserializer.deserialize()
         self.casOptions = try deserializer.deserialize()
+        self.enablePrescanCaching = try deserializer.deserialize()
         self.reportRequiredTargetDependencies = try deserializer.deserialize()
         self.linkerResponseFilePath = try deserializer.deserialize()
         self.linkerResponseFileFormat = try deserializer.deserialize()
@@ -457,10 +465,11 @@ public struct SwiftDriverPayload: Serializable, TaskPayload, Encodable {
         self.verifyScannerDependencies = try deserializer.deserialize()
         self.scannerDiagnosticsOutputPath = try deserializer.deserialize()
         self.diagnosticAttachmentInfo = try deserializer.deserialize()
+        self.casFSIngestion = try deserializer.deserialize()
     }
 
     public func serialize<T>(to serializer: T) where T : Serializer {
-        serializer.serializeAggregate(23) {
+        serializer.serializeAggregate(25) {
             serializer.serialize(self.uniqueID)
             serializer.serialize(self.compilerLocation)
             serializer.serialize(self.compilerVersion)
@@ -477,6 +486,7 @@ public struct SwiftDriverPayload: Serializable, TaskPayload, Encodable {
             serializer.serialize(self.ruleInfo)
             serializer.serialize(self.isUsingWholeModuleOptimization)
             serializer.serialize(self.casOptions)
+            serializer.serialize(self.enablePrescanCaching)
             serializer.serialize(self.reportRequiredTargetDependencies)
             serializer.serialize(self.linkerResponseFilePath)
             serializer.serialize(self.linkerResponseFileFormat)
@@ -484,7 +494,72 @@ public struct SwiftDriverPayload: Serializable, TaskPayload, Encodable {
             serializer.serialize(self.verifyScannerDependencies)
             serializer.serialize(self.scannerDiagnosticsOutputPath)
             serializer.serialize(self.diagnosticAttachmentInfo)
+            serializer.serialize(self.casFSIngestion)
         }
+    }
+
+    public func computeGlobalSignature(fs: any FSProxy, workingDirectory: Path) throws -> ByteString {
+        // FIXME: Sink the logic of this into the swift-driver
+
+        // FIXME: This is lacking a systematic way to compute an identity key for the SDK.
+        // It is only sound if Xcode is used and it is on a path that changes based on the identity of Xcode's contents.
+        //   * Need to figure out a systematic way to get identity for the Xcode SDK or fail the build if it cannot be determined.
+        //   * Need to figure out a way to get identify for the SDK of non-mac platforms that don't use Xcode.
+
+        var commandLine = try ResponseFiles.expandResponseFiles(
+            self.commandLine,
+            fileSystem: fs,
+            relativeTo: workingDirectory,
+            format: .unixShellQuotedSpaceSeparated,
+        )
+        // Exclude options that don't affect the compilation outputs. The local CAS path in particular
+        // differs across machines, and including it would prevent sharing planned builds via a remote cache.
+        for option in ["-num-threads", "-cas-path"] {
+            while let idx = commandLine.firstIndex(of: option), idx + 1 < commandLine.endIndex {
+                commandLine.removeSubrange(idx...(idx + 1))
+            }
+        }
+        let serializer = MsgPackSerializer()
+        serializer.serializeAggregate(10) {
+            // A different compiler may plan the build differently.
+            serializer.serialize(self.compilerVersion)
+            serializer.serialize(self.moduleName)
+            serializer.serialize(self.outputPrefix)
+            serializer.serialize(self.variant)
+            serializer.serialize(self.cohortArchitectures)
+            serializer.serialize(self.eagerCompilationEnabled)
+            serializer.serialize(self.explicitModulesEnabled)
+            serializer.serialize(commandLine)
+            serializer.serialize(self.ruleInfo)
+            serializer.serialize(self.isUsingWholeModuleOptimization)
+        }
+        return serializer.byteString
+    }
+}
+
+/// Describes the CASFS root ingestion that is performed before planning the driver.
+public struct SwiftCASFSIngestionInfo: Serializable, Encodable, Sendable {
+    /// The JSON file containing the `CASFSDescription` to ingest.
+    public let jsonInput: Path
+    /// The file to write the CASFS root ID to.
+    public let casFSRootPath: Path
+
+    public init(jsonInput: Path, casFSRootPath: Path) {
+        self.jsonInput = jsonInput
+        self.casFSRootPath = casFSRootPath
+    }
+
+    public func serialize<T: Serializer>(to serializer: T) {
+        serializer.serializeAggregate(2) {
+            serializer.serialize(jsonInput)
+            serializer.serialize(casFSRootPath)
+        }
+    }
+
+    public init(from deserializer: any Deserializer) throws {
+        try deserializer.beginAggregate(2)
+        self.jsonInput = try deserializer.deserialize()
+        self.casFSRootPath = try deserializer.deserialize()
     }
 }
 
@@ -502,6 +577,11 @@ extension SwiftDriverPayload {
     public var indexExplicitModuleInfoPath: Path? {
         guard explicitModulesEnabled else { return nil }
         return tempDirPath.join("\(moduleName)-\(slice).index-explicit-modules.json")
+    }
+
+    /// Where planning keeps the sidecar of the previous preparation until the new one is published.
+    package func previousIndexExplicitModuleInfoPath(for path: Path) -> Path {
+        Path(path.str + ".previous")
     }
 }
 
@@ -616,6 +696,19 @@ public struct SwiftBlocklists: Sendable {
 
     var caching: CachingBlockList? = nil
 
+    public struct InternalBridgingHeaderBlockList : ProjectFailuresBlockList, Codable, Sendable {
+        /// The product type identifiers of targets that default to importing their bridging header as internal. Product types based on a listed product type are also included.
+        let ProductTypes: [String]
+
+        /// A blocklist of project names that do not support importing their bridging header as internal.
+        let KnownFailures: [String]
+
+        /// A blocklist of module names that do not support importing their bridging header as internal.
+        let Modules: [String]
+    }
+
+    var internalBridgingHeader: InternalBridgingHeaderBlockList? = nil
+
     public struct LanguageFeatureEnablementInfo : Codable, Sendable {
         public struct Feature: Codable, Sendable {
             public enum DiagnosticLevel: String, Codable, Sendable {
@@ -685,6 +778,7 @@ public struct DiscoveredSwiftCompilerToolSpecInfo: DiscoveredCommandLineToolSpec
         case constExtractCompleteMetadata = "const-extract-complete-metadata"
         case emitPackageModuleInterfacePath = "emit-package-module-interface-path"
         case compilationCaching = "compilation-caching"
+        case dependencyScanCASSandbox = "dependency-scan-cas-sandbox"
         case Isystem = "Isystem"
         case apiDigesterXcc = "api-digester-Xcc"
         case debugInfoExplicitDependency = "debug-info-explicit-dependency"
@@ -1099,6 +1193,29 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
         return true
     }
 
+    /// Returns whether the bridging header should be imported as internal. If the toolchain provides an internal bridging header blocklist, targets conforming to the product types it lists default to an internal bridging header unless their project or module is on the blocklist. Both cases are diagnosed when the bridging header is not explicitly internal.
+    private func swiftBridgingHeaderIsInternal(_ cbc: CommandBuildContext, _ toolSpecInfo: DiscoveredSwiftCompilerToolSpecInfo, _ moduleName: String, _ delegate: any TaskGenerationDelegate) -> Bool {
+        if cbc.scope.evaluate(BuiltinMacros.SWIFT_BRIDGING_HEADER_IS_INTERNAL) {
+            return true
+        }
+        guard !cbc.scope.evaluate(BuiltinMacros.SWIFT_OBJC_BRIDGING_HEADER).isEmpty,
+              let blocklist = toolSpecInfo.blocklists.internalBridgingHeader,
+              let productType = cbc.producer.productType,
+              blocklist.ProductTypes.contains(where: { productType.conformsTo(identifier: $0) }) else {
+            return false
+        }
+        let isBlocked = blocklist.Modules.contains(moduleName) || blocklist.isProjectListed(cbc.producer, cbc.scope)
+        // Only diagnose once per target rather than once per architecture and variant.
+        if cbc.isPreferredArch && cbc.isNeutralVariant {
+            if isBlocked {
+                delegate.warning("Importing the bridging header as internal will become a requirement for \(productType.name) targets in the future; set 'SWIFT_BRIDGING_HEADER_IS_INTERNAL = YES'")
+            } else {
+                delegate.warning("The bridging header is imported as internal because public bridging headers are not supported in \(productType.name) targets; set 'SWIFT_BRIDGING_HEADER_IS_INTERNAL = YES' to silence this warning")
+            }
+        }
+        return !isBlocked
+    }
+
     private func diagnoseFeatureEnablement(_ cbc: CommandBuildContext, _ languageFeatureEnablementInfo: SwiftBlocklists.LanguageFeatureEnablementInfo, _ delegate: any TaskGenerationDelegate) {
         guard cbc.scope.evaluate(BuiltinMacros.SWIFT_ENABLE_LANGUAGE_FEATURE_ENABLEMENT_DIAGNOSTICS) else {
             return
@@ -1205,6 +1322,8 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
             diagnoseFeatureEnablement(cbc, languageFeatureEnablementInfo, delegate)
         }
 
+        let bridgingHeaderIsInternal = swiftBridgingHeaderIsInternal(cbc, toolSpecInfo, moduleName, delegate)
+
         let swiftc = toolSpecInfo.toolPath
 
         let disableCompilationForStaticLinking: Bool = {
@@ -1212,6 +1331,8 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
             guard !guids.isEmpty else { return false }
             return !cbc.producer.dynamicallyBuildingTargetGuids.isDisjoint(with: guids)
         }()
+
+        let enablePrescanCaching = cbc.scope.evaluate(BuiltinMacros.SWIFT_ENABLE_PRESCAN_CACHING)
 
         /// Utility function to construct the task, since we may construct multiple tasks for slightly different purposes.
         /// - parameter compilationMode: Whether the sources should be compiled to object files by this command.
@@ -1244,6 +1365,14 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
                 default:
                     return nil
                 }
+            }
+
+            // Add args to load macro plugins.
+            if let macroDescriptors = cbc.producer.swiftMacroImplementationDescriptors {
+                // Sort to ensure deterministic input ordering in the build description, since the descriptors come from a Set.
+                let sortedDescriptors = macroDescriptors.sorted()
+                args.append(contentsOf: sortedDescriptors.flatMap(\.compilerFlags))
+                extraInputPaths.append(contentsOf: sortedDescriptors.map(\.path))
             }
 
             await args.append(contentsOf: self.commandLineFromOptions(cbc, delegate, optionContext: discoveredCommandLineToolSpecInfo(cbc.producer, cbc.scope, delegate), lookup: chainLookupFuncs(overrideLookup, lookup ?? { _ in nil })).map(\.asString))
@@ -1284,14 +1413,6 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
             // Add -F for the sparse SDK framework search paths.
             let sparseSDKSearchPaths = GCCCompatibleCompilerSpecSupport.sparseSDKFrameworkSearchPathArguments(cbc.producer.sparseSDKs, frameworkSearchPaths.frameworkSearchPaths, asSeparateArguments: true)
             args += sparseSDKSearchPaths.searchPathArguments(for: self, scope: cbc.scope)
-
-            // Add args to load macro plugins.
-            if let macroDescriptors = cbc.producer.swiftMacroImplementationDescriptors {
-                // Sort to ensure deterministic input ordering in the build description, since the descriptors come from a Set.
-                let sortedDescriptors = macroDescriptors.sorted()
-                args.append(contentsOf: sortedDescriptors.flatMap(\.compilerFlags))
-                extraInputPaths.append(contentsOf: sortedDescriptors.map(\.path))
-            }
 
             // Note that we currently do not support per-file compiler flags for Swift.  <rdar://problem/19527999>
 
@@ -1439,8 +1560,11 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
 
             // Set the parallelism level for the compile.
             let (isUsingWholeModuleOptimization, isWMOSettingExplicitlyEnabled) = Self.shouldUseWholeModuleOptimization(for: cbc.scope)
-            let useParallelWholeModuleOptimization = cbc.scope.evaluate(BuiltinMacros.SWIFT_USE_PARALLEL_WHOLE_MODULE_OPTIMIZATION)
-            if isUsingWholeModuleOptimization && useParallelWholeModuleOptimization {
+            let useParallelWholeModuleOptimization = shouldUseParallelWholeModuleOptimization(for: cbc.scope)
+            let emitSingleObjectFile = shouldEmitSingleObjectFile(for: cbc.scope)
+            if emitSingleObjectFile {
+                // Omit -num-threads so the driver produces a single object file for the module.
+            } else if isUsingWholeModuleOptimization && useParallelWholeModuleOptimization {
                 args.append(contentsOf: ["-num-threads", "\(SwiftCompilerSpec.parallelismLevel)"])
             } else if isUsingWholeModuleOptimization {
                 // Use -num-threads 1 to ensure the driver produces per-file object outputs
@@ -1573,6 +1697,31 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
             } catch {
                 delegate.error(error.localizedDescription)
                 casOptions = nil
+            }
+
+            let enabledCASSandbox: Bool = { () -> Bool in
+                guard cbc.producer.hasEnabledCASSandbox else {
+                    return false
+                }
+                guard casOptions != nil else {
+                    delegate.error("\(BuiltinMacros.SWIFT_ENABLE_CAS_SANDBOX.name) requires enabling compilation caching (\(BuiltinMacros.SWIFT_ENABLE_COMPILE_CACHE.name)=YES)")
+                    return false
+                }
+                return true
+            }()
+            if enabledCASSandbox {
+                // FIXME: On linux the compiler gets `-sdk /`, need to deal with escaping the required contents.
+                for pathToEscape in [BuiltinMacros.DEVELOPER_DIR, BuiltinMacros.MODULE_CACHE_DIR] {
+                    let path = cbc.scope.evaluate(pathToEscape)
+                    guard !path.isEmpty && !path.isRoot else {
+                        continue
+                    }
+                    args += ["-cas-fs-escape", path.str]
+                }
+            }
+
+            if enablePrescanCaching && !enabledCASSandbox {
+                delegate.error("Enabling \(BuiltinMacros.SWIFT_ENABLE_PRESCAN_CACHING.name) also requires: \(BuiltinMacros.SWIFT_ENABLE_CAS_SANDBOX.name)")
             }
 
             if await shouldEmitMakeStyleDependencies(cbc.producer, cbc.scope, delegate: delegate) {
@@ -1840,7 +1989,7 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
             let objcBridgingHeaderPath = Path(cbc.scope.evaluate(BuiltinMacros.SWIFT_OBJC_BRIDGING_HEADER))
             if !objcBridgingHeaderPath.isEmpty {
                 let objcBridgingHeaderNode = delegate.createNode(objcBridgingHeaderPath)
-                let flag = cbc.scope.evaluate(BuiltinMacros.SWIFT_BRIDGING_HEADER_IS_INTERNAL)
+                let flag = bridgingHeaderIsInternal
                     ? "-internal-import-bridging-header"
                     : "-import-objc-header"
                 args += [flag, objcBridgingHeaderNode.path.normalize().str]
@@ -1853,7 +2002,9 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
             }
 
             // If this target defines additional (not Swift only) module content, then tell Swift to implicitly import it.
+            let importsUnderlyingModule: Bool
             if let moduleInfo = cbc.producer.moduleInfo, !moduleInfo.forSwiftOnly {
+                importsUnderlyingModule = true
                 args.append("-import-underlying-module")
 
                 // If the target isn't Swift only, but does export API, then we need to also use the extra VFS overlay that is used to "hide" the generated API file when doing the Swift compile.
@@ -1868,10 +2019,13 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
                     extraInputPaths.append(vfsNode.path)
                 }
 
+            } else {
+                importsUnderlyingModule = false
             }
 
             // Add the working directory.
-            args.append(contentsOf: ["-working-directory", compilerWorkingDirectory(cbc).str])
+            let compilerCWD = compilerWorkingDirectory(cbc)
+            args.append(contentsOf: ["-working-directory", compilerCWD.str])
 
             // Add product type specific options.
             // Currently only the test product types use this.
@@ -1933,6 +2087,11 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
                     // Compute and add the output object file path.
                     outputs.append(SwiftCompilerSpec.objectFileDirOutput(input: input, moduleBaseNameSuffix: compilationMode.moduleBaseNameSuffix,
                                                                          objectFileDir: objectFileDir, fileExtension: ".\(outputObjectExtension)"))
+                }
+                if emitSingleObjectFile {
+                    // Must match the global object entry in the output file map.
+                    let primarySwiftBaseName = cbc.scope.evaluate(BuiltinMacros.TARGET_NAME) + compilationMode.moduleBaseNameSuffix + "-primary"
+                    outputs = [objectFileDir.join(primarySwiftBaseName + ".\(outputObjectExtension)")]
                 }
                 return (inputs, outputs)
             }()
@@ -2011,11 +2170,17 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
                 // FIXME: Can we simplify this to not require the full macro scope?
                 //
                 // If using whole module optimization then we use the -primary.d file as the dependency file.
+                // If not compiling sources (e.g. module-only generation), compile jobs are skipped so we use
+                // the emit-module dependency file (-emit-module.d).
+                // Otherwise, if not using WMO, we use the first .d file as all are the same.
                 if let outputPath = objectOutputPaths.first {
+                    let primarySwiftBaseName = cbc.scope.evaluate(BuiltinMacros.TARGET_NAME) + compilationMode.moduleBaseNameSuffix + "-primary"
                     if Self.shouldUseWholeModuleOptimization(for: cbc.scope).result {
-                        let primarySwiftBaseName = cbc.scope.evaluate(BuiltinMacros.TARGET_NAME) + compilationMode.moduleBaseNameSuffix + "-primary"
                         let dependenciesFilePath = outputPath.dirname.join(primarySwiftBaseName + ".d")
                         return dependenciesFilePath
+                    } else if !compilationMode.compileSources {
+                        let emitModuleDependenciesFilePath = outputPath.dirname.join(primarySwiftBaseName + "-emit-module.d")
+                        return emitModuleDependenciesFilePath
                     } else {
                         // if not using WMO, we use the first .d file as all are the same
                         return outputPath.dirname.join(outputPath.basenameWithoutSuffix + ".d")
@@ -2058,6 +2223,68 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
                 extraOutputPaths.append(moduleWrapOutput)
             }
 
+            var casFSIngestion: SwiftCASFSIngestionInfo? = nil
+            if enabledCASSandbox {
+                // Include in the sandbox the header search paths that point to source directories only, ignore search paths that are out of sources,
+                // like paths to the SDK or build directory. The SDK is escaped from the sandbox and inputs from the build directory are identified
+                // via the build graph only so that we get just the deterministic dependencies of the compilation.
+                let absSourceRoots: [AbsolutePath] = ([cbc.scope.evaluate(BuiltinMacros.SOURCE_ROOT)] + cbc.scope.evaluate(BuiltinMacros.CAS_SANDBOX_OTHER_SOURCE_DIRS).map(Path.init)).compactMap { sourceRoot -> AbsolutePath? in
+                    guard !sourceRoot.isEmpty && !sourceRoot.isRoot else {
+                        return nil
+                    }
+                    guard let absSourceRoot = AbsolutePath(sourceRoot) else {
+                        return nil
+                    }
+                    return absSourceRoot
+                }
+                let searchPaths: [Path] = { () -> [Path] in
+                    return headerSearchPaths.searchPathEntries.compactMap { entry in
+                        guard case .userHeaderSearchPath(let path) = entry else {
+                            return nil
+                        }
+                        let absPath: AbsolutePath
+                        if path.isAbsolute {
+                            absPath = AbsolutePath(path)!
+                        } else {
+                            absPath = AbsolutePath(compilerCWD.join(path))!
+                        }
+                        guard absSourceRoots.contains(where: { $0.path.isAncestorOrEqual(of: absPath.path) }) else {
+                            return nil
+                        }
+                        return absPath.path
+                    }
+                }()
+                let searchPathIngestionDepth: Int = {
+                    let depthStr = cbc.scope.evaluate(BuiltinMacros.CAS_SANDBOX_SEARCH_PATH_INGESTION_DEPTH)
+                    guard !depthStr.isEmpty else {
+                        return CASFSDescription.defaultSearchPathIngestionDepth
+                    }
+                    guard let depth = Int(depthStr), depth >= 0 else {
+                        delegate.error("\(BuiltinMacros.CAS_SANDBOX_SEARCH_PATH_INGESTION_DEPTH.name) must be a non-negative integer, found '\(depthStr)'")
+                        return CASFSDescription.defaultSearchPathIngestionDepth
+                    }
+                    return depth
+                }()
+                // FIXME: This task and output doesn't need to be per-arch, it should be setup once for the module.
+                let allInputPaths = (inputPaths + extraInputPaths).map(delegate.createNode(_:))
+                let casFSJsonPath = objectFileDir.join("casfs-compilation-inputs.json")
+                cbc.producer.ingestCASFSRootSpec.constructCASFSJsonTask(
+                    CommandBuildContext(producer: cbc.producer, scope: cbc.scope, inputs: [], output: casFSJsonPath),
+                    delegate,
+                    paths: allInputPaths,
+                    roots: ([cbc.producer.casSandboxDependenciesNode] + (importsUnderlyingModule ? [cbc.producer.casSandboxObjCOutputsNode] : [])).compactMap{$0},
+                    searchPaths: searchPaths,
+                    searchPathIngestionDepth: searchPathIngestionDepth,
+                )
+
+                let casFSRootPath = objectFileDir.join("casfs-compilation-inputs.casfsid")
+                // The ingestion is performed as a dynamic task right before the driver planning, so that it
+                // runs whenever the driver needs to run, including when only the dependencies have changed.
+                casFSIngestion = SwiftCASFSIngestionInfo(jsonInput: casFSJsonPath, casFSRootPath: casFSRootPath)
+                extraInputPaths.append(casFSJsonPath)
+                args += ["-scanner-cas-fs", "@\(casFSRootPath.str)"]
+            }
+
             // The rule info.
             //
             // NOTE: If this changes, be sure to update the log parser to extract the variant and arch properly.
@@ -2085,7 +2312,7 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
                 previewPayload: previewPayload,
                 localizationPayload: localizationPayload,
                 numExpectedCompileSubtasks: isUsingWholeModuleOptimization ? 1 : cbc.inputs.count,
-                driverPayload: await driverPayload(uniqueID: String(args.hashValue), scope: cbc.scope, delegate: delegate, compilationMode: compilationMode, isUsingWholeModuleOptimization: isUsingWholeModuleOptimization, args: args, tempDirPath: objectFileDir, explicitModulesTempDirPath: cbc.scope.evaluate(BuiltinMacros.SWIFT_EXPLICIT_MODULES_OUTPUT_PATH), variant: variant, slice: arch + compilationMode.moduleBaseNameSuffix, cohortArchs: cohortArchs, commandLine: ["builtin-SwiftDriver", "--"] + args, ruleInfo: ruleInfo(compilationMode.ruleNameIntegratedDriver, targetName), casOptions: casOptions, scannerDiagnosticsOutputPath: scannerDiagnosticsPath, linkerResponseFilePath: moduleLinkerArgsPath),
+                driverPayload: await driverPayload(uniqueID: String(args.hashValue), scope: cbc.scope, delegate: delegate, compilationMode: compilationMode, isUsingWholeModuleOptimization: isUsingWholeModuleOptimization, args: args, tempDirPath: objectFileDir, explicitModulesTempDirPath: cbc.scope.evaluate(BuiltinMacros.SWIFT_EXPLICIT_MODULES_OUTPUT_PATH), variant: variant, slice: arch + compilationMode.moduleBaseNameSuffix, cohortArchs: cohortArchs, commandLine: ["builtin-SwiftDriver", "--"] + args, ruleInfo: ruleInfo(compilationMode.ruleNameIntegratedDriver, targetName), casOptions: casOptions, scannerDiagnosticsOutputPath: scannerDiagnosticsPath, linkerResponseFilePath: moduleLinkerArgsPath, casFSIngestion: casFSIngestion),
                 previewStyle: cbc.scope.previewStyle
             )
 
@@ -2250,9 +2477,10 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
                 }
 
                 let orderingOptions: TaskOrderingOptions = [.compilationRequirement, .blockedByTargetHeaders]
+                let orderingOptionsAndCASSandbox: TaskOrderingOptions = orderingOptions.union(.outputForCASSandbox)
 
                 // Copy the main .swiftmodule file.
-                await copyModuleContent(moduleFilePath, additionalTaskOrderingOptions: orderingOptions)
+                await copyModuleContent(moduleFilePath, additionalTaskOrderingOptions: orderingOptionsAndCASSandbox)
 
                 if let abiDescriptorPath {
                     // Copy the ABI descriptor to the module dir.
@@ -2266,17 +2494,17 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
 
                 // Copy the generated .swiftinterface file.
                 if let moduleInterfaceFilePath {
-                    await copyModuleContent(moduleInterfaceFilePath, additionalTaskOrderingOptions: orderingOptions)
+                    await copyModuleContent(moduleInterfaceFilePath, additionalTaskOrderingOptions: orderingOptionsAndCASSandbox)
                 }
 
                 // Copy the generated .private.swiftinterface file.
                 if let privateModuleInterfaceFilePath {
-                    await copyModuleContent(privateModuleInterfaceFilePath, additionalTaskOrderingOptions: orderingOptions)
+                    await copyModuleContent(privateModuleInterfaceFilePath, additionalTaskOrderingOptions: orderingOptionsAndCASSandbox)
                 }
 
                 // Copy the generated .package.swiftinterface file.
                 if let packageModuleInterfaceFilePath {
-                    await copyModuleContent(packageModuleInterfaceFilePath, additionalTaskOrderingOptions: orderingOptions)
+                    await copyModuleContent(packageModuleInterfaceFilePath, additionalTaskOrderingOptions: orderingOptionsAndCASSandbox)
                 }
 
                 // Copy the generated .swiftdoc file.
@@ -2305,7 +2533,7 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
             }
         }
 
-        func driverPayload(uniqueID: String, scope: MacroEvaluationScope, delegate: any TaskGenerationDelegate, compilationMode: SwiftCompilationMode, isUsingWholeModuleOptimization: Bool, args: [String], tempDirPath: Path, explicitModulesTempDirPath: Path, variant: String, slice: String, cohortArchs: [String], commandLine: [String], ruleInfo: [String], casOptions: CASOptions?, scannerDiagnosticsOutputPath: Path?, linkerResponseFilePath: Path?) async -> SwiftDriverPayload? {
+        func driverPayload(uniqueID: String, scope: MacroEvaluationScope, delegate: any TaskGenerationDelegate, compilationMode: SwiftCompilationMode, isUsingWholeModuleOptimization: Bool, args: [String], tempDirPath: Path, explicitModulesTempDirPath: Path, variant: String, slice: String, cohortArchs: [String], commandLine: [String], ruleInfo: [String], casOptions: CASOptions?, scannerDiagnosticsOutputPath: Path?, linkerResponseFilePath: Path?, casFSIngestion: SwiftCASFSIngestionInfo?) async -> SwiftDriverPayload? {
             guard integratedDriverEnabled(scope: scope) else {
                 return nil
             }
@@ -2325,7 +2553,7 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
             let verifyScannerDependencies = explicitModuleBuildEnabled && cbc.scope.evaluate(BuiltinMacros.SWIFT_DEPENDENCY_REGISTRATION_MODE) == .verifySwiftDependencyScanner
             let diagnosticAttachmentInfo = LibclangDiagnosticAttachmentInfo.attachmentInfo(scope: scope)
 
-            return SwiftDriverPayload(uniqueID: uniqueID, compilerLocation: compilerLocation, compilerVersion: toolSpecInfo.swiftTag.description, moduleName: scope.evaluate(BuiltinMacros.SWIFT_MODULE_NAME), outputPrefix: scope.evaluate(BuiltinMacros.TARGET_NAME) + compilationMode.moduleBaseNameSuffix, tempDirPath: tempDirPath, explicitModulesTempDirPath: explicitModulesTempDirPath, variant: variant, slice: slice, cohortArchitectures: cohortArchs, eagerCompilationEnabled: eagerCompilationEnabled(args: args, scope: scope, compilationMode: compilationMode, isUsingWholeModuleOptimization: isUsingWholeModuleOptimization), explicitModulesEnabled: explicitModuleBuildEnabled, commandLine: commandLine, ruleInfo: ruleInfo, isUsingWholeModuleOptimization: isUsingWholeModuleOptimization, casOptions: casOptions, reportRequiredTargetDependencies: scope.evaluate(BuiltinMacros.DIAGNOSE_MISSING_TARGET_DEPENDENCIES), linkerResponseFilePath: linkerResponseFilePath, linkerResponseFileFormat: cbc.scope.evaluate(BuiltinMacros.LINKER_RESPONSE_FILE_FORMAT), dependencyFilteringRootPath: cbc.producer.sdk?.path, verifyScannerDependencies: verifyScannerDependencies, scannerDiagnosticsOutputPath: scannerDiagnosticsOutputPath, diagnosticAttachmentInfo: diagnosticAttachmentInfo)
+            return SwiftDriverPayload(uniqueID: uniqueID, compilerLocation: compilerLocation, compilerVersion: toolSpecInfo.swiftTag, moduleName: scope.evaluate(BuiltinMacros.SWIFT_MODULE_NAME), outputPrefix: scope.evaluate(BuiltinMacros.TARGET_NAME) + compilationMode.moduleBaseNameSuffix, tempDirPath: tempDirPath, explicitModulesTempDirPath: explicitModulesTempDirPath, variant: variant, slice: slice, cohortArchitectures: cohortArchs, eagerCompilationEnabled: eagerCompilationEnabled(args: args, scope: scope, compilationMode: compilationMode, isUsingWholeModuleOptimization: isUsingWholeModuleOptimization), explicitModulesEnabled: explicitModuleBuildEnabled, commandLine: commandLine, ruleInfo: ruleInfo, isUsingWholeModuleOptimization: isUsingWholeModuleOptimization, casOptions: casOptions, enablePrescanCaching: enablePrescanCaching, reportRequiredTargetDependencies: scope.evaluate(BuiltinMacros.DIAGNOSE_MISSING_TARGET_DEPENDENCIES), linkerResponseFilePath: linkerResponseFilePath, linkerResponseFileFormat: cbc.scope.evaluate(BuiltinMacros.LINKER_RESPONSE_FILE_FORMAT), dependencyFilteringRootPath: cbc.producer.sdk?.path, verifyScannerDependencies: verifyScannerDependencies, scannerDiagnosticsOutputPath: scannerDiagnosticsOutputPath, diagnosticAttachmentInfo: diagnosticAttachmentInfo, casFSIngestion: casFSIngestion)
         }
 
         func constructSwiftResponseFileTask(path: Path) {
@@ -2741,7 +2969,7 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
     /// The `result` component will be true if the WMO is explicitly enabled or if we're building for API. The 'isExplicitlyEnabled' component will be true if the 'result' is true *because* WMO is explicitly enabled.
     public static func shouldUseWholeModuleOptimization(for scope: MacroEvaluationScope) -> (result: Bool, isExplicitlyEnabled: Bool) {
         let isForAPI = scope.evaluate(BuiltinMacros.INSTALLAPI_MODE_ENABLED)
-        let isForEmbeddedSwift = scope.evaluate(BuiltinMacros.SWIFT_ENABLE_EMBEDDED) || scope.evaluate(BuiltinMacros.OTHER_SWIFT_FLAGS).contains(["-enable-experimental-feature", "Embedded"])
+        let isForEmbeddedSwift = isEmbeddedSwiftEnabled(scope)
         let isExplicitlyEnabled =
             scope.evaluate(BuiltinMacros.SWIFT_WHOLE_MODULE_OPTIMIZATION) ||
             (scope.evaluate(BuiltinMacros.SWIFT_COMPILATION_MODE) == "wholemodule") ||
@@ -2750,9 +2978,41 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
         return (isEnabled, isExplicitlyEnabled)
     }
 
+    /// Whether embedded Swift is enabled.
+    static func isEmbeddedSwiftEnabled(_ scope: MacroEvaluationScope) -> Bool {
+        return scope.evaluate(BuiltinMacros.SWIFT_ENABLE_EMBEDDED) || scope.evaluate(BuiltinMacros.OTHER_SWIFT_FLAGS).contains(["-enable-experimental-feature", "Embedded"])
+    }
+
+    /// Whether the compile passes `-index-store-path`, either via `SWIFT_INDEX_STORE_ENABLE` or via `OTHER_SWIFT_FLAGS`.
+    func isIndexingWhileBuilding(_ scope: MacroEvaluationScope) -> Bool {
+        if scope.evaluate(BuiltinMacros.OTHER_SWIFT_FLAGS).contains("-index-store-path") {
+            return true
+        }
+        guard scope.evaluate(BuiltinMacros.SWIFT_INDEX_STORE_ENABLE), let option = flattenedBuildOptions[BuiltinMacros.SWIFT_INDEX_STORE_ENABLE.name] else {
+            return false
+        }
+        return option.condition?.evaluateAsBoolean(scope) ?? true
+    }
+
+    /// Whether the compile produces a single object file for the whole module, which embedded Swift (always built with WMO) does so that LLVM can optimize the entire module at once,
+    /// unless when indexing while building, since the frontend records an index unit per source file only when there is an output per source file.
+    func shouldEmitSingleObjectFile(for scope: MacroEvaluationScope) -> Bool {
+        return Self.isEmbeddedSwiftEnabled(scope) && !isIndexingWhileBuilding(scope)
+    }
+
+    /// Whether WMO compiles in parallel, producing one object file per source file. Never when emitting a single object file.
+    func shouldUseParallelWholeModuleOptimization(for scope: MacroEvaluationScope) -> Bool {
+        return scope.evaluate(BuiltinMacros.SWIFT_USE_PARALLEL_WHOLE_MODULE_OPTIMIZATION) && !shouldEmitSingleObjectFile(for: scope)
+    }
+
     public static func shouldPlanAutolinkExtractTask(scope: MacroEvaluationScope, producer: any CommandProducer) -> Bool {
         let containsSwiftSources = (producer.configuredTarget?.target as? StandardTarget)?.sourcesBuildPhase?.containsSwiftSources(producer, producer, scope, producer.filePathResolver) == true
-        let platformRequiresAutolinkExtract = scope.evaluate(BuiltinMacros.PLATFORM_REQUIRES_SWIFT_AUTOLINK_EXTRACT)
+        // Bare-metal triples such as armv7em-apple-none-macho get a placeholder SDK variant with no
+        // Apple build-version platform, so the SDK-level image format falls back to ELF. SwiftPM conveys
+        // the real object format through LLVM_TARGET_TRIPLE_SUFFIX ("-macho"), and Mach-O objects carry
+        // no autolink section for swift-autolink-extract to read.
+        let isMachOEnvironment = scope.evaluate(BuiltinMacros.LLVM_TARGET_TRIPLE_SUFFIX) == "-macho"
+        let platformRequiresAutolinkExtract = scope.evaluate(BuiltinMacros.PLATFORM_REQUIRES_SWIFT_AUTOLINK_EXTRACT) && !isMachOEnvironment
         let linkerOutputTypeRequiresAutolinkExtract = scope.evaluate(BuiltinMacros.MACH_O_TYPE) != "mh_object"
         return containsSwiftSources && platformRequiresAutolinkExtract && linkerOutputTypeRequiresAutolinkExtract
     }
@@ -3065,7 +3325,8 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
         }
         else {
             // If we are using WMO, then we still generate entries for each file, but several files move to the global map since the source files aren't processed individually.
-            let useParallelWMO = cbc.scope.evaluate(BuiltinMacros.SWIFT_USE_PARALLEL_WHOLE_MODULE_OPTIMIZATION)
+            let emitSingleObjectFile = shouldEmitSingleObjectFile(for: cbc.scope)
+            let useParallelWMO = shouldUseParallelWholeModuleOptimization(for: cbc.scope)
             for input in cbc.inputs {
                 var (objectFilePath, fileMapEntry) = createCommonFileEntry(input: input)
                 let objectFilePrefix = objectFilePath.basenameWithoutSuffix
@@ -3118,6 +3379,13 @@ public final class SwiftCompilerSpec : CompilerSpec, SpecIdentifierType, SwiftDi
                 // The PCH file path for generatePCH job.
                 let bridgingHeaderPCHPath = objectFileDir.join(primarySwiftBaseName + "-Bridging-header.pch")
                 fileMapEntry.pch = bridgingHeaderPCHPath.str
+
+                // Without -num-threads, the driver uses the global entry for the object file.
+                if emitSingleObjectFile && compilationMode.compileSources {
+                    fileMapEntry.object = objectFileDir.join(primarySwiftBaseName + ".o").str
+                    fileMapEntry.llvmBitcode = objectFileDir.join(primarySwiftBaseName + ".bc").str
+                    fileMapEntry.indexUnitOutputPath = indexObjectFileDir?.join(primarySwiftBaseName + ".o").str
+                }
 
                 let targetName = cbc.scope.evaluate(BuiltinMacros.TARGET_NAME)
 
@@ -3749,6 +4017,7 @@ public func discoveredSwiftCompilerInfo(_ producer: any CommandProducer, _ deleg
         blocklists.explicitModules = getBlocklist(type: SwiftBlocklists.ExplicitModulesInfo.self, toolchainFilename: "swift-explicit-modules.json", delegate: delegate)
         blocklists.installAPILazyTypecheck = getBlocklist(type: SwiftBlocklists.InstallAPILazyTypecheckInfo.self, toolchainFilename: "swift-lazy-installapi.json", delegate: delegate)
         blocklists.caching = getBlocklist(type: SwiftBlocklists.CachingBlockList.self, toolchainFilename: "swift-caching.json", delegate: delegate)
+        blocklists.internalBridgingHeader = getBlocklist(type: SwiftBlocklists.InternalBridgingHeaderBlockList.self, toolchainFilename: "swift-internal-bridging-header.json", delegate: delegate)
         blocklists.languageFeatureEnablement = getBlocklist(type: SwiftBlocklists.LanguageFeatureEnablementInfo.self, toolchainFilename: "swift-language-feature-enablement.json", delegate: delegate)
         return DiscoveredSwiftCompilerToolSpecInfo(toolPath: toolPath, swiftVersion: swiftVersion, swiftTag: swiftTag, swiftABIVersion: swiftABIVersion, blocklists: blocklists, toolFeatures: getFeatures(at: toolPath))
     })

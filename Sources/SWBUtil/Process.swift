@@ -11,18 +11,21 @@
 //===----------------------------------------------------------------------===//
 
 public import Foundation
-import SWBLibc
+public import SWBLibc
+import Synchronization
+
+#if canImport(Subprocess) && (!canImport(Darwin) || os(macOS))
+import Subprocess
+#endif
+
+#if canImport(System)
+public import System
+#else
+public import SystemPackage
+#endif
 
 #if os(Windows)
 public typealias pid_t = Int32
-#endif
-
-#if !canImport(Darwin)
-extension ProcessInfo {
-    public var isMacCatalystApp: Bool {
-        false
-    }
-}
 #endif
 
 #if (!canImport(Foundation.NSTask) || targetEnvironment(macCatalyst)) && canImport(Darwin)
@@ -64,7 +67,7 @@ public typealias Process = Foundation.Process
 #endif
 
 extension Process {
-    public static var hasUnsafeWorkingDirectorySupport: Bool {
+    fileprivate static var hasUnsafeWorkingDirectorySupport: Bool {
         get throws {
             switch try ProcessInfo.processInfo.hostOperatingSystem() {
             case .linux:
@@ -81,6 +84,18 @@ extension Process {
 
 extension Process {
     public static func getOutput(url: URL, arguments: [String], currentDirectoryURL: URL? = nil, environment: Environment? = nil, interruptible: Bool = true) async throws -> Processes.ExecutionResult {
+        #if canImport(Subprocess) && (!canImport(Darwin) || os(macOS))
+        let configuration = try Subprocess.Configuration(url: url, arguments: arguments, currentDirectoryURL: currentDirectoryURL, environment: environment, interruptible: interruptible)
+        let result = try await mapLaunchErrors(url: url, arguments: arguments, currentDirectoryURL: currentDirectoryURL, environment: environment) {
+            try await Subprocess.run(configuration, input: .none, output: .sequence, error: .sequence) { execution in
+                async let stdoutBytes = execution.standardOutput.collectData()
+                async let stderrBytes = execution.standardError.collectData()
+                return try await (stdoutBytes, stderrBytes)
+            }
+        }
+        try checkSubprocessCancellation()
+        return Processes.ExecutionResult(exitStatus: .init(result.terminationStatus), stdout: result.closureResult.0, stderr: result.closureResult.1)
+        #else
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
 
@@ -98,9 +113,20 @@ extension Process {
             return try await (stdoutData: stdoutData, stderrData: stderrData)
         }
         return Processes.ExecutionResult(exitStatus: exitStatus, stdout: Data(output.stdoutData), stderr: Data(output.stderrData))
+        #endif
     }
 
     public static func getMergedOutput(url: URL, arguments: [String], currentDirectoryURL: URL? = nil, environment: Environment? = nil, interruptible: Bool = true) async throws -> (exitStatus: Processes.ExitStatus, output: Data) {
+        #if canImport(Subprocess) && (!canImport(Darwin) || os(macOS))
+        let configuration = try Subprocess.Configuration(url: url, arguments: arguments, currentDirectoryURL: currentDirectoryURL, environment: environment, interruptible: interruptible)
+        let result = try await mapLaunchErrors(url: url, arguments: arguments, currentDirectoryURL: currentDirectoryURL, environment: environment) {
+            try await Subprocess.run(configuration, input: .none, output: .sequence, error: .combinedWithOutput) { execution in
+                try await execution.standardOutput.collectData()
+            }
+        }
+        try checkSubprocessCancellation()
+        return (.init(result.terminationStatus), result.closureResult)
+        #else
         let pipe = Pipe()
 
         // Extend the lifetime of the pipes to avoid file descriptors being closed until the AsyncStream is finished being consumed.
@@ -114,6 +140,7 @@ extension Process {
             try await stream.collect()
         }
         return (exitStatus: exitStatus, output: Data(output))
+        #endif
     }
 
     private static func _getOutput<T, U>(url: URL, arguments: [String], currentDirectoryURL: URL?, environment: Environment?, interruptible: Bool, setup: (Process) -> T, collect: @Sendable (T) async throws -> U) async throws -> (exitStatus: Processes.ExitStatus, output: U) {
@@ -204,11 +231,8 @@ public enum Processes: Sendable {
         private static let ntStatusSignalMask: DWORD = 0x3FFFFFFF
         /// NTSTATUS code used by llbuild when cancelling a process via TerminateProcess. Equivalent to Ctrl+C termination.
         static let statusControlCExit: Int32 = Int32(bitPattern: 0xC000013A & ntStatusSignalMask)
-        #endif
 
-        public init?(rawValue: Int32) {
-            #if os(Windows)
-            let dwExitCode = DWORD(bitPattern: rawValue)
+        public init(dwExitCode: DWORD) {
             // Do the same thing as swift-corelibs-foundation (the input value is the GetExitCodeProcess return value)
             if (dwExitCode & 0xF0000000) == 0x80000000     // HRESULT
                 || (dwExitCode & 0xF0000000) == 0xC0000000 // NTSTATUS
@@ -218,6 +242,12 @@ public enum Processes: Sendable {
             } else {
                 self = .exit(Int32(bitPattern: UInt32(dwExitCode)))
             }
+        }
+        #endif
+
+        public init?(rawValue: Int32) {
+            #if os(Windows)
+            self = .init(dwExitCode: DWORD(bitPattern: rawValue))
             #else
             func WSTOPSIG(_ status: Int32) -> Int32 {
                 return status >> 8
@@ -298,6 +328,76 @@ public enum Processes: Sendable {
         }
     }
 }
+
+#if canImport(Subprocess) && (!canImport(Darwin) || os(macOS))
+extension Processes.ExitStatus {
+    init(_ terminationStatus: TerminationStatus) {
+        switch terminationStatus {
+        case let .exited(code):
+            self = .exit(numericCast(code))
+        #if !os(Windows)
+        case let .signaled(code):
+            self = .uncaughtSignal(code)
+        #endif
+        }
+    }
+}
+
+extension Subprocess.Configuration {
+    fileprivate init(url: URL, arguments: [String], currentDirectoryURL: URL?, environment: Environment?, interruptible: Bool) throws {
+        var platformOptions = PlatformOptions()
+        if interruptible {
+            platformOptions.teardownSequence = [.gracefulShutDown(allowedDurationToNextStep: .seconds(5))]
+        }
+        self.init(
+            executable: .path(FilePath(try url.filePath.str)),
+            arguments: .init(arguments),
+            environment: environment.map { .custom(.init($0)) } ?? .inherit,
+            workingDirectory: try (currentDirectoryURL?.filePath.str).map { FilePath($0) },
+            platformOptions: platformOptions
+        )
+    }
+}
+
+/// Throws ``CancellationError`` if the current task was cancelled while a swift-subprocess run was in progress, for consistency with the `Foundation.Process` code path.
+///
+/// When the calling task is cancelled, swift-subprocess terminates the child process (even if `interruptible` is false) and returns normally with whatever output it had collected, typically none. Returning that as a result would make the cancelled run indistinguishable from a tool which ran to completion and printed nothing, and callers which cache results by command line (such as `AsyncCache`, which only declines to cache a computation that throws ``CancellationError``) would keep the empty output after the cancellation.
+fileprivate func checkSubprocessCancellation() throws {
+    try Task.checkCancellation()
+}
+
+/// Rethrows swift-subprocess errors which indicate that the process could not be launched as ``RunProcessLaunchError``, for consistency with the `Foundation.Process` code path.
+fileprivate func mapLaunchErrors<T>(url: URL, arguments: [String], currentDirectoryURL: URL?, environment: Environment?, _ body: () async throws -> T) async throws -> T {
+    do {
+        return try await body()
+    } catch let error as SubprocessError where [.spawnFailed, .executableNotFound, .failedToChangeWorkingDirectory].contains(error.code) {
+        throw RunProcessLaunchError(args: [url.path] + arguments, workingDirectory: try currentDirectoryURL?.filePath, environment: environment, context: error.description)
+    }
+}
+
+extension SubprocessOutputSequence {
+    /// Collects the entire sequence into a single `Data` value.
+    ///
+    /// Avoids the Foundation conveniences guarded by the `SubprocessFoundation` trait so that this compiles regardless of how swift-subprocess was built.
+    internal func collectData() async throws -> Data {
+        try await reduce(into: Data()) { data, buffer in
+            buffer.withUnsafeBytes { data.append(contentsOf: $0) }
+        }
+    }
+}
+
+extension [Subprocess.Environment.Key: String] {
+    internal init(_ environment: Environment) {
+        self.init()
+        let sorted = environment.sorted { $0.key < $1.key }
+        for (key, value) in sorted {
+            if let typedKey = Subprocess.Environment.Key(rawValue: key.rawValue) {
+                self[typedKey] = value
+            }
+        }
+    }
+}
+#endif
 
 extension Processes.ExitStatus {
     public init(_ process: Process) throws {

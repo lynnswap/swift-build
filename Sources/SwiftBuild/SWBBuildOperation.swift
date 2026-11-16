@@ -200,6 +200,9 @@ public final class SWBBuildOperation: Sendable {
         case let message as BuildOperationTargetPreparedForIndex:
             assert(state == .running, "invalid state: \(state)")
             continuation.yield(.init(message))
+        case let message as BuildOperationTargetIndexOptionsChanged:
+            assert(state == .running, "invalid state: \(state)")
+            continuation.yield(.init(message))
         case let message as BuildOperationProgressUpdated:
             assert(state == .running || state == .requested, "invalid state: \(state)")
             continuation.yield(.init(message))
@@ -325,30 +328,4 @@ public enum SWBExternalToolResult: Sendable {
 
     /// Result of an external tool execution by the client.
     case result(status: SWBProcessExitStatus, stdout: Data, stderr: Data)
-}
-
-/// Wrapper for information provided about a task metrics during a build.
-public struct SWBBuildOperationTaskMetrics: Sendable, Codable {
-    /// Total amount of time (in µs) spent by the process executing in user mode.
-    public let utime: UInt64
-
-    /// Total amount of time (in µs) spent by the system executing on behalf of the process.
-    public let stime: UInt64
-
-    /// Maximum resident memory set size (in bytes).
-    public let maxRSS: UInt64
-
-    /// Wall clock time (in µs since the epoch) at which the process was started.
-    public let wcStartTime: UInt64
-
-    /// Wall clock time (in µs) from start to finish of process.
-    public let wcDuration: UInt64
-
-    init(utime: UInt64, stime: UInt64, maxRSS: UInt64, wcStartTime: UInt64, wcDuration: UInt64) {
-        self.utime = utime
-        self.stime = stime
-        self.maxRSS = maxRSS
-        self.wcStartTime = wcStartTime
-        self.wcDuration = wcDuration
-    }
 }

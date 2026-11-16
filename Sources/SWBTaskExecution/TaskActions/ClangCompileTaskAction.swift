@@ -233,8 +233,8 @@ public final class ClangCompileTaskAction: TaskAction, BuildValueValidatingTaskA
                     casOptions: casOptions
                 )
 
-                let casKey = ClangCachingPruneDataTaskKey(
-                    path: explicitModulesPayload.libclangPath,
+                let casKey = CompilationCachingPruneDataTaskKey(
+                    libPath: explicitModulesPayload.libclangPath,
                     casOptions: casOptions
                 )
                 dynamicExecutionDelegate.operationContext.compilationCachingDataPruner.pruneCAS(
@@ -266,7 +266,7 @@ public final class ClangCompileTaskAction: TaskAction, BuildValueValidatingTaskA
                 let commandLine = command.arguments
                 let delegate = TaskProcessDelegate(outputDelegate: outputDelegate)
                 // The frontend invocations should be unaffected by the environment, pass an empty one.
-                try await spawn(commandLine: commandLine, environment: [:], workingDirectory: task.workingDirectory, dynamicExecutionDelegate: dynamicExecutionDelegate, clientDelegate: clientDelegate, processDelegate: delegate)
+                try await spawn(commandLine: commandLine, environment: [:], workingDirectory: task.workingDirectory, canSafelyInterrupt: ProcessInfo.processInfo.hostOperatingSystem().canSafelyInterruptCompilerProcesses, dynamicExecutionDelegate: dynamicExecutionDelegate, clientDelegate: clientDelegate, processDelegate: delegate)
                 lastResult = delegate.commandResult
 
                 if lastResult == .succeeded {

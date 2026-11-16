@@ -29,6 +29,8 @@ open class SwiftDriverJobSchedulingTaskAction: TaskAction {
          case initial
          /// The action is waiting for execution inputs to be produced. Execution inputs include everything that would be considered an input to a standalone invocation of the driver (source files, output file map, gate tasks, etc.).
          case waitingForExecutionInputs(openExecutionInputIDs: Set<UInt>, jobTaskIDBase: UInt)
+         /// The action has requested the CASFS ingestion for the scanner, and is waiting for it to finish before planning.
+         case ingestingCASFS(jobTaskIDBase: UInt)
          /// The action has requested a planning task for a target, and is waiting for the resulting planned build.
          case planning(jobTaskIDBase: UInt)
          /// A planned build is available, and the action is requesting and running tasks for individual jobs.
@@ -52,13 +54,21 @@ open class SwiftDriverJobSchedulingTaskAction: TaskAction {
         // Request execution inputs and move to the `waitingForExecutionInputs` state
         if let executionInputs = task.executionInputs {
             let openExecutionInputIDs = Set(executionInputs.indices.map(UInt.init))
-            // `jobTaskIDBase` represents the first ID corresponding to a planned driver job. 0..<executionInputs.count are execution input IDs, executionInputs.count is the dynamic planning ID, and (executionInputs.count + 1)... are driver job IDs.
-            let jobTaskIDBase = UInt(executionInputs.count) + 1
+            // `jobTaskIDBase` represents the first ID corresponding to a planned driver job. 0..<executionInputs.count are execution input IDs, executionInputs.count is the dynamic planning ID, executionInputs.count + 1 is the CASFS ingestion ID, and (executionInputs.count + 2)... are driver job IDs.
+            let jobTaskIDBase = UInt(executionInputs.count) + 2
             state = .waitingForExecutionInputs(openExecutionInputIDs: openExecutionInputIDs, jobTaskIDBase: jobTaskIDBase)
             for (index, input) in executionInputs.enumerated() {
                 dynamicExecutionDelegate.requestInputNode(node: input, nodeID: UInt(index))
             }
         }
+    }
+
+    private static func planningTaskID(jobTaskIDBase: UInt) -> UInt {
+        return jobTaskIDBase - 2
+    }
+
+    private static func casFSIngestionTaskID(jobTaskIDBase: UInt) -> UInt {
+        return jobTaskIDBase - 1
     }
 
     public override func taskDependencyReady(_ task: any ExecutableTask, _ dependencyID: UInt, _ buildValueKind: BuildValueKind?, dynamicExecutionDelegate: any DynamicTaskExecutionDelegate, executionDelegate: any TaskExecutionDelegate) {
@@ -82,6 +92,21 @@ open class SwiftDriverJobSchedulingTaskAction: TaskAction {
 
         let graph = dynamicExecutionDelegate.operationContext.swiftModuleDependencyGraph
 
+        // Request the driver planning task and move to the `planning` state.
+        func requestPlanning(jobTaskIDBase: UInt) {
+            dynamicExecutionDelegate.requestDynamicTask(toolIdentifier: SwiftDriverTaskAction.toolIdentifier,
+                                                        taskKey: .swiftDriverPlanning(.init(swiftPayload: payload)),
+                                                        taskID: Self.planningTaskID(jobTaskIDBase: jobTaskIDBase),
+                                                        singleUse: true,
+                                                        workingDirectory: task.workingDirectory,
+                                                        environment: task.environment,
+                                                        forTarget: task.forTarget,
+                                                        priority: .unblocksDownstreamTasks,
+                                                        showEnvironment: task.showEnvironment,
+                                                        reason: .wasScheduledBySwiftDriver)
+            state = .planning(jobTaskIDBase: jobTaskIDBase)
+        }
+
         switch state {
         case .initial:
             state = .executionError(StubError.error("taskDependencyReady unexpectedly called in initial state"))
@@ -90,31 +115,60 @@ open class SwiftDriverJobSchedulingTaskAction: TaskAction {
                 openExecutionInputIDs.remove(dependencyID)
                 state = .waitingForExecutionInputs(openExecutionInputIDs: openExecutionInputIDs, jobTaskIDBase: jobTaskIDBase)
             }
-            // If all execution inputs are now available, request the driver planning task and move to the `planning` state.
+            // If all execution inputs are now available, request the CASFS ingestion (if needed) or the driver planning task.
             if openExecutionInputIDs.isEmpty {
-                dynamicExecutionDelegate.requestDynamicTask(toolIdentifier: SwiftDriverTaskAction.toolIdentifier,
-                                                            taskKey: .swiftDriverPlanning(.init(swiftPayload: payload)),
-                                                            taskID: jobTaskIDBase - 1,
-                                                            singleUse: true,
-                                                            workingDirectory: task.workingDirectory,
-                                                            environment: task.environment,
-                                                            forTarget: task.forTarget,
-                                                            priority: .unblocksDownstreamTasks,
-                                                            showEnvironment: task.showEnvironment,
-                                                            reason: .wasScheduledBySwiftDriver)
-                state = .planning(jobTaskIDBase: jobTaskIDBase)
+                if let casFSIngestion = driverPayload.casFSIngestion, let casOptions = driverPayload.casOptions {
+                    // The ingestion runs whenever the driver needs to run so that the CASFS reflects the current state of the dependencies.
+                    let key = IngestCASFSRootTaskKey(payload: IngestCASFSRootTaskPayload(casOpts: casOptions, compilerLocation: driverPayload.compilerLocation), ingestion: casFSIngestion, moduleName: driverPayload.moduleName)
+                    dynamicExecutionDelegate.requestDynamicTask(toolIdentifier: IngestCASFSRootTaskAction.toolIdentifier,
+                                                                taskKey: .ingestCASFSRoot(key),
+                                                                taskID: Self.casFSIngestionTaskID(jobTaskIDBase: jobTaskIDBase),
+                                                                singleUse: true,
+                                                                workingDirectory: task.workingDirectory,
+                                                                environment: task.environment,
+                                                                forTarget: task.forTarget,
+                                                                priority: .unblocksDownstreamTasks,
+                                                                showEnvironment: task.showEnvironment,
+                                                                reason: .wasScheduledBySwiftDriver)
+                    state = .ingestingCASFS(jobTaskIDBase: jobTaskIDBase)
+                } else {
+                    requestPlanning(jobTaskIDBase: jobTaskIDBase)
+                }
             }
             return
-        case .planning(jobTaskIDBase: let jobTaskIDBase):
+        case .ingestingCASFS(jobTaskIDBase: let jobTaskIDBase):
+            if buildValueKind == .skippedCommand {
+                state = .failedDependencies
+                return
+            }
+            guard dependencyID == Self.casFSIngestionTaskID(jobTaskIDBase: jobTaskIDBase) else { return }
+            requestPlanning(jobTaskIDBase: jobTaskIDBase)
+            return
+        case .planning(jobTaskIDBase: var jobTaskIDBase):
             if buildValueKind == .skippedCommand {
                 // If planning was skipped, for example because it didn't start in a prepare-for-indexing build, move into the failed dependencies state so that we cancel.
                 state = .failedDependencies
                 return
             }
             // If the planning task is complete, begin requesting dynamic tasks for jobs and move to the `requestingDriverJobs` state.
-            guard dependencyID == jobTaskIDBase - 1 else { return }
+            guard dependencyID == Self.planningTaskID(jobTaskIDBase: jobTaskIDBase) else { return }
             do {
                 let plannedBuild = try graph.queryPlannedBuild(for: driverPayload.uniqueID)
+                if !plannedBuild.wasDeserialized && driverPayload.casOptions != nil && driverPayload.enablePrescanCaching {
+                    dynamicExecutionDelegate.requestDynamicTask(
+                        toolIdentifier: SwiftCachingCacheDepscanPlanTaskAction.toolIdentifier,
+                        taskKey: .swiftCachingCacheDepscanPlan(.init(driverPayload: driverPayload)),
+                        taskID: jobTaskIDBase,
+                        singleUse: true,
+                        workingDirectory: task.workingDirectory,
+                        environment: task.environment,
+                        forTarget: task.forTarget,
+                        priority: .unspecified,
+                        showEnvironment: false,
+                        reason: .wasCompilationCachingQuery
+                    )
+                    jobTaskIDBase += 1
+                }
                 let primaryJobs = primaryJobs(for: plannedBuild, driverPayload: driverPayload)
                 let untrackedPrimaryJobs = untrackedPrimaryJobs(for: plannedBuild, driverPayload: driverPayload)
                 if !primaryJobs.isEmpty {
@@ -282,7 +336,19 @@ open class SwiftDriverJobSchedulingTaskAction: TaskAction {
             encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
             let contents = try ByteString(encoder.encode(info))
             try executionDelegate.fs.createDirectory(path.dirname, recursive: true)
+            // Planning set the previous handoff aside, so compare with it instead of the file being written.
+            let previousPath = driverPayload.previousIndexExplicitModuleInfoPath(for: path)
+            let previousContents = try? executionDelegate.fs.read(previousPath)
             _ = try executionDelegate.fs.writeIfChanged(path, contents: contents)
+            if executionDelegate.fs.exists(previousPath) {
+                try executionDelegate.fs.remove(previousPath)
+            }
+            // A request made while the handoff was set aside got implicit-module arguments, which stay valid. It is not
+            // told when an identical handoff returns, so that re-preparing unchanged targets keeps clients' caches.
+            if previousContents != contents, let target = task.forTarget {
+                // Index compiler arguments are derived from this file, so clients caching them need to know.
+                executionDelegate.indexOptionsChanged(for: target)
+            }
         } catch {
             outputDelegate.warning("Unable to write explicit modules index info: \(error)")
         }

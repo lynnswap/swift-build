@@ -47,8 +47,13 @@ final class ServiceHostConnection: @unchecked Sendable {
     /// Whether the queue is suspended.
     private let isSuspended = SWBMutex(true)
 
-    /// The queue used to send outgoing messages.
-    private let sendQueue: SWBQueue
+    private struct OutgoingMessage: Sendable {
+        let channel: UInt64
+        let payloadLength: Int32
+        let bytes: [UInt8]
+    }
+
+    private let outgoingMessages: AsyncStream<OutgoingMessage>.Continuation
 
     /// The file descriptor to read on.
     private let inputFD: FileDescriptor
@@ -66,8 +71,41 @@ final class ServiceHostConnection: @unchecked Sendable {
     init(inputFD: FileDescriptor, outputFD: FileDescriptor) {
         self.inputFD = inputFD
         self.outputFD = outputFD
-        // The queues for the service host connection are given .userInitiated QOS (not .utility, which most queues in Swift Build have) because we don't know whether we're servicing a user interaction request.  Most requests should be shunted to a background thread unless there's a reason to send a quick response at high priority.
-        self.sendQueue = SWBQueue(label: "SWBBuildService.ServiceHostConnection.sendQueue", qos: .userInitiated, autoreleaseFrequency: .workItem)
+        let (messages, outgoingMessages) = AsyncStream<OutgoingMessage>.makeStream()
+        self.outgoingMessages = outgoingMessages
+
+        // The writer for the service host connection is given .userInitiated QOS (not .utility, which most queues in Swift Build have) because we don't know whether we're servicing a user interaction request.  Most requests should be shunted to a background thread unless there's a reason to send a quick response at high priority.
+        Task<Void, Never>(priority: .userInitiated) {
+            var failed = false
+            for await message in messages where !failed {
+                do {
+                    try await PipeIO.write(message.bytes, to: outputFD)
+                } catch {
+                    failed = true
+                    self.shutdownHandler(ServiceHostIOError(message: "write of \(message.payloadLength) bytes on channel \(message.channel) failed - the client may have exited", cause: error))
+                }
+            }
+            try? PipeIO.close(outputFD)
+        }
+    }
+
+    private static let headerSize = MemoryLayout<UInt64>.size + MemoryLayout<UInt32>.size
+
+    /// Parse a complete message header from the start of the buffer.
+    private func parseHeader(_ start: UnsafePointer<UInt8>) -> (channelID: UInt64, payloadSize: Int) {
+        // The message header consists of a 64-bit channel number followed by a 32-bit payload size.
+        var channelValue: UInt64 = 0
+        withUnsafeMutableBytes(of: &channelValue) { valuePtr in
+            valuePtr.copyBytes(from: UnsafeRawBufferPointer(start: start, count: MemoryLayout<UInt64>.size))
+        }
+        let channelID = UInt64(littleEndian: channelValue)
+
+        var sizeValue: UInt32 = 0
+        withUnsafeMutableBytes(of: &sizeValue) { valuePtr in
+            valuePtr.copyBytes(from: UnsafeRawBufferPointer(start: start.advanced(by: MemoryLayout<UInt64>.size), count: MemoryLayout<UInt32>.size))
+        }
+        let payloadSize = Int(UInt32(littleEndian: sizeValue))
+        return (channelID, payloadSize)
     }
 
     /// Extract and handle all messages in the given buffer, returning the number of remaining bytes.
@@ -78,21 +116,9 @@ final class ServiceHostConnection: @unchecked Sendable {
     private func extractAndHandleMessages(_ start: UnsafePointer<UInt8>, _ count: Int) async -> Int {
         var start = start
         var count = count
-        while count > MemoryLayout<UInt64>.size + MemoryLayout<Int32>.size {
-            // The message header consist of a 64-bit channel number followed by a 32-bit payload size.
-            let headerSize = MemoryLayout<UInt64>.size + MemoryLayout<Int32>.size
-            var channelValue: UInt64 = 0
-            withUnsafeMutableBytes(of: &channelValue) { valuePtr in
-                valuePtr.copyBytes(from: UnsafeRawBufferPointer(start: start, count: MemoryLayout<UInt64>.size))
-            }
-            let channelID = UInt64(littleEndian: channelValue)
-
-            var sizeValue: UInt32 = 0
-            withUnsafeMutableBytes(of: &sizeValue) { valuePtr in
-                valuePtr.copyBytes(from: UnsafeRawBufferPointer(start: start.advanced(by: MemoryLayout<UInt64>.size), count: MemoryLayout<UInt32>.size))
-            }
-            let payloadSize = Int(UInt32(littleEndian: sizeValue))
-            let totalSize = headerSize + payloadSize
+        while count > Self.headerSize {
+            let (channelID, payloadSize) = parseHeader(start)
+            let totalSize = Self.headerSize + payloadSize
 
             #if DEBUG
             // A well behaved client would not send a negative payloadSize, but this can happen when we hit <rdar://problem/62081788>.
@@ -109,7 +135,7 @@ final class ServiceHostConnection: @unchecked Sendable {
             }
 
             // Otherwise, handle the packet and continue.
-            await self.handler(channelID, Array<UInt8>(UnsafeBufferPointer(start: start.advanced(by: headerSize), count: payloadSize)))
+            await self.handler(channelID, Array<UInt8>(UnsafeBufferPointer(start: start.advanced(by: Self.headerSize), count: payloadSize)))
 
             // Advance to the start of the next packet.
             start = start.advanced(by: totalSize)
@@ -140,6 +166,7 @@ final class ServiceHostConnection: @unchecked Sendable {
             let tmp = UnsafeMutableBufferPointer(start: UnsafeMutablePointer<UInt8>.allocate(capacity: tmpBufferSize), count: tmpBufferSize)
 
             var error: (any Error)?
+            var reachedEndOfInput = false
             while !self.isSuspended.withLock({ $0 }) {
                 #if DEBUG
                 // Work around <rdar://problem/62081788> read syscall can sometimes return a value greater than the count parameter
@@ -151,17 +178,19 @@ final class ServiceHostConnection: @unchecked Sendable {
                 // Read data.
                 let result: Int
                 do {
-                    let buf = try await DispatchFD(fileDescriptor: self.inputFD).readChunk(upToLength: tmpBufferSize)
+                    let buf = try await PipeIO.read(from: self.inputFD, upTo: tmpBufferSize) ?? []
                     result = buf.count
-                    buf.copyBytes(to: tmp)
+                    _ = tmp.update(fromContentsOf: buf)
                 } catch let readError {
                     error = ServiceHostIOError(message: "read from client failed", cause: readError)
+                    reachedEndOfInput = true
                     break
                 }
                 if result == 0 {
                     if !data.isEmpty {
                         log("warning: connection closed with data remaining")
                     }
+                    reachedEndOfInput = true
                     break
                 }
                 #if DEBUG
@@ -173,6 +202,12 @@ final class ServiceHostConnection: @unchecked Sendable {
                 // Extract all the messages, combining into a contiguous buffer first if necessary.
                 if !data.isEmpty {
                     data.append(contentsOf: UnsafeBufferPointer(start: tmp.baseAddress, count: Int(result)))
+                    // Wait for a complete message before copying the accumulated buffer.
+                    guard data.count >= Self.headerSize else { continue }
+                    let payloadSize = data.withUnsafeBufferPointer { buffer in
+                        self.parseHeader(buffer.baseAddress!).payloadSize
+                    }
+                    guard data.count >= Self.headerSize + payloadSize else { continue }
                     let dataCopy = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: data.count)
                     defer {
                         dataCopy.deallocate()
@@ -197,29 +232,28 @@ final class ServiceHostConnection: @unchecked Sendable {
 
             tmp.deallocate()
 
+            self.outgoingMessages.finish()
+
             // If the receive pump stops, tell the service to shut down.
             //
             // FIXME: We may at some point need to coordinate with outstanding work.
             self.shutdownHandler(error)
+
+            if !reachedEndOfInput {
+                while let _ = try? await PipeIO.read(from: self.inputFD, upTo: tmpBufferSize) {}
+            }
+            try? PipeIO.close(self.inputFD)
         }
     }
 
     /// Send a message.
     func send(_ channel: UInt64, _ message: [UInt8]) {
-        sendQueue.async {
-            var channel = channel
-            // FIXME: We should switch to using Dispatch.
-            guard var length = Int32(exactly: message.count) else {
-                return self.shutdownHandler(ServiceHostIOError(message: "Message too large", cause: nil))
-            }
-            let header = int64ToArray(&channel) + int32ToArray(&length)
-
-            do {
-                try self.outputFD.writeAll(header + message)
-            } catch {
-                self.shutdownHandler(ServiceHostIOError(message: "write of \(length) bytes on channel \(channel) failed - the client may have exited", cause: error))
-            }
+        var channel = channel
+        guard var length = Int32(exactly: message.count) else {
+            return self.shutdownHandler(ServiceHostIOError(message: "Message too large", cause: nil))
         }
+        let header = int64ToArray(&channel) + int32ToArray(&length)
+        outgoingMessages.yield(OutgoingMessage(channel: channel, payloadLength: length, bytes: header + message))
     }
 
     /// Send a message.

@@ -13,6 +13,7 @@
 import Testing
 
 import SWBCore
+import class SWBMacro.MacroEvaluationScope
 import struct SWBProtocol.ArenaInfo
 import SWBTestSupport
 @_spi(Testing) import SWBUtil
@@ -464,7 +465,7 @@ fileprivate struct SwiftTaskConstructionTests: CoreBasedTests {
                 // There should be a product 'Touch' task.
                 results.checkTask(.matchTarget(target), .matchRuleType("Touch")) { task in
                     task.checkRuleInfo(["Touch", "\(SRCROOT)/build/Debug/AppTarget.app"])
-                    task.checkCommandLine(["/usr/bin/touch", "-c", "\(SRCROOT)/build/Debug/AppTarget.app"])
+                    task.checkCommandLine(["builtin-touch", "\(SRCROOT)/build/Debug/AppTarget.app"])
                 }
 
                 results.checkTask(.matchTarget(target), .matchRuleType("RegisterExecutionPolicyException")) { task in
@@ -715,7 +716,7 @@ fileprivate struct SwiftTaskConstructionTests: CoreBasedTests {
                     task.checkCommandLineMatches([
                         .anySequence,
                         .equal(swiftCompilerPath.str),
-                        "-module-name", "CoreFoo", "-O",
+                        "-module-name", "CoreFoo", "-Xcc", "-fmessage-length=0", "-O",
                         .anySequence,
                         // The Swift response file
                         "@/tmp/Test/aProject/build/aProject.build/Debug/CoreFoo.build/Objects-normal/\(results.runDestinationTargetArchitecture)/CoreFoo.SwiftFileList",
@@ -772,7 +773,7 @@ fileprivate struct SwiftTaskConstructionTests: CoreBasedTests {
                     task.checkCommandLineMatches([
                         .anySequence,
                         .equal(swiftCompilerPath.str),
-                        "-module-name", "CoreFoo", "-O",
+                        "-module-name", "CoreFoo", "-Xcc", "-fmessage-length=0", "-O",
                         .anySequence,
                         // The Swift response file
                         "@/tmp/Test/aProject/build/aProject.build/Debug/CoreFoo.build/Objects-normal/\(results.runDestinationTargetArchitecture)/CoreFoo.SwiftFileList",
@@ -923,7 +924,7 @@ fileprivate struct SwiftTaskConstructionTests: CoreBasedTests {
                     task.checkCommandLineMatches([
                         .anySequence,
                         .equal(swiftCompilerPath.str),
-                        "-module-name", "CoreFoo", "-O",
+                        "-module-name", "CoreFoo", "-Xcc", "-fmessage-length=0", "-O",
                         .anySequence,
                         // The Swift response file
                         "@/tmp/Test/aProject/build/aProject.build/Debug/CoreFoo.build/Objects-normal/\(results.runDestinationTargetArchitecture)/CoreFoo.SwiftFileList",
@@ -1006,7 +1007,7 @@ fileprivate struct SwiftTaskConstructionTests: CoreBasedTests {
                     task.checkCommandLineMatches([
                         .anySequence,
                         .equal(swiftCompilerPath.str),
-                        "-module-name", "CoreFoo", "-O",
+                        "-module-name", "CoreFoo", "-Xcc", "-fmessage-length=0", "-O",
                         .anySequence,
                         // The Swift response file
                         "@/tmp/Test/aProject/build/aProject.build/Debug/CoreFoo.build/Objects-normal/\(results.runDestinationTargetArchitecture)/CoreFoo.SwiftFileList",
@@ -2009,6 +2010,122 @@ fileprivate struct SwiftTaskConstructionTests: CoreBasedTests {
         }
     }
 
+    /// Check that the internal bridging header blocklist defaults the listed product types to an internal bridging header, unless the project or module is on the blocklist.
+    @Test(.requireSDKs(.macOS), arguments: [false, true])
+    func swiftInternalBridgingHeaderBlocklist(hasBlocklist: Bool) async throws {
+        try await withTemporaryDirectory { tmpDir in
+            func bridgingHeaderTarget(_ name: String, type: TestStandardTarget.TargetType, source: String = "Foo.swift", buildSettings: [String: String] = [:]) -> TestStandardTarget {
+                TestStandardTarget(
+                    name, type: type,
+                    buildConfigurations: [
+                        TestBuildConfiguration("Debug", buildSettings: buildSettings.merging([
+                            "SWIFT_OBJC_BRIDGING_HEADER": "swift-bridge-header.h",
+                        ], uniquingKeysWith: { a, _ in a })),
+                    ],
+                    buildPhases: [
+                        TestSourcesBuildPhase([TestBuildFile(source)]),
+                    ])
+            }
+            let projectBuildConfigurations = try await [
+                TestBuildConfiguration(
+                    "Debug",
+                    buildSettings: [
+                        "BLOCKLISTS_PATH": tmpDir.str,
+                        "GENERATE_INFOPLIST_FILE": "YES",
+                        "LIBTOOL": libtoolPath.str,
+                        "PRODUCT_NAME": "$(TARGET_NAME)",
+                        "SDKROOT": "macosx",
+                        "SWIFT_EXEC": swiftCompilerPath.str,
+                        "SWIFT_VERSION": swiftVersion,
+                    ]),
+            ]
+            let testWorkspace = TestWorkspace(
+                "Test",
+                sourceRoot: tmpDir.join("Test"),
+                projects: [
+                    TestProject(
+                        "aProject",
+                        groupTree: TestGroup("SomeFiles", children: [TestFile("Foo.swift")]),
+                        buildConfigurations: projectBuildConfigurations,
+                        targets: [
+                            bridgingHeaderTarget("Fwk", type: .framework),
+                            bridgingHeaderTarget("Dylib", type: .dynamicLibrary),
+                            bridgingHeaderTarget("StaticFwk", type: .staticFramework),
+                            bridgingHeaderTarget("App", type: .application),
+                            bridgingHeaderTarget("ListedModule", type: .framework),
+                            bridgingHeaderTarget("ExplicitlyInternal", type: .framework, buildSettings: ["SWIFT_BRIDGING_HEADER_IS_INTERNAL": "YES"]),
+                        ]),
+                    TestProject(
+                        "KnownProject",
+                        groupTree: TestGroup("SomeFiles", children: [TestFile("Bar.swift")]),
+                        buildConfigurations: projectBuildConfigurations,
+                        targets: [
+                            bridgingHeaderTarget("KnownProjectFwk", type: .framework, source: "Bar.swift"),
+                        ]),
+                ])
+
+            if hasBlocklist {
+                try await localFS.writeFileContents(tmpDir.join("swift-internal-bridging-header.json")) { file in
+                    file <<<
+                        """
+                        {
+                            "ProductTypes": ["com.apple.product-type.framework", "com.apple.product-type.library.dynamic"],
+                            "KnownFailures": ["KnownProject"],
+                            "Modules": ["ListedModule"]
+                        }
+                        """
+                }
+            }
+
+            // Construct a custom core to test project identity based matching.
+            let core = try await Self.makeCore(registerExtraPlugins: { pluginManager in
+                struct TestSettingsBuilderExtension: SettingsBuilderExtension {
+                    func matchesAnyProjectIdentities(scope: MacroEvaluationScope, projectIdentities: Set<String>) -> Bool {
+                        projectIdentities.contains(scope.evaluate(BuiltinMacros.PROJECT_NAME))
+                    }
+                }
+                pluginManager.register(TestSettingsBuilderExtension(), type: SettingsBuilderExtensionPoint.self)
+            })
+            let tester = try TaskConstructionTester(core, testWorkspace)
+
+            let fs = PseudoFS()
+            try await fs.writeFileContents(swiftCompilerPath) { $0 <<< "binary" }
+            for project in tester.workspace.projects {
+                try fs.createDirectory(project.sourceRoot, recursive: true)
+                try fs.write(project.sourceRoot.join("swift-bridge-header.h"), contents: [])
+            }
+
+            let parameters = BuildParameters(configuration: "Debug")
+            let buildRequest = BuildRequest(parameters: parameters, buildTargets: tester.workspace.projects.flatMap(\.targets).map({ BuildRequest.BuildTargetInfo(parameters: parameters, target: $0) }), continueBuildingAfterErrors: true, useParallelTargets: true, useImplicitDependencies: false, useDryRun: false)
+
+            let internalTargets: Set<String> = hasBlocklist ? ["Fwk", "Dylib", "StaticFwk", "ExplicitlyInternal"] : ["ExplicitlyInternal"]
+            await tester.checkBuild(runDestination: .macOS, buildRequest: buildRequest, fs: fs) { results in
+                for project in tester.workspace.projects {
+                    let bridgeHeader = project.sourceRoot.join("swift-bridge-header.h")
+                    for targetName in project.targets.map(\.name) {
+                        results.checkTarget(targetName) { target in
+                            results.checkTask(.matchTarget(target), .matchRuleType("SwiftDriver Compilation")) { task in
+                                let expectedFlag = internalTargets.contains(targetName) ? "-internal-import-bridging-header" : "-import-objc-header"
+                                task.checkCommandLineContains([expectedFlag, bridgeHeader.str])
+                            }
+                        }
+                    }
+                }
+
+                if hasBlocklist {
+                    results.checkWarning(.equal("The bridging header is imported as internal because public bridging headers are not supported in Framework targets; set 'SWIFT_BRIDGING_HEADER_IS_INTERNAL = YES' to silence this warning (in target 'Fwk' from project 'aProject')"))
+                    results.checkWarning(.equal("The bridging header is imported as internal because public bridging headers are not supported in Dynamic Library targets; set 'SWIFT_BRIDGING_HEADER_IS_INTERNAL = YES' to silence this warning (in target 'Dylib' from project 'aProject')"))
+                    // Product types based on a listed product type are also included.
+                    results.checkWarning(.equal("The bridging header is imported as internal because public bridging headers are not supported in Static Framework targets; set 'SWIFT_BRIDGING_HEADER_IS_INTERNAL = YES' to silence this warning (in target 'StaticFwk' from project 'aProject')"))
+                    // Blocklisted modules and projects keep a public bridging header, but are still diagnosed.
+                    results.checkWarning(.equal("Importing the bridging header as internal will become a requirement for Framework targets in the future; set 'SWIFT_BRIDGING_HEADER_IS_INTERNAL = YES' (in target 'ListedModule' from project 'aProject')"))
+                    results.checkWarning(.equal("Importing the bridging header as internal will become a requirement for Framework targets in the future; set 'SWIFT_BRIDGING_HEADER_IS_INTERNAL = YES' (in target 'KnownProjectFwk' from project 'KnownProject')"))
+                }
+                results.checkNoDiagnostics()
+            }
+        }
+    }
+
     /// Check that the path of Swift bridging header is being normalized.
     @Test(.requireSDKs(.macOS))
     func swiftBridgingHeaderPathNormalized() async throws {
@@ -2403,6 +2520,92 @@ fileprivate struct SwiftTaskConstructionTests: CoreBasedTests {
             results.checkTarget("TestTarget") { target in
                 results.checkTask(.matchTarget(target), .matchRuleType("SwiftDriver Compilation")) { task in
                     task.checkCommandLineContains(["-Xfrontend", "-disable-autolink-library", "-Xfrontend", "Bar"])
+                }
+            }
+        }
+    }
+
+    @Test(.requireSDKs(.macOS))
+    func diagnosticMessageLength() async throws {
+        let testProject = try await TestProject(
+            "ProjectName",
+            groupTree: TestGroup(
+                "SomeFiles", path: "Sources",
+                children: [
+                    TestFile("TestFile.swift"),
+                    TestFile("TestFile.c"),
+                ]),
+            targets: [
+                TestStandardTarget(
+                    "TestTarget",
+                    type: .framework,
+                    buildConfigurations: [
+                        TestBuildConfiguration("Debug", buildSettings: [
+                            "CODE_SIGNING_ALLOWED": "NO",
+                            "PRODUCT_NAME": "TestProduct",
+                            "ARCHS": "arm64",
+                            "SWIFT_VERSION": swiftVersion,
+                            "SDKROOT": "macosx",
+                            "SWIFT_EXEC": swiftCompilerPath.str,
+                        ]),
+                    ],
+                    buildPhases: [
+                        TestSourcesBuildPhase([
+                            TestBuildFile("TestFile.swift"),
+                            TestBuildFile("TestFile.c"),
+                        ]),
+                    ])
+            ])
+
+        let tester = try await TaskConstructionTester(getCore(), testProject)
+
+        // swift_clang_diagnostic_message_length defaults to diagnostic_message_length, so both get the same message length.
+        await tester.checkBuild(runDestination: .macOS) { results in
+            results.checkNoDiagnostics()
+            results.checkTarget("TestTarget") { target in
+                for ruleType in ["SwiftDriver Compilation Requirements", "SwiftDriver Compilation"] {
+                    results.checkTask(.matchTarget(target), .matchRuleType(ruleType)) { task in
+                        task.checkCommandLineContains(["-Xcc", "-fmessage-length=0"])
+                    }
+                }
+                results.checkTask(.matchTarget(target), .matchRuleType("CompileC")) { task in
+                    task.checkCommandLineContains(["-fmessage-length=0"])
+                }
+            }
+        }
+        await tester.checkBuild(BuildParameters(configuration: "Debug", overrides: ["diagnostic_message_length": "120"]), runDestination: .macOS) { results in
+            results.checkNoDiagnostics()
+            results.checkTarget("TestTarget") { target in
+                for ruleType in ["SwiftDriver Compilation Requirements", "SwiftDriver Compilation"] {
+                    results.checkTask(.matchTarget(target), .matchRuleType(ruleType)) { task in
+                        task.checkCommandLineContains(["-Xcc", "-fmessage-length=120"])
+                    }
+                }
+                results.checkTask(.matchTarget(target), .matchRuleType("CompileC")) { task in
+                    task.checkCommandLineContains(["-fmessage-length=120"])
+                }
+            }
+        }
+        await tester.checkBuild(BuildParameters(configuration: "Debug", overrides: ["diagnostic_message_length": ""]), runDestination: .macOS) { results in
+            results.checkNoDiagnostics()
+            results.checkTarget("TestTarget") { target in
+                for ruleType in ["SwiftDriver Compilation Requirements", "SwiftDriver Compilation", "CompileC"] {
+                    results.checkTask(.matchTarget(target), .matchRuleType(ruleType)) { task in
+                        task.checkCommandLineNoMatch([.anySequence, .prefix("-fmessage-length"), .anySequence])
+                    }
+                }
+            }
+        }
+        await tester.checkBuild(BuildParameters(configuration: "Debug", overrides: ["swift_clang_diagnostic_message_length": "120"]), runDestination: .macOS) { results in
+            results.checkNoDiagnostics()
+            results.checkTarget("TestTarget") { target in
+                for ruleType in ["SwiftDriver Compilation Requirements", "SwiftDriver Compilation"] {
+                    results.checkTask(.matchTarget(target), .matchRuleType(ruleType)) { task in
+                        task.checkCommandLineContains(["-Xcc", "-fmessage-length=120"])
+                    }
+                }
+                results.checkTask(.matchTarget(target), .matchRuleType("CompileC")) { task in
+                    task.checkCommandLineContains(["-fmessage-length=0"])
                 }
             }
         }
@@ -3580,6 +3783,61 @@ fileprivate struct SwiftTaskConstructionTests: CoreBasedTests {
             results.checkTask(.matchRuleType("SwiftDriver Compilation")) { task in
                 task.checkCommandLineContains(["-no-color-diagnostics"])
                 task.checkCommandLineDoesNotContain("-color-diagnostics")
+            }
+        }
+    }
+
+    @Test(.requireSDKs(.host), arguments: [nil, "compiler-default", "YES", "NO"])
+    func crossModuleOptimization(crossModuleOptimization: String?) async throws {
+        let testProject = try await TestProject(
+            "aProject",
+            groupTree: TestGroup(
+                "SomeFiles", path: "Sources",
+                children: [
+                    TestFile("Foo.swift"),
+                ]),
+            buildConfigurations: [
+                TestBuildConfiguration(
+                    "Release",
+                    buildSettings: [
+                        "GENERATE_INFOPLIST_FILE": "YES",
+                        "PRODUCT_NAME": "$(TARGET_NAME)",
+                        "SWIFT_EXEC": swiftCompilerPath.str,
+                        "SWIFT_VERSION": swiftVersion,
+                        "SWIFT_USE_INTEGRATED_DRIVER": "YES",
+                        "SWIFT_COMPILATION_MODE": "wholemodule",
+                    ]),
+            ],
+            targets: [
+                TestStandardTarget(
+                    "CoreFoo", type: .dynamicLibrary,
+                    buildPhases: [
+                        TestSourcesBuildPhase([
+                            TestBuildFile("Foo.swift")
+                        ]),
+                    ])
+            ])
+
+        let tester = try await TaskConstructionTester(getCore(), testProject)
+
+        await tester.checkBuild(BuildParameters(configuration: "Release"), runDestination: .host) { results in
+            results.checkTask(.matchRuleType("SwiftDriver Compilation")) { task in
+                task.checkCommandLineDoesNotContain("-cross-module-optimization")
+                task.checkCommandLineDoesNotContain("-disable-cmo")
+            }
+        }
+
+        await tester.checkBuild(BuildParameters(configuration: "Release", overrides: ["SWIFT_CROSS_MODULE_OPTIMIZATION": "YES"]), runDestination: .host) { results in
+            results.checkTask(.matchRuleType("SwiftDriver Compilation")) { task in
+                task.checkCommandLineContains(["-cross-module-optimization"])
+                task.checkCommandLineDoesNotContain("-disable-cmo")
+            }
+        }
+
+        await tester.checkBuild(BuildParameters(configuration: "Release", overrides: ["SWIFT_CROSS_MODULE_OPTIMIZATION": "NO"]), runDestination: .host) { results in
+            results.checkTask(.matchRuleType("SwiftDriver Compilation")) { task in
+                task.checkCommandLineDoesNotContain("-cross-module-optimization")
+                task.checkCommandLineContains(["-disable-cmo"])
             }
         }
     }
@@ -5279,7 +5537,9 @@ fileprivate struct SwiftTaskConstructionTests: CoreBasedTests {
     func swiftTakesCxxFlagsIfCxxInteropEnabled() async throws {
 
         func setupInteropTest(_ tmpDir: Path, enableInterop: Bool,
-                              cxxLangStandard: String = "gnu++20") async throws -> TaskConstructionTester {
+            cxxLangStandard: String = "gnu++20",
+            inlinesArePrivateExtern: Bool = true
+        ) async throws -> TaskConstructionTester {
             let testProject = try await TestProject(
                 "TestProject",
                 sourceRoot: tmpDir,
@@ -5299,7 +5559,8 @@ fileprivate struct SwiftTaskConstructionTests: CoreBasedTests {
                                 "SWIFT_EXEC": swiftCompilerPath.str,
                                 "SWIFT_VERSION": swiftVersion,
                                 "SWIFT_OBJC_INTEROP_MODE": enableInterop ? "objcxx" : "objc",
-                                "CLANG_CXX_LANGUAGE_STANDARD": cxxLangStandard
+                                "CLANG_CXX_LANGUAGE_STANDARD": cxxLangStandard,
+                                "GCC_INLINES_ARE_PRIVATE_EXTERN": inlinesArePrivateExtern ? "YES" : "NO",
                             ]),
                         ],
                         buildPhases: [
@@ -5316,6 +5577,10 @@ fileprivate struct SwiftTaskConstructionTests: CoreBasedTests {
             await tester.checkBuild(runDestination: .macOS) { results in
                 results.checkTask(.matchRuleType("SwiftDriver Compilation")) { task in
                     task.checkCommandLineContainsUninterrupted(["-Xcc", "-std=gnu++20"])
+                    task.checkCommandLineContainsUninterrupted(["-Xcc", "-fvisibility-inlines-hidden"])
+                }
+                results.checkTask(.matchRuleType("CompileC"), .matchRuleItemBasename("source.cpp")) { task in
+                    task.checkCommandLineContains(["-fvisibility-inlines-hidden"])
                 }
             }
         }
@@ -5338,6 +5603,17 @@ fileprivate struct SwiftTaskConstructionTests: CoreBasedTests {
             await tester.checkBuild(runDestination: .macOS) { results in
                 results.checkTask(.matchRuleType("SwiftDriver Compilation")) { task in
                     task.checkCommandLineNoMatch([.prefix("-std=")])
+                    task.checkCommandLineNoMatch([.equal("-fvisibility-inlines-hidden")])
+                }
+            }
+        }
+
+        // Verify that we don't hide inline functions in Swift compilations when GCC_INLINES_ARE_PRIVATE_EXTERN is disabled.
+        try await withTemporaryDirectory { tmpDir in
+            let tester = try await setupInteropTest(tmpDir, enableInterop: true, inlinesArePrivateExtern: false)
+            await tester.checkBuild(runDestination: .macOS) { results in
+                results.checkTask(.matchRuleType("SwiftDriver Compilation")) { task in
+                    task.checkCommandLineNoMatch([.equal("-fvisibility-inlines-hidden")])
                 }
             }
         }
@@ -6682,6 +6958,127 @@ fileprivate struct SwiftTaskConstructionTests: CoreBasedTests {
                 results.checkTarget("Lib") { target in
                     results.checkTask(.matchTarget(target), .matchRuleType("SwiftDriver Compilation")) { task in
                         task.checkCommandLineDoesNotContain("-whole-module-optimization")
+                    }
+                }
+                results.checkNoDiagnostics()
+            }
+        }
+    }
+
+    /// Verify that enabling embedded Swift (either via `SWIFT_ENABLE_EMBEDDED` or by
+    /// passing `-enable-experimental-feature Embedded` directly via `OTHER_SWIFT_FLAGS`)
+    /// compiles the module into a single object file, so that LLVM can optimize the
+    /// entire module at once.
+    @Test(.requireSDKs(.host))
+    func embeddedSwiftEmitsSingleObjectFile() async throws {
+        let swiftCompilerPath = try await self.swiftCompilerPath
+        let swiftVersion = try await self.swiftVersion
+        let libtoolPath = try await self.libtoolPath
+
+        func makeTestProject(buildSettings: [String: String]) -> TestProject {
+            var settings = buildSettings
+            settings["PRODUCT_NAME"] = "$(TARGET_NAME)"
+            settings["SWIFT_EXEC"] = swiftCompilerPath.str
+            settings["SWIFT_VERSION"] = swiftVersion
+            settings["LIBTOOL"] = libtoolPath.str
+            return TestProject(
+                "aProject",
+                groupTree: TestGroup(
+                    "SomeFiles",
+                    children: [
+                        TestFile("File1.swift"),
+                        TestFile("File2.swift"),
+                    ]
+                ),
+                buildConfigurations: [
+                    TestBuildConfiguration("Debug", buildSettings: settings),
+                ],
+                targets: [
+                    TestStandardTarget(
+                        "Lib",
+                        type: .staticLibrary,
+                        buildPhases: [
+                            TestSourcesBuildPhase(["File1.swift", "File2.swift"]),
+                        ]
+                    )
+                ]
+            )
+        }
+
+        let core = try await getCore()
+
+        do {
+            let testProject = makeTestProject(buildSettings: [
+                "SWIFT_ENABLE_EMBEDDED": "YES",
+            ])
+            let tester = try TaskConstructionTester(core, testProject)
+            await tester.checkBuild(runDestination: .host) { results in
+                results.checkTarget("Lib") { target in
+                    results.checkTask(.matchTarget(target), .matchRuleType("SwiftDriver Compilation")) { task in
+                        task.checkCommandLineDoesNotContain("-num-threads")
+                    }
+                    results.checkTask(.matchTarget(target), .matchRuleType("Libtool")) { task in
+                        let objects = Set(task.inputs.map(\.path.basename))
+                        #expect(objects.contains("Lib-primary.o"))
+                        #expect(!objects.contains("File1.o") && !objects.contains("File2.o"))
+                    }
+                }
+                results.checkNoDiagnostics()
+            }
+        }
+
+        do {
+            let testProject = makeTestProject(buildSettings: [
+                "OTHER_SWIFT_FLAGS": "-enable-experimental-feature Embedded",
+            ])
+            let tester = try TaskConstructionTester(core, testProject)
+            await tester.checkBuild(runDestination: .host) { results in
+                results.checkTarget("Lib") { target in
+                    results.checkTask(.matchTarget(target), .matchRuleType("SwiftDriver Compilation")) { task in
+                        task.checkCommandLineDoesNotContain("-num-threads")
+                    }
+                    results.checkTask(.matchTarget(target), .matchRuleType("Libtool")) { task in
+                        let objects = Set(task.inputs.map(\.path.basename))
+                        #expect(objects.contains("Lib-primary.o"))
+                        #expect(!objects.contains("File1.o") && !objects.contains("File2.o"))
+                    }
+                }
+                results.checkNoDiagnostics()
+            }
+        }
+
+        // Embedded Swift normally produces a single object file, but indexing while building needs an output per source file, so keep per-file objects.
+        do {
+            let testProject = makeTestProject(buildSettings: [
+                "SWIFT_ENABLE_EMBEDDED": "YES",
+                "COMPILER_INDEX_STORE_ENABLE": "YES",
+            ])
+            let tester = try TaskConstructionTester(core, testProject)
+            await tester.checkBuild(BuildParameters(configuration: "Debug", commandLineOverrides: ["INDEX_ENABLE_DATA_STORE": "YES"]), runDestination: .host) { results in
+                results.checkTarget("Lib") { target in
+                    results.checkTask(.matchTarget(target), .matchRuleType("SwiftDriver Compilation")) { task in
+                        task.checkCommandLineContains(["-index-store-path"])
+                        task.checkCommandLineContains(["-num-threads"])
+                    }
+                    results.checkTask(.matchTarget(target), .matchRuleType("Libtool")) { task in
+                        let objects = Set(task.inputs.map(\.path.basename))
+                        #expect(objects.isSuperset(of: ["File1.o", "File2.o"]))
+                        #expect(!objects.contains("Lib-primary.o"))
+                    }
+                }
+                results.checkNoDiagnostics()
+            }
+        }
+
+        do {
+            let testProject = makeTestProject(buildSettings: [:])
+            let tester = try TaskConstructionTester(core, testProject)
+            await tester.checkBuild(runDestination: .host) { results in
+                results.checkTarget("Lib") { target in
+                    results.checkTask(.matchTarget(target), .matchRuleType("Libtool")) { task in
+                        let objects = Set(task.inputs.map(\.path.basename))
+                        #expect(objects.isSuperset(of: ["File1.o", "File2.o"]))
+                        #expect(!objects.contains("Lib-primary.o"))
                     }
                 }
                 results.checkNoDiagnostics()

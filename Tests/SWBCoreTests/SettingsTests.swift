@@ -879,6 +879,173 @@ import SWBTestSupport
         #expect(scope.evaluateAsString(BuiltinMacros.INDEX_PRECOMPS_DIR) == Path.root.join("tmp/foo/\(sdk)/indexpch").str)
     }
 
+    @Test(.requireSDKs(.macOS))
+    func indexBuildModuleCache() async throws {
+        let testWorkspace = try await TestWorkspace("Workspace",
+                                                    projects: [
+                                                        TestProject("aProject",
+                                                                    groupTree: TestGroup("SomeFiles"),
+                                                                    buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: [:])],
+                                                                    targets: [
+                                                                        TestAggregateTarget("AggregateTarget",
+                                                                                            buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: [:])])])]).load(getCore())
+        let context = try await contextForTestData(testWorkspace)
+        let buildRequestContext = BuildRequestContext(workspaceContext: context)
+
+        let testProject = context.workspace.projects[0]
+        let testTarget = testProject.targets[0]
+
+        let derivedData = Path.root.join("tmp/DerivedData")
+        func settings(_ action: BuildAction, arena: ArenaInfo?) throws -> Settings {
+            // Index builds configure aggregate targets for the run destination's platform.
+            let parameters = BuildParameters(action: action, configuration: "Debug", activeRunDestination: .macOS, arena: arena)
+            let settings = Settings(workspaceContext: context, buildRequestContext: buildRequestContext, parameters: parameters, project: testProject, target: testTarget)
+            #expect(settings.errors.isEmpty, "Errors creating settings: \(settings.errors)")
+            return settings
+        }
+
+        // Regular builds keep using the shared module cache, and its build session file.
+        do {
+            let scope = try settings(.build, arena: .buildArena(derivedDataRoot: derivedData)).globalScope
+            #expect(scope.evaluate(BuiltinMacros.MODULE_CACHE_DIR) == derivedData.join("ModuleCache.noindex"))
+            #expect(scope.evaluate(BuiltinMacros.INDEX_MODULE_CACHE_DIR) == derivedData.join("IndexModuleCache.noindex"))
+            #expect(scope.evaluate(BuiltinMacros.CLANG_MODULES_BUILD_SESSION_FILE) == derivedData.join("ModuleCache.noindex/Session.modulevalidation").str)
+            // `WorkspaceContext.getModuleSessionFilePath` names the default module cache folders itself; they must match the settings' defaults.
+            #expect(Path(scope.evaluate(BuiltinMacros.CLANG_MODULES_BUILD_SESSION_FILE)).dirname == scope.evaluate(BuiltinMacros.MODULE_CACHE_DIR))
+        }
+
+        // Index builds use their own module cache, and validate its modules in build sessions of their own.
+        do {
+            let scope = try settings(.indexBuild, arena: .indexBuildArena(derivedDataRoot: derivedData)).globalScope
+            #expect(scope.evaluate(BuiltinMacros.MODULE_CACHE_DIR) == derivedData.join("IndexModuleCache.noindex"))
+            #expect(scope.evaluate(BuiltinMacros.CLANG_MODULES_BUILD_SESSION_FILE) == derivedData.join("IndexModuleCache.noindex/Session.modulevalidation").str)
+            #expect(Path(scope.evaluate(BuiltinMacros.CLANG_MODULES_BUILD_SESSION_FILE)).dirname == scope.evaluate(BuiltinMacros.INDEX_MODULE_CACHE_DIR))
+        }
+
+        // Without DerivedData there is no module cache directory, for index builds either, so they share the compiler's default module cache and its build session file with regular builds.
+        do {
+            let scope = try settings(.indexBuild, arena: nil).globalScope
+            #expect(scope.evaluate(BuiltinMacros.MODULE_CACHE_DIR).isEmpty)
+            #expect(scope.evaluate(BuiltinMacros.INDEX_MODULE_CACHE_DIR).isEmpty)
+            #expect(scope.evaluate(BuiltinMacros.CLANG_MODULES_BUILD_SESSION_FILE) == (try settings(.build, arena: nil)).globalScope.evaluate(BuiltinMacros.CLANG_MODULES_BUILD_SESSION_FILE))
+            if context.userInfo?.processEnvironment["CCHROOT"]?.isEmpty ?? true {
+                #expect(scope.evaluate(BuiltinMacros.CLANG_MODULES_BUILD_SESSION_FILE) == userCacheDir().join("org.llvm.clang/ModuleCache.noindex/Session.modulevalidation").str)
+            }
+        }
+    }
+
+    // Index builds use INDEX_MODULE_CACHE_DIR even if MODULE_CACHE_DIR is set explicitly, by a target or on the command line.
+    @Test(.requireSDKs(.macOS))
+    func indexBuildModuleCacheOverridesExplicitModuleCacheDir() async throws {
+        let customModuleCache = Path.root.join("tmp/CustomModuleCache")
+        let testWorkspace = try await TestWorkspace("Workspace",
+                                                    projects: [
+                                                        TestProject("aProject",
+                                                                    groupTree: TestGroup("SomeFiles"),
+                                                                    buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: [:])],
+                                                                    targets: [
+                                                                        TestAggregateTarget("Default",
+                                                                                            buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: [:])]),
+                                                                        TestAggregateTarget("CustomModuleCache",
+                                                                                            buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: [
+                                                                                                "MODULE_CACHE_DIR": customModuleCache.str,
+                                                                                            ])]),
+                                                                        TestAggregateTarget("CustomModuleCacheOptOut",
+                                                                                            buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: [
+                                                                                                "MODULE_CACHE_DIR": customModuleCache.str,
+                                                                                                "INDEX_MODULE_CACHE_DIR": "",
+                                                                                            ])]),
+                                                                    ])]).load(getCore())
+        let context = try await contextForTestData(testWorkspace)
+        let buildRequestContext = BuildRequestContext(workspaceContext: context)
+        let testProject = context.workspace.projects[0]
+
+        let derivedData = Path.root.join("tmp/DerivedData")
+        func moduleCacheDir(_ action: BuildAction, target targetName: String, commandLineOverrides: [String: String] = [:]) throws -> Path {
+            let arena: ArenaInfo = action == .indexBuild ? .indexBuildArena(derivedDataRoot: derivedData) : .buildArena(derivedDataRoot: derivedData)
+            let parameters = BuildParameters(action: action, configuration: "Debug", activeRunDestination: .macOS, commandLineOverrides: commandLineOverrides, arena: arena)
+            let target = try #require(testProject.targets.first { $0.name == targetName })
+            let settings = Settings(workspaceContext: context, buildRequestContext: buildRequestContext, parameters: parameters, project: testProject, target: target)
+            #expect(settings.errors.isEmpty, "Errors creating settings: \(settings.errors)")
+            return settings.globalScope.evaluate(BuiltinMacros.MODULE_CACHE_DIR)
+        }
+
+        // A MODULE_CACHE_DIR set by the target is used by regular builds, but not by index builds.
+        #expect(try moduleCacheDir(.build, target: "CustomModuleCache") == customModuleCache)
+        #expect(try moduleCacheDir(.indexBuild, target: "CustomModuleCache") == derivedData.join("IndexModuleCache.noindex"))
+
+        // The same holds for a MODULE_CACHE_DIR set on the command line.
+        #expect(try moduleCacheDir(.build, target: "Default", commandLineOverrides: ["MODULE_CACHE_DIR": customModuleCache.str]) == customModuleCache)
+        #expect(try moduleCacheDir(.indexBuild, target: "Default", commandLineOverrides: ["MODULE_CACHE_DIR": customModuleCache.str]) == derivedData.join("IndexModuleCache.noindex"))
+
+        // An empty INDEX_MODULE_CACHE_DIR keeps the index build on the explicit MODULE_CACHE_DIR.
+        #expect(try moduleCacheDir(.indexBuild, target: "CustomModuleCacheOptOut") == customModuleCache)
+    }
+
+    // INDEX_MODULE_CACHE_DIR can be conditional on the SDK, wherever it is set.
+    @Test(.requireSDKs(.macOS))
+    func indexBuildModuleCacheWithSDKConditionalSetting() async throws {
+        let testWorkspace = try await TestWorkspace("Workspace",
+                                                    projects: [
+                                                        TestProject("aProject",
+                                                                    groupTree: TestGroup("SomeFiles"),
+                                                                    buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: [:])],
+                                                                    targets: [
+                                                                        TestAggregateTarget("Default",
+                                                                                            buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: [:])]),
+                                                                        TestAggregateTarget("ConditionalOptOut",
+                                                                                            buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: [
+                                                                                                "INDEX_MODULE_CACHE_DIR[sdk=macosx*]": "",
+                                                                                            ])]),
+                                                                    ])]).load(getCore())
+        let context = try await contextForTestData(testWorkspace)
+        let buildRequestContext = BuildRequestContext(workspaceContext: context)
+        let testProject = context.workspace.projects[0]
+
+        let derivedData = Path.root.join("tmp/DerivedData")
+        func indexBuildModuleCacheDir(target targetName: String, commandLineOverrides: [String: String] = [:]) throws -> Path {
+            let parameters = BuildParameters(action: .indexBuild, configuration: "Debug", activeRunDestination: .macOS, commandLineOverrides: commandLineOverrides, arena: .indexBuildArena(derivedDataRoot: derivedData))
+            let target = try #require(testProject.targets.first { $0.name == targetName })
+            let settings = Settings(workspaceContext: context, buildRequestContext: buildRequestContext, parameters: parameters, project: testProject, target: target)
+            #expect(settings.errors.isEmpty, "Errors creating settings: \(settings.errors)")
+            return settings.globalScope.evaluate(BuiltinMacros.MODULE_CACHE_DIR)
+        }
+
+        // An empty INDEX_MODULE_CACHE_DIR for the SDK keeps the index build on MODULE_CACHE_DIR, whether it is set by the target...
+        #expect(try indexBuildModuleCacheDir(target: "ConditionalOptOut") == derivedData.join("ModuleCache.noindex"))
+        // ...or on the command line, where SDK conditions are only resolved when the settings are evaluated.
+        #expect(try indexBuildModuleCacheDir(target: "Default", commandLineOverrides: ["INDEX_MODULE_CACHE_DIR[sdk=macosx*]": ""]) == derivedData.join("ModuleCache.noindex"))
+    }
+
+    @Test
+    func indexModulesPruneDefaults() async throws {
+        let testWorkspace = try await TestWorkspace("Workspace",
+                                                    projects: [
+                                                        TestProject("aProject",
+                                                                    groupTree: TestGroup("SomeFiles"),
+                                                                    buildConfigurations: [
+                                                                        TestBuildConfiguration("Debug", buildSettings: [:]),
+                                                                        TestBuildConfiguration("CustomRegularSchedule", buildSettings: [
+                                                                            "INDEX_MODULES_PRUNE_INTERVAL": "60",
+                                                                            "INDEX_MODULES_PRUNE_AFTER": "120",
+                                                                        ]),
+                                                                    ])]).load(getCore())
+        let context = try await contextForTestData(testWorkspace)
+        let buildRequestContext = BuildRequestContext(workspaceContext: context)
+        let testProject = context.workspace.projects[0]
+
+        func indexModulesPruneSettings(configuration: String) -> [String] {
+            let parameters = BuildParameters(action: .indexBuild, configuration: configuration)
+            let settings = Settings(workspaceContext: context, buildRequestContext: buildRequestContext, parameters: parameters, project: testProject)
+            #expect(settings.errors.isEmpty, "Errors creating settings: \(settings.errors)")
+            return [settings.globalScope.evaluate(BuiltinMacros.INDEX_MODULES_PRUNE_INTERVAL), settings.globalScope.evaluate(BuiltinMacros.INDEX_MODULES_PRUNE_AFTER)]
+        }
+
+        // The index module cache is pruned on the regular schedule by default.
+        #expect(indexModulesPruneSettings(configuration: "Debug") == ["86400", "345600"])
+        #expect(indexModulesPruneSettings(configuration: "CustomRegularSchedule") == ["60", "120"])
+    }
+
     @Test
     func hostOperatingSystemVersionSettings() async throws {
         let workspace = try await TestWorkspace("Workspace", projects: [TestProject("aProject", groupTree: TestGroup("SomeFiles", children: []))]).load(getCore())
@@ -2749,6 +2916,42 @@ import SWBTestSupport
     }
 
     @Test(.requireSDKs(.macOS))
+    func cachingFeatureFlags() async throws {
+        let cases: [(flag: String, isEnabled: (MacroEvaluationScope) -> Bool)] = [
+            ("EnableSwiftExplicitModulesByDefault", { $0.evaluate(BuiltinMacros.SWIFT_ENABLE_EXPLICIT_MODULES) == .enabled }),
+            ("EnableClangCachingByDefault", { $0.evaluate(BuiltinMacros.CLANG_ENABLE_COMPILE_CACHE) }),
+            ("EnableSwiftCachingByDefault", { $0.evaluate(BuiltinMacros.SWIFT_ENABLE_COMPILE_CACHE) }),
+            ("EnableClangPrefixMappingByDefault", { $0.evaluate(BuiltinMacros.CLANG_ENABLE_PREFIX_MAPPING) }),
+            ("EnableSwiftPrefixMappingByDefault", { $0.evaluate(BuiltinMacros.SWIFT_ENABLE_PREFIX_MAPPING) }),
+        ]
+
+        func evaluate(environment: Environment) async throws -> [String: Bool] {
+            try await withEnvironment(environment) {
+                var result: [String: Bool] = [:]
+                try await _testToolchainOverride { _, _, scope in
+                    for (flag, isEnabled) in cases {
+                        result[flag] = isEnabled(scope)
+                    }
+                }
+                return result
+            }
+        }
+
+        let baseline = try await evaluate(environment: [:])
+        for (flag, _) in cases where flag != "EnableSwiftExplicitModulesByDefault" {
+            #expect(baseline[flag] == false, "\(flag): expected setting to be off by default")
+        }
+
+        for (enabledFlag, _) in cases {
+            let result = try await evaluate(environment: [EnvironmentKey(enabledFlag): "YES"])
+            for (flag, _) in cases {
+                let expected = flag == enabledFlag ? true : baseline[flag]
+                #expect(result[flag] == expected, "\(enabledFlag): unexpected value for the setting controlled by \(flag)")
+            }
+        }
+    }
+
+    @Test(.requireSDKs(.macOS))
     func externalTargetSettings() async throws {
         let core = try await getCore()
         let testWorkspace = try TestWorkspace(
@@ -4144,6 +4347,145 @@ import SWBTestSupport
                 #expect(settings.warnings + DiagnosticDatas(settings, .warning) == targets[n].expectedWarnings)
                 #expect(settings.errors + DiagnosticDatas(settings, .error) == targets[n].expectedErrors)
             }
+        }
+    }
+
+    @Test(.requireSDKs(.macOS), .requireXcode27())
+    func defaultDeploymentTargetWithoutDeploymentTargetSettingName() async throws {
+        let core = try await getCore()
+        try await withTemporaryDirectory { sdksDirPath in
+            let sdkPath = sdksDirPath.join("TestSDK.sdk")
+            try await writeSDK(name: sdkPath.basename, parentDir: sdksDirPath, settings: [
+                "CanonicalName": "macosx",
+                "Version": "1.0",
+                "IsBaseSDK": "Yes",
+                "DefaultProperties": [
+                    "PLATFORM_NAME": "macosx",
+                ],
+                "DefaultVariant": "default",
+                "Variants": [
+                    [   "Name": "default",
+                        "BuildSettings": [:] as PropertyListItem,
+                    ] as PropertyListItem,
+                    [   "Name": "explicit",
+                        "BuildSettings": [
+                            "LLVM_TARGET_TRIPLE_OS_VERSION": "explicitos9.0",
+                        ],
+                    ] as PropertyListItem,
+                ],
+                "SupportedTargets": [
+                    "default": [
+                        "LLVMTargetTripleVendor": "apple",
+                        "LLVMTargetTripleSys": "testos",
+                        "DefaultDeploymentTarget": "7.0",
+                    ],
+                    "explicit": [
+                        "LLVMTargetTripleVendor": "apple",
+                        "LLVMTargetTripleSys": "testos",
+                        "DefaultDeploymentTarget": "7.0",
+                    ],
+                ],
+            ])
+
+            let testWorkspace = try TestWorkspace(
+                "Workspace",
+                sourceRoot: Path.root.join("tmp/Workspace"),
+                projects: [TestProject(
+                    "aProject",
+                    groupTree: TestGroup("SomeFiles", children: [TestFile("Mock.cpp")]),
+                    targets: [
+                        TestStandardTarget("Default", type: .application,
+                                           buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: ["SDKROOT": sdkPath.str])],
+                                           buildPhases: [TestSourcesBuildPhase(["Mock.cpp"])]),
+                        TestStandardTarget("UserOverride", type: .application,
+                                           buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: ["SDKROOT": sdkPath.str, "SWIFT_DEPLOYMENT_TARGET": "8.0"])],
+                                           buildPhases: [TestSourcesBuildPhase(["Mock.cpp"])]),
+                        TestStandardTarget("ExplicitSDKValue", type: .application,
+                                           buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: ["SDKROOT": sdkPath.str, "SDK_VARIANT": "explicit"])],
+                                           buildPhases: [TestSourcesBuildPhase(["Mock.cpp"])]),
+                    ])
+                ]).load(core)
+            let context = try await contextForTestData(testWorkspace, files: [:])
+            let buildRequestContext = BuildRequestContext(workspaceContext: context)
+            let testProject = context.workspace.projects[0]
+            let parameters = BuildParameters(action: .build, configuration: "Debug", overrides: [:])
+
+            func scope(_ targetName: String) -> MacroEvaluationScope {
+                let target = testProject.targets.first { $0.name == targetName }!
+                return Settings(workspaceContext: context, buildRequestContext: buildRequestContext, parameters: parameters, project: testProject, target: target).globalScope
+            }
+
+            // With no setting name, the default deployment target is used for the triple version.
+            let defaultScope = scope("Default")
+            #expect(defaultScope.evaluate(BuiltinMacros.SWIFT_DEPLOYMENT_TARGET) == "7.0")
+            #expect(defaultScope.evaluate(BuiltinMacros.LLVM_TARGET_TRIPLE_OS_VERSION) == "testos7.0")
+
+            // A user-specified SWIFT_DEPLOYMENT_TARGET still wins.
+            let overrideScope = scope("UserOverride")
+            #expect(overrideScope.evaluate(BuiltinMacros.SWIFT_DEPLOYMENT_TARGET) == "8.0")
+            #expect(overrideScope.evaluate(BuiltinMacros.LLVM_TARGET_TRIPLE_OS_VERSION) == "testos8.0")
+
+            // A value the SDK explicitly provides is not overridden by the fallback.
+            #expect(scope("ExplicitSDKValue").evaluate(BuiltinMacros.LLVM_TARGET_TRIPLE_OS_VERSION) == "explicitos9.0")
+        }
+    }
+
+    @Test(.requireSDKs(.iOS), .requireXcode27())
+    func defaultDeploymentTargetWithoutDeploymentTargetSettingNameNoVariants() async throws {
+        let core = try await getCore()
+        try await withTemporaryDirectory { sdksDirPath in
+            // SDK with no 'Variants' array
+            let sdkPath = sdksDirPath.join("TestSDK.sdk")
+            try await writeSDK(name: sdkPath.basename, parentDir: sdksDirPath, settings: [
+                "CanonicalName": "iphoneos",
+                "Version": "1.0",
+                "IsBaseSDK": "Yes",
+                "DefaultProperties": [
+                    "PLATFORM_NAME": "iphoneos",
+                ],
+                "SupportedTargets": [
+                    "iphoneos": [
+                        "LLVMTargetTripleVendor": "apple",
+                        "LLVMTargetTripleSys": "testos",
+                        "DefaultDeploymentTarget": "7.0",
+                    ],
+                ],
+            ])
+
+            let testWorkspace = try TestWorkspace(
+                "Workspace",
+                sourceRoot: Path.root.join("tmp/Workspace"),
+                projects: [TestProject(
+                    "aProject",
+                    groupTree: TestGroup("SomeFiles", children: [TestFile("Mock.cpp")]),
+                    targets: [
+                        TestStandardTarget("Default", type: .application,
+                                           buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: ["SDKROOT": sdkPath.str])],
+                                           buildPhases: [TestSourcesBuildPhase(["Mock.cpp"])]),
+                        TestStandardTarget("UserOverride", type: .application,
+                                           buildConfigurations: [TestBuildConfiguration("Debug", buildSettings: ["SDKROOT": sdkPath.str, "SWIFT_DEPLOYMENT_TARGET": "8.0"])],
+                                           buildPhases: [TestSourcesBuildPhase(["Mock.cpp"])]),
+                    ])
+                ]).load(core)
+            let context = try await contextForTestData(testWorkspace, files: [:])
+            let buildRequestContext = BuildRequestContext(workspaceContext: context)
+            let testProject = context.workspace.projects[0]
+            let parameters = BuildParameters(action: .build, configuration: "Debug", overrides: [:])
+
+            func scope(_ targetName: String) -> MacroEvaluationScope {
+                let target = testProject.targets.first { $0.name == targetName }!
+                return Settings(workspaceContext: context, buildRequestContext: buildRequestContext, parameters: parameters, project: testProject, target: target).globalScope
+            }
+
+            // With no setting name, the default deployment target is used for the triple version.
+            let defaultScope = scope("Default")
+            #expect(defaultScope.evaluate(BuiltinMacros.SWIFT_DEPLOYMENT_TARGET) == "7.0")
+            #expect(defaultScope.evaluate(BuiltinMacros.LLVM_TARGET_TRIPLE_OS_VERSION) == "testos7.0")
+
+            // A user-specified SWIFT_DEPLOYMENT_TARGET still wins.
+            let overrideScope = scope("UserOverride")
+            #expect(overrideScope.evaluate(BuiltinMacros.SWIFT_DEPLOYMENT_TARGET) == "8.0")
+            #expect(overrideScope.evaluate(BuiltinMacros.LLVM_TARGET_TRIPLE_OS_VERSION) == "testos8.0")
         }
     }
 
@@ -5933,7 +6275,7 @@ import SWBTestSupport
                     TestBuildConfiguration("Debug", buildSettings: [
                         "PRODUCT_NAME": "UnsupportedTarget",
                         "BUILD_VARIANTS": "normal",
-                        "EXTRA_BUILD_VARIANTS": "mtasan",
+                        "EXTRA_BUILD_VARIANTS": "testvariant",
                     ])
                 ]),
                 TestStandardTarget("ExplicitlyUnsupportedTarget",
