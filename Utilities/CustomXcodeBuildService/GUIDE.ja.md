@@ -109,6 +109,7 @@ python3 Utilities/CustomXcodeBuildService/Distribution/release.py verify-payload
 | `Background launchd selection` が保存された選択と異なる | `use custom` か `use bundled` で両方の環境に選択を適用し直し、クライアントを起動し直します。古いリリースで Background 側が未設定だった場合も、この操作で反映されます。 |
 | MCP からのリクエストが以前のサービスを使っている | Xcode Service（MCP 用）はバックグラウンドで動き、Xcode や AI アプリを閉じても残ることがあります。切り替えた後にアプリを起動し直すときは、アクティビティモニタなどで Xcode Service も終了します。 |
 | tmux 内のビルドが以前の選択を使っている | 起動済みの tmux サーバーには元の環境変数が残ります。作業を保存して既存のサーバーを停止し、起動し直したターミナルで新しいサーバーを起動します。ペインを追加してもサーバーの環境変数は更新されません。 |
+| v0.5.6 以前のコマンドが `Refusing to overwrite an unrelated LaunchAgent` で失敗する | それより新しいリリースが書き込む LaunchAgent を、v0.5.6 以前のコマンドは読めません。新しいほうのコマンドで `use bundled` を実行してから、古いほうのコマンドで `use custom` を実行します。 |
 | 選択中のパッケージを削除してしまい、Xcode がカスタム版のサービスを起動できない | 再インストールした Homebrew 版など、手元にあるどれかのコマンドで `use bundled` を実行します。`use bundled` は、選択中のパッケージがなくても動きます。LaunchAgent が削除されたコマンドを指したままなので、選択はひとりでには戻りません。 |
 
 ## 単体インストール版から移行する
