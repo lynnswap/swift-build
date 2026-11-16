@@ -914,7 +914,12 @@ func attachedProcessPreservesFailureStatus(terminated: Bool) throws {
     let current = try Data(contentsOf: fixture.store.agent)
     var properties = fixture.store.agentProperties
     properties["ProgramArguments"] = [fixture.store.persistentExecutable.path, "activate"]
-    try PropertyListSerialization.data(fromPropertyList: properties, format: .xml, options: 0).write(to: fixture.store.agent)
+    let earlier = try PropertyListSerialization.data(fromPropertyList: properties, format: .xml, options: 0)
+    try earlier.write(to: fixture.store.agent)
+    // Another package's command leaves the form that the selected release reads.
+    let other = InstallationStore(home: fixture.store.home, packageDirectory: try fixture.package("v0.4.0"))
+    _ = try InstallationManager(store: other, environment: fixture.manager.environment).activate()
+    #expect(try Data(contentsOf: fixture.store.agent) == earlier)
     _ = try fixture.manager.activate()
     #expect(try Data(contentsOf: fixture.store.agent) == current)
 }

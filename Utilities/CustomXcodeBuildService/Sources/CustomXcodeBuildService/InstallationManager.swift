@@ -160,10 +160,13 @@ struct InstallationManager {
             try Transaction.perform { transaction in
                 // Homebrew upgrades replace the package without running use custom, so
                 // activation also brings an earlier release's agent up to date. launchd
-                // reads the rewritten file at the next login.
-                let agent = try Data(contentsOf: store.agent)
-                if try store.writeAgent(preserving: agent, activating: executable) {
-                    transaction.undo { try agent.write(to: store.agent, options: .atomic) }
+                // reads the rewritten file at the next login. Another package's command
+                // may be a release that cannot read the current form.
+                if executable == store.persistentExecutable {
+                    let agent = try Data(contentsOf: store.agent)
+                    if try store.writeAgent(preserving: agent) {
+                        transaction.undo { try agent.write(to: store.agent, options: .atomic) }
+                    }
                 }
                 try apply(selected, previous: settings, transaction: transaction)
             }

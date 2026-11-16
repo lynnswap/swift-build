@@ -184,12 +184,10 @@ struct InstallationStore {
         return nil
     }
 
-    var agentProperties: [String: Any] { agentProperties(activating: persistentExecutable) }
-
-    private func agentProperties(activating executable: URL) -> [String: Any] {
+    var agentProperties: [String: Any] {
         [
             "Label": Self.label,
-            "ProgramArguments": ["/bin/sh", "-c", Self.activationScript, executable.path],
+            "ProgramArguments": ["/bin/sh", "-c", Self.activationScript, persistentExecutable.path],
             "RunAtLoad": true,
             "LimitLoadToSessionType": "Aqua",
             "StandardOutPath": root.appendingPathComponent("activation.log").path,
@@ -218,8 +216,8 @@ struct InstallationStore {
         }
     }
 
-    func writeAgent(preserving previous: Data?, activating executable: URL? = nil) throws -> Bool {
-        var properties = agentProperties(activating: executable ?? persistentExecutable)
+    func writeAgent(preserving previous: Data?) throws -> Bool {
+        var properties = agentProperties
         if let previous {
             guard let existing = try PropertyListSerialization.propertyList(from: previous, format: nil) as? [String: Any] else {
                 throw ServiceError("Invalid LaunchAgent property list: \(agent.path)")
