@@ -343,6 +343,8 @@ open class SwiftDriverJobSchedulingTaskAction: TaskAction {
             if executionDelegate.fs.exists(previousPath) {
                 try executionDelegate.fs.remove(previousPath)
             }
+            // A request made while the handoff was set aside got implicit-module arguments, which stay valid. It is not
+            // told when an identical handoff returns, so that re-preparing unchanged targets keeps clients' caches.
             if previousContents != contents, let target = task.forTarget {
                 // Index compiler arguments are derived from this file, so clients caching them need to know.
                 executionDelegate.indexOptionsChanged(for: target)
