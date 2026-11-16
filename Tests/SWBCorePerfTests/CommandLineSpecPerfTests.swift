@@ -156,12 +156,16 @@ extension CapturingTaskGenerationDelegate: TaskActionCreationDelegate {
         return FileCopyTaskAction(context)
     }
 
-    public func createGenericCachingTaskAction(enableCacheDebuggingRemarks: Bool, enableTaskSandboxEnforcement: Bool, sandboxDirectory: Path, extraSandboxSubdirectories: [Path], developerDirectory: Path, casOptions: CASOptions) -> any PlannedTaskAction {
-        return GenericCachingTaskAction(enableCacheDebuggingRemarks: enableCacheDebuggingRemarks, enableTaskSandboxEnforcement: enableTaskSandboxEnforcement, sandboxDirectory: sandboxDirectory, extraSandboxSubdirectories: extraSandboxSubdirectories, developerDirectory: developerDirectory, casOptions: casOptions)
+    public func createGenericCachingTaskAction(enableCacheDebuggingRemarks: Bool, enableTaskSandboxEnforcement: Bool, sandboxDirectory: Path, preserveSandboxDirectory: Bool, extraSandboxSubdirectories: [Path], developerDirectory: Path, casOptions: CASOptions) -> any PlannedTaskAction {
+        return GenericCachingTaskAction(enableCacheDebuggingRemarks: enableCacheDebuggingRemarks, enableTaskSandboxEnforcement: enableTaskSandboxEnforcement, sandboxDirectory: sandboxDirectory, preserveSandboxDirectory: preserveSandboxDirectory, extraSandboxSubdirectories: extraSandboxSubdirectories, developerDirectory: developerDirectory, casOptions: casOptions)
     }
 
     public func createInfoPlistProcessorTaskAction(_ contextPath: Path) -> any PlannedTaskAction {
         return InfoPlistProcessorTaskAction(contextPath)
+    }
+
+    public func createIngestCASFSRootTaskAction() -> any PlannedTaskAction {
+        return IngestCASFSRootTaskAction()
     }
 
     public func createMergeInfoPlistTaskAction() -> any PlannedTaskAction {
@@ -254,6 +258,10 @@ extension CapturingTaskGenerationDelegate: TaskActionCreationDelegate {
 
     func createLinkerTaskAction(expandResponseFiles: Bool, responseFileFormat: ResponseFileFormat, extractArchiveInputs: Bool) -> any PlannedTaskAction {
         return LinkerTaskAction(expandResponseFiles: expandResponseFiles, responseFileFormat: responseFileFormat, extractArchiveInputs: extractArchiveInputs)
+    }
+
+    public func createTouchTaskAction() -> any PlannedTaskAction {
+        return TouchTaskAction()
     }
 }
 

@@ -607,6 +607,7 @@ package final class GlobalProductPlan: GlobalTargetInfoProvider
             guard let artifactBundleFileType = specLookupContext.lookupFileType(identifier: "wrapper.artifactbundle") else {
                 continue
             }
+            let filePathResolver = settings.makeFilePathResolver(cacheResults: true)
 
             // Parse artifact bundle info from any bundles this target directly depends upon.
             //
@@ -619,7 +620,7 @@ package final class GlobalProductPlan: GlobalTargetInfoProvider
                     guard currentPlatformFilter.matches(buildFile.platformFilters) else { continue }
                     guard case .reference(let referenceGUID) = buildFile.buildableItem else { continue }
                     guard let reference = workspaceContext.workspace.lookupReference(for: referenceGUID) else { continue }
-                    let resolvedPath = settings.filePathResolver.resolveAbsolutePath(reference, resolveParameterizedProductName: false)
+                    let resolvedPath = filePathResolver.resolveAbsolutePath(reference, resolveParameterizedProductName: false)
                     // TODO: Remove the fileExtension check once SwiftPM has been updated to consistently set the file type on artifact bundle references in PIF
                     if resolvedPath.fileExtension == "artifactbundle" || specLookupContext.lookupFileType(reference: reference)?.conformsTo(artifactBundleFileType) == true {
                         do {
@@ -928,6 +929,19 @@ package final class GlobalProductPlan: GlobalTargetInfoProvider
                 let targetScanInputsReadyNode = nodeCreationDelegate.createVirtualNode(targetNodeBase + "-scan-inputs-ready")
                 let targetStartImmediateNode = nodeCreationDelegate.createVirtualNode(targetNodeBase + "-immediate")
 
+                var casSandboxOutputsNode: PlannedPathNode?
+                var casSandboxDependenciesNode: PlannedPathNode?
+                var casSandboxObjCOutputsNode: PlannedPathNode?
+                if configuredTarget.target.type == .standard {
+                    let settings = buildRequestContext.getCachedSettings(configuredTarget.parameters, target: configuredTarget.target, impartedBuildProperties: impartedBuildPropertiesByTarget[configuredTarget])
+                    let scope = settings.globalScope
+                    if scope.evaluate(BuiltinMacros.SWIFT_ENABLE_CAS_SANDBOX) {
+                        casSandboxOutputsNode = nodeCreationDelegate.createNode(absolutePath: scope.evaluate(BuiltinMacros.TARGET_TEMP_DIR).join("casfs-outputs.json"))
+                        casSandboxDependenciesNode = nodeCreationDelegate.createNode(absolutePath: scope.evaluate(BuiltinMacros.TARGET_TEMP_DIR).join("casfs-deps.json"))
+                        casSandboxObjCOutputsNode = nodeCreationDelegate.createNode(absolutePath: scope.evaluate(BuiltinMacros.TARGET_TEMP_DIR).join("casfs-objc-outputs.json"))
+                    }
+                }
+
                 var preparedForIndexPreCompilationNode: (any PlannedNode)?
                 var preparedForIndexModuleContentNode: (any PlannedNode)?
                 if enableIndexBuildArena, configuredTarget.target.type == .standard {
@@ -940,7 +954,7 @@ package final class GlobalProductPlan: GlobalTargetInfoProvider
                 let targetWillSignNode = nodeCreationDelegate.createVirtualNode(targetNodeBase + "-will-sign")
 
                 // Create the target task info collector.
-                targetGateNodes[configuredTarget] = TargetGateNodes(startNode: targetStartNode, endNode: targetEndNode, startCompilingNode: targetStartCompilingNode, startLinkingNode: targetStartLinkingNode, startScanningNode: targetStartScanningNode, modulesReadyNode: targetModulesReadyNode, linkerInputsReadyNode: targetLinkerInputsReadyNode, scanInputsReadyNode: targetScanInputsReadyNode, startImmediateNode: targetStartImmediateNode, unsignedProductReadyNode: targetUnsignedProductReadyNode, willSignNode: targetWillSignNode, preparedForIndexPreCompilationNode: preparedForIndexPreCompilationNode, preparedForIndexModuleContentNode: preparedForIndexModuleContentNode)
+                targetGateNodes[configuredTarget] = TargetGateNodes(startNode: targetStartNode, endNode: targetEndNode, startCompilingNode: targetStartCompilingNode, startLinkingNode: targetStartLinkingNode, startScanningNode: targetStartScanningNode, modulesReadyNode: targetModulesReadyNode, linkerInputsReadyNode: targetLinkerInputsReadyNode, scanInputsReadyNode: targetScanInputsReadyNode, startImmediateNode: targetStartImmediateNode, unsignedProductReadyNode: targetUnsignedProductReadyNode, willSignNode: targetWillSignNode, casSandboxDependenciesNode: casSandboxDependenciesNode, casSandboxOutputsNode: casSandboxOutputsNode, casSandboxObjCOutputsNode: casSandboxObjCOutputsNode, preparedForIndexPreCompilationNode: preparedForIndexPreCompilationNode, preparedForIndexModuleContentNode: preparedForIndexModuleContentNode)
             }
         }
         return targetGateNodes
@@ -1480,7 +1494,7 @@ package final class GlobalProductPlan: GlobalTargetInfoProvider
 
         // Determine if the target includes Swift, which might contribute to the module definition.
         let specLookupContext = SpecLookupCtxt(specRegistry: workspaceContext.core.specRegistry, platform: settings.platform)
-        let buildingAnySwiftSourceFiles = (target as? SWBCore.BuildPhaseTarget)?.sourcesBuildPhase?.containsSwiftSources(workspaceContext.workspace, specLookupContext, scope, settings.filePathResolver) ?? false
+        let buildingAnySwiftSourceFiles = (target as? SWBCore.BuildPhaseTarget)?.sourcesBuildPhase?.containsSwiftSources(workspaceContext.workspace, specLookupContext, scope, settings.makeFilePathResolver(cacheResults: true)) ?? false
 
         // Determine if the target exports its Swift ObjC API.
         let exportsSwiftObjCAPI = buildingAnySwiftSourceFiles && scope.evaluate(BuiltinMacros.SWIFT_INSTALL_OBJC_HEADER) && !scope.evaluate(BuiltinMacros.SWIFT_OBJC_INTERFACE_HEADER_NAME).isEmpty
@@ -1602,6 +1616,7 @@ package final class GlobalProductPlan: GlobalTargetInfoProvider
             let moduleName = scope.evaluate(BuiltinMacros.PRODUCT_MODULE_NAME)
             let currentPlatformFilter = PlatformFilter(scope)
             let specLookupContext = SpecLookupCtxt(specRegistry: workspaceContext.core.specRegistry, platform: settings.platform)
+            let filePathResolver = settings.makeFilePathResolver(cacheResults: true)
 
             // There's no "umbrella" attribute for headers, just a naming convention. Collect all of the
             // headers that match the convention.
@@ -1621,7 +1636,7 @@ package final class GlobalProductPlan: GlobalTargetInfoProvider
                         // private headers, it will work fine, it will just be weird.
                         if let reference = workspace.lookupReference(for: guid) {
                             if specLookupContext.lookupFileType(reference: reference)?.conformsToAny(headerFileTypes) ?? false {
-                                let path = settings.filePathResolver.resolveAbsolutePath(reference, resolveParameterizedProductName: false)
+                                let path = filePathResolver.resolveAbsolutePath(reference, resolveParameterizedProductName: false)
                                 let basename = path.basenameWithoutSuffix
                                 let exactMatch = basename == moduleName
                                 if exactMatch || (basename.caseInsensitiveCompare(moduleName) == .orderedSame) {

@@ -27,14 +27,16 @@ public final class GenericCachingTaskAction: TaskAction {
     let enableCacheDebuggingRemarks: Bool
     let enableTaskSandboxEnforcement: Bool
     let sandboxDirectory: Path
+    let preserveSandboxDirectory: Bool
     let extraSandboxSubdirectories: [Path]
     let developerDirectory: Path
     let casOptions: CASOptions
 
-    public init(enableCacheDebuggingRemarks: Bool, enableTaskSandboxEnforcement: Bool, sandboxDirectory: Path, extraSandboxSubdirectories: [Path], developerDirectory: Path, casOptions: CASOptions) {
+    public init(enableCacheDebuggingRemarks: Bool, enableTaskSandboxEnforcement: Bool, sandboxDirectory: Path, preserveSandboxDirectory: Bool, extraSandboxSubdirectories: [Path], developerDirectory: Path, casOptions: CASOptions) {
         self.enableCacheDebuggingRemarks = enableCacheDebuggingRemarks
         self.enableTaskSandboxEnforcement = enableTaskSandboxEnforcement
         self.sandboxDirectory = sandboxDirectory
+        self.preserveSandboxDirectory = preserveSandboxDirectory
         self.extraSandboxSubdirectories = extraSandboxSubdirectories
         self.developerDirectory = developerDirectory
         self.casOptions = casOptions
@@ -42,10 +44,11 @@ public final class GenericCachingTaskAction: TaskAction {
     }
 
     required init(from deserializer: any Deserializer) throws {
-        try deserializer.beginAggregate(7)
+        try deserializer.beginAggregate(8)
         self.enableCacheDebuggingRemarks = try deserializer.deserialize()
         self.enableTaskSandboxEnforcement = try deserializer.deserialize()
         self.sandboxDirectory = try deserializer.deserialize()
+        self.preserveSandboxDirectory = try deserializer.deserialize()
         self.extraSandboxSubdirectories = try deserializer.deserialize()
         self.developerDirectory = try deserializer.deserialize()
         self.casOptions = try deserializer.deserialize()
@@ -53,10 +56,11 @@ public final class GenericCachingTaskAction: TaskAction {
     }
 
     public override func serialize<T>(to serializer: T) where T : Serializer {
-        serializer.beginAggregate(7)
+        serializer.beginAggregate(8)
         serializer.serialize(enableCacheDebuggingRemarks)
         serializer.serialize(enableTaskSandboxEnforcement)
         serializer.serialize(sandboxDirectory)
+        serializer.serialize(preserveSandboxDirectory)
         serializer.serialize(extraSandboxSubdirectories)
         serializer.serialize(developerDirectory)
         serializer.serialize(casOptions)
@@ -70,15 +74,18 @@ public final class GenericCachingTaskAction: TaskAction {
                 outputDelegate.remark(message)
             }
         }
-        guard let cas = dynamicExecutionDelegate.operationContext.cas else {
-            outputDelegate.error("caching is enabled, but no CAS was provided")
+        let cas: ToolchainCAS
+        do {
+            cas = try dynamicExecutionDelegate.operationContext.getOrCreateCAS(options: casOptions.creationOpts)
+        } catch {
+            outputDelegate.error("failed to initialize a CAS: \(error.localizedDescription)")
             return .failed
         }
 
         defer {
             if cas.supportsPruning {
                 dynamicExecutionDelegate.operationContext.compilationCachingDataPruner.pruneCAS(cas,
-                                                                                                key: .init(path: casOptions.casPath, casOptions: casOptions),
+                                                                                                key: .init(libPath: casOptions.pluginPath ?? Path("builtin-cas-plugin"), casOptions: casOptions),
                                                                                                 activityReporter: dynamicExecutionDelegate,
                                                                                                 fileSystem: executionDelegate.fs)
             }
@@ -134,7 +141,12 @@ public final class GenericCachingTaskAction: TaskAction {
         let processDelegate = TaskProcessDelegate(outputDelegate: capturingOutputDelegate)
         do {
             try executionDelegate.fs.createDirectory(sandboxDirectory, recursive: true)
-            try await withTemporaryDirectory(dir: sandboxDirectory, removeTreeOnDeinit: false) { sandboxDirectory in
+            try await withTemporaryDirectory(dir: sandboxDirectory, removeTreeOnDeinit: !preserveSandboxDirectory) { sandboxDirectory in
+                defer {
+                    if preserveSandboxDirectory {
+                        emitCacheDebuggingRemark("preserving sandbox directory: \(sandboxDirectory.str)")
+                    }
+                }
                 var inputRemappings: [Path: Path] = [:]
                 for (number, input) in task.inputPaths.enumerated() {
                     let remappedPath = sandboxDirectory.join("inputs/\(number)/").join(input.withoutTrailingSlash().basename)

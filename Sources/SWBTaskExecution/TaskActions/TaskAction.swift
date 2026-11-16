@@ -156,6 +156,9 @@ open class TaskAction: PlannedTaskAction, PolymorphicSerializable
     }
 }
 
+// TaskAction is not Sendable
+@available(*, unavailable) extension TaskAction: Sendable {}
+
 public enum DynamicTaskRequestReason: CustomStringConvertible {
     case wasScannedClangModuleDependency(of: String)
     case wasScheduledBySwiftDriver
@@ -234,6 +237,7 @@ public protocol DynamicTaskExecutionDelegate: ActivityReporter {
     /// - commandLine: Arguments for launching the process
     /// - environment: Environment of the new process, it will not inherit from the parent
     /// - workingDirectory: Absolute path to the working directory
+    /// - canSafelyInterrupt: Whether the process may be interrupted if the build is cancelled.
     /// - processDelegate: Instance to handle callbacks while execution
     ///
     /// - returns: `true` if process ran successfully and exited with `0`. Check `result` in `processFinished`
@@ -243,6 +247,7 @@ public protocol DynamicTaskExecutionDelegate: ActivityReporter {
         commandLine: [String],
         environment: [String: String],
         workingDirectory: Path,
+        canSafelyInterrupt: Bool,
         processDelegate: any ProcessDelegate
     ) async throws -> Bool
 
@@ -251,6 +256,18 @@ public protocol DynamicTaskExecutionDelegate: ActivityReporter {
     var operationContext: DynamicTaskOperationContext { get }
 
     var continueBuildingAfterErrors: Bool { get }
+}
+
+extension DynamicTaskExecutionDelegate {
+    @discardableResult
+    public func spawn(
+        commandLine: [String],
+        environment: [String: String],
+        workingDirectory: Path,
+        processDelegate: any ProcessDelegate
+    ) async throws -> Bool {
+        try await spawn(commandLine: commandLine, environment: environment, workingDirectory: workingDirectory, canSafelyInterrupt: true, processDelegate: processDelegate)
+    }
 }
 
 /// Class for collecting and caching messages to emit for a task action.

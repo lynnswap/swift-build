@@ -600,7 +600,11 @@ package final class SourcesTaskProducer: FilesBasedBuildPhaseTaskProducerBase, F
                     let producerMultiArchCreate = rawSetting.isEmpty ? true : producingTargetSettings.globalScope.evaluate(BuiltinMacros.SSAF_MULTI_ARCH_CREATE)
                     guard producerMultiArchCreate else { return nil }
                 }
-                return Path(absolutePath.str + ".ssaf-staticlib.json")
+                // Derive the path from the producer's EXECUTABLE_PATH, matching where the producer writes the bundle; the
+                // build file's reference path can differ in name (e.g. on Windows, where there's no "lib" prefix and the extension is ".lib").
+                let producerScope = producingTargetSettings.globalScope
+                let producerBinaryPath = producerScope.evaluate(BuiltinMacros.TARGET_BUILD_DIR).join(producerScope.evaluate(BuiltinMacros.EXECUTABLE_PATH))
+                return Path(producerBinaryPath.str + ".ssaf-staticlib.json")
             }
 
             if fileType.conformsTo(context.lookupFileType(identifier: "archive.ar")!) {
@@ -963,8 +967,16 @@ package final class SourcesTaskProducer: FilesBasedBuildPhaseTaskProducerBase, F
             }
             let buildFilesToEmbed = ownTargetBuildFilesToEmbed + bundleDependencies.compactMap { $0.buildPhases.only as? BuildPhaseWithBuildFiles }.flatMap { $0.buildFiles }.filter { $0.resourceRule == .embedInCode }
 
+            let filteringContext = BuildFilesProcessingContext(scope, repressDiagnostics: true)
+            let includedBuildFilesToEmbed = buildFilesToEmbed.filter { buildFile in
+                guard let (_, path, _) = try? context.resolveBuildFileReference(buildFile) else {
+                    return true
+                }
+                return !filteringContext.isExcluded(path, platformFilters: buildFile.platformFilters, buildConfigurationFilters: buildFile.buildConfigurationFilters)
+            }
+
             do {
-                embedInCodeAccessorResult = try await generateEmbedInCodeAccessorResult(scope, resourceBuildFiles: buildFilesToEmbed)
+                embedInCodeAccessorResult = try await generateEmbedInCodeAccessorResult(scope, resourceBuildFiles: includedBuildFilesToEmbed)
                 tasks += embedInCodeAccessorResult?.tasks ?? []
             } catch {
                 embedInCodeAccessorResult = nil
@@ -1915,6 +1927,47 @@ package final class SourcesTaskProducer: FilesBasedBuildPhaseTaskProducerBase, F
                         nil
                     )
                 }
+            }
+        }
+
+        if let casSandboxObjCOutputsNode = targetContext.casSandboxObjCOutputsNode {
+            context.addDeferredProducer {
+                let context = self.context
+                let targetContext = self.targetContext
+                var outputPaths: [any PlannedNode] = []
+                let validationContext = context.taskValidationContext!
+                for task in targetContext.casSandboxObjCOutputs {
+                    if task.validityCriteria?.isValid(task, validationContext) ?? true {
+                        outputPaths += task.outputs
+                    }
+                }
+                var tasks: [any PlannedTask] = []
+                await self.appendGeneratedTasks(&tasks, usePhasedOrdering: false) { delegate in
+                    let cbc = CommandBuildContext(producer: context, scope: scope, inputs: [], output: casSandboxObjCOutputsNode.path)
+                    context.ingestCASFSRootSpec.constructCASFSJsonTask(cbc, delegate, paths: outputPaths, roots: [], searchPaths: [])
+
+                }
+                return tasks
+            }
+        }
+
+        if let casSandboxOutputsNode = targetContext.casSandboxOutputsNode {
+            context.addDeferredProducer {
+                let context = self.context
+                let targetContext = self.targetContext
+                var outputPaths: [any PlannedNode] = []
+                let validationContext = context.taskValidationContext!
+                for task in targetContext.casSandboxOutputs {
+                    if task.validityCriteria?.isValid(task, validationContext) ?? true {
+                        outputPaths += task.outputs
+                    }
+                }
+                var tasks: [any PlannedTask] = []
+                await self.appendGeneratedTasks(&tasks, usePhasedOrdering: false) { delegate in
+                    let cbc = CommandBuildContext(producer: context, scope: scope, inputs: [], output: casSandboxOutputsNode.path)
+                    context.ingestCASFSRootSpec.constructCASFSJsonTask(cbc, delegate, paths: outputPaths, roots: [targetContext.casSandboxObjCOutputsNode, targetContext.casSandboxDependenciesNode].compactMap{$0}, searchPaths: [])
+                }
+                return tasks
             }
         }
 

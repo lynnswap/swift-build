@@ -1948,13 +1948,7 @@ import SWBMacro
         let task = try #require(delegate.shellTasks[safe: 0])
         #expect(task.ruleInfo == ["Touch", Path.root.join("tmp/input").str])
         #expect(task.execDescription == "Touch input")
-        if core.hostOperatingSystem == .windows {
-            let commandShellPath = try #require(getEnvironmentVariable("ComSpec"), "Can't determine path to cmd.exe because the ComSpec environment variable is not set")
-            task.checkCommandLine([commandShellPath, "/c", "copy", "/b", Path.root.join("tmp/input").str, "+,,"])
-        } else {
-            task.checkCommandLine(["/usr/bin/touch", "-c", Path.root.join("tmp/input").str])
-        }
-        #expect(task.execDescription == "Touch input")
+        task.checkCommandLine(["builtin-touch", Path.root.join("tmp/input").str])
     }
 
     @Test
@@ -2088,18 +2082,23 @@ import SWBMacro
         let projectTmpDir = try #require(core.specRegistry.internalMacroNamespace.lookupMacroDeclaration("PROJECT_TEMP_DIR") as? PathMacroDeclaration)
         let builtDir = try #require(core.specRegistry.internalMacroNamespace.lookupMacroDeclaration("BUILT_PRODUCTS_DIR") as? PathMacroDeclaration)
         let workspaceDir = try #require(core.specRegistry.internalMacroNamespace.lookupMacroDeclaration("WORKSPACE_DIR") as? StringMacroDeclaration)
+        let objRoot = try #require(core.specRegistry.internalMacroNamespace.lookupMacroDeclaration("OBJROOT") as? PathMacroDeclaration)
+        let buildDir = try #require(core.specRegistry.internalMacroNamespace.lookupMacroDeclaration("BUILD_DIR") as? PathMacroDeclaration)
 
-        func test(caching: Bool, prefixMapping: Bool, completeMapping: Bool, extraMaps: [String], completion: ([String]) throws -> Void) async throws {
+        func test(caching: Bool, prefixMapping: Bool, completeMapping: Bool, extraMaps: [String], developerDirIsXcode: Bool = true, completion: ([String]) throws -> Void) async throws {
             var table = MacroValueAssignmentTable(namespace: core.specRegistry.internalMacroNamespace)
             table.push(enableCompileCache, literal: caching)
             table.push(enablePrefixMap, literal: prefixMapping)
             table.push(enableProjectPrefixMap, literal: completeMapping)
             table.push(prefixMaps, literal: extraMaps)
             table.push(devDir, literal: "/Xcode.app/Contents/Developer")
+            table.push(BuiltinMacros._DEVELOPER_DIR_IS_XCODE, literal: developerDirIsXcode)
             table.push(srcDir, literal: "/source")
             table.push(projectTmpDir, literal: "/build")
             table.push(builtDir, literal: "/products")
             table.push(workspaceDir, literal: "/workspace")
+            table.push(objRoot, literal: "/objroot")
+            table.push(buildDir, literal: "/symroot")
             let mockScope = MacroEvaluationScope(table: table)
             let producer = try MockCommandProducer(core: core, productTypeIdentifier: "com.apple.product-type.framework", platform: "macosx")
             let delegate = try CapturingTaskGenerationDelegate(producer: producer, userPreferences: .defaultForTesting)
@@ -2135,6 +2134,8 @@ import SWBMacro
                 "-fdepscan-prefix-map=/build=/^derived",
                 "-fdepscan-prefix-map=/products=/^built",
                 "-fdepscan-prefix-map=/workspace=/^workspace",
+                "-fdepscan-prefix-map=/objroot=/^intermediates",
+                "-fdepscan-prefix-map=/symroot=/^products",
             ])
         })
         try await test(caching: true, prefixMapping: true, completeMapping: false, extraMaps: ["/a=/b", "/c=/d"], completion: { args in
@@ -2144,6 +2145,12 @@ import SWBMacro
                 "-fdepscan-prefix-map=/Xcode.app/Contents/Developer=/^xcode",
                 "-fdepscan-prefix-map=/a=/b",
                 "-fdepscan-prefix-map=/c=/d",
+            ])
+        })
+        try await test(caching: true, prefixMapping: true, completeMapping: false, extraMaps: [], developerDirIsXcode: false, completion: { args in
+            #expect(args == [
+                "-fdepscan-prefix-map-sdk=/^sdk",
+                "-fdepscan-prefix-map-toolchain=/^toolchain",
             ])
         })
     }
@@ -2163,8 +2170,10 @@ import SWBMacro
         let projectTmpDir = try #require(core.specRegistry.internalMacroNamespace.lookupMacroDeclaration("PROJECT_TEMP_DIR") as? PathMacroDeclaration)
         let builtDir = try #require(core.specRegistry.internalMacroNamespace.lookupMacroDeclaration("BUILT_PRODUCTS_DIR") as? PathMacroDeclaration)
         let workspaceDir = try #require(core.specRegistry.internalMacroNamespace.lookupMacroDeclaration("WORKSPACE_DIR") as? StringMacroDeclaration)
+        let objRoot = try #require(core.specRegistry.internalMacroNamespace.lookupMacroDeclaration("OBJROOT") as? PathMacroDeclaration)
+        let buildDir = try #require(core.specRegistry.internalMacroNamespace.lookupMacroDeclaration("BUILD_DIR") as? PathMacroDeclaration)
 
-        func test(caching: Bool, prefixMapping: Bool, completeMapping: Bool, extraMaps: [String], completion: ([String]) throws -> Void) async throws {
+        func test(caching: Bool, prefixMapping: Bool, completeMapping: Bool, extraMaps: [String], developerDirIsXcode: Bool = true, completion: ([String]) throws -> Void) async throws {
             // Create the mock table.
             var table = MacroValueAssignmentTable(namespace: core.specRegistry.internalMacroNamespace)
             try await table.push(BuiltinMacros.SWIFT_EXEC, literal: self.swiftCompilerPath.str)
@@ -2184,10 +2193,13 @@ import SWBMacro
             table.push(enableProjectPrefixMap, literal: completeMapping)
             table.push(prefixMaps, literal: extraMaps)
             table.push(devDir, literal: "/Xcode.app/Contents/Developer")
+            table.push(BuiltinMacros._DEVELOPER_DIR_IS_XCODE, literal: developerDirIsXcode)
             table.push(srcDir, literal: "/source")
             table.push(projectTmpDir, literal: "/build")
             table.push(builtDir, literal: "/products")
             table.push(workspaceDir, literal: "/workspace")
+            table.push(objRoot, literal: "/objroot")
+            table.push(buildDir, literal: "/symroot")
             table.push(BuiltinMacros.CURRENT_ARCH, literal: "x86_64")
             table.push(BuiltinMacros.CURRENT_SLICE, core.specRegistry.internalMacroNamespace.parseString("$(CURRENT_ARCH)"))
             table.push(BuiltinMacros.CURRENT_SLICE_UNVERSIONED, core.specRegistry.internalMacroNamespace.parseString("$(CURRENT_SLICE)"))
@@ -2244,6 +2256,8 @@ import SWBMacro
                 "-scanner-prefix-map", "/build=/^derived",
                 "-scanner-prefix-map", "/products=/^built",
                 "-scanner-prefix-map", "/workspace=/^workspace",
+                "-scanner-prefix-map", "/objroot=/^intermediates",
+                "-scanner-prefix-map", "/symroot=/^products",
             ])
         })
         try await test(caching: true, prefixMapping: true, completeMapping: false, extraMaps: ["/a=/b", "/c=/d"], completion: { args in
@@ -2253,6 +2267,12 @@ import SWBMacro
                 "-scanner-prefix-map", "/Xcode.app/Contents/Developer=/^xcode",
                 "-scanner-prefix-map", "/a=/b",
                 "-scanner-prefix-map", "/c=/d",
+            ])
+        })
+        try await test(caching: true, prefixMapping: true, completeMapping: false, extraMaps: [], developerDirIsXcode: false, completion: { args in
+            #expect(args == [
+                "-scanner-prefix-map-sdk", "/^sdk",
+                "-scanner-prefix-map-toolchain", "/^toolchain",
             ])
         })
     }

@@ -605,6 +605,9 @@ package final class BuildDescriptionBuilder {
     // The map of settings per configured target.
     private let settingsPerTarget: [ConfiguredTarget: Settings]
 
+    /// The shared environment bases the commands may reference.
+    private let environmentBases: EnvironmentBaseTable
+
     /// For processing Gate and Constructed Tasks in parallel.
     private let processTaskLock = SWBMutex(())
 
@@ -638,6 +641,7 @@ package final class BuildDescriptionBuilder {
         targetDependencies: [TargetDependencyRelationship],
         definingTargetsByModuleName: [String: OrderedSet<ConfiguredTarget>],
         dependencyGraphDiagnostic: Diagnostic,
+        environmentBases: EnvironmentBaseTable = EnvironmentBaseTable(),
         workspace: Workspace
     ) {
         self.path = path
@@ -663,6 +667,7 @@ package final class BuildDescriptionBuilder {
         self.targetDependencies = targetDependencies
         self.definingTargetsByModuleName = definingTargetsByModuleName
         self.dependencyGraphDiagnostic = dependencyGraphDiagnostic
+        self.environmentBases = environmentBases
         self.taskStore = TaskStore()
     }
 
@@ -718,6 +723,14 @@ package final class BuildDescriptionBuilder {
             return stream.bytes
         }
 
+        // The environment bases the commands above reference by name.
+        var envBaseDefinitions: [String: ByteString] = [:]
+        for (name, bindings) in environmentBases.declaredBases {
+            let stream = OutputByteStream()
+            stream <<< Format.asJSON(bindings)
+            envBaseDefinitions[name] = stream.bytes
+        }
+
         // Construct the build manifest.
         //
         // This is a YAML file that we are building piecemeal. See:
@@ -733,10 +746,15 @@ package final class BuildDescriptionBuilder {
             "perform-ownership-analysis": SWBFeatureFlag.performOwnershipAnalysis.value ? encodeIfNeeded("yes") : encodeIfNeeded("no")
         ]
 
+        // Note, order matters here. llbuild walks the top-level sections in sequence and
+        // rejects one that arrives out of turn.  It also resolves each command's
+        // env-base section as it reads that command, so the bases must already be
+        // declared.
         let sections = [
             ("targets", targetDefinitions),
             ("tools", toolDefinitions),
             ("nodes", nodeDefinitions),
+            ("env-bases", envBaseDefinitions),
             ("commands", commandDefinitions),
         ]
 
@@ -1010,7 +1028,16 @@ package final class BuildDescriptionBuilder {
                 // This defaults to true, we'll omit to to save space
                 // $0["inherit-env"] = "true"
                 if let environment {
-                    $0["env"] = environment.bindings
+                    switch environmentBases.encoding(for: task.identifier, environment: environment) {
+                    case .inline:
+                        $0["env"] = environment.bindings
+                    case .useBase(let base, let overrides):
+                        $0["env-base"] = base
+                        // Sending nothing means the base is the whole environment.
+                        if !overrides.isEmpty {
+                            $0["env"] = overrides
+                        }
+                    }
                 }
                 if allowMissingInputs {
                     $0["allow-missing-inputs"] = true
@@ -1148,6 +1175,12 @@ extension BuildDescription {
         //
         // We need to sort on the stable identifiers in order to ensure the uniqueness of the sort.
         let sortedTasks = tasks.sorted{ $0.identifier < $1.identifier }
+
+        let commandEnvironments = sortedTasks.lazy.compactMap { task -> (task: TaskIdentifier, environment: EnvironmentBindings)? in
+            guard let environment = (task as? ConstructedTask)?.environmentToDescribe else { return nil }
+            return (task.identifier, environment)
+        }
+        let environmentBases = EnvironmentBaseTable(environments: commandEnvironments)
 
         let messageShortening = userPreferences.activityTextShorteningLevel
 
@@ -1438,6 +1471,7 @@ extension BuildDescription {
             targetDependencies: targetDependencies,
             definingTargetsByModuleName: definingTargetsByModuleName,
             dependencyGraphDiagnostic: dependencyGraphDiagnostic,
+            environmentBases: environmentBases,
             workspace: workspace
         )
         for (target, diagnostics) in diagnostics {
@@ -1552,7 +1586,7 @@ package final class TaskActionRegistry: Sendable {
 }
 
 /// A delegate which must be used to serialize a `BuildDescription`.
-package final class BuildDescriptionSerializerDelegate: SerializerDelegate, ConfiguredTargetSerializerDelegate, UniquingSerializerDelegate {
+package final class BuildDescriptionSerializerDelegate: SerializerDelegate, ConfiguredTargetSerializerDelegate, TaskEnvironmentSerializerDelegate, UniquingSerializerDelegate {
     /// Indexes into the `BuildDescription`'s `Task` array to serialize references to those `Task`s efficiently.
     fileprivate(set) var taskIndexes = [Task: Int]()
 
@@ -1561,6 +1595,8 @@ package final class BuildDescriptionSerializerDelegate: SerializerDelegate, Conf
 
     package var currentConfiguredTargetIndex: Int = 0
     package var configuredTargetIndexes = [ConfiguredTarget: Int]()
+
+    var taskEnvironmentBaseTable: EnvironmentBaseTable? = nil
 
     package let uniquingCoordinator = UniquingSerializationCoordinator()
 
@@ -1572,7 +1608,7 @@ package final class BuildDescriptionSerializerDelegate: SerializerDelegate, Conf
 }
 
 /// A delegate which must be used to deserialize a `BuildDescription`.
-package final class BuildDescriptionDeserializerDelegate: DeserializerDelegate, MacroValueAssignmentTableDeserializerDelegate, ConfiguredTargetDeserializerDelegate, TaskDeserializerDelegate, UniquingDeserializerDelegate {
+package final class BuildDescriptionDeserializerDelegate: DeserializerDelegate, MacroValueAssignmentTableDeserializerDelegate, ConfiguredTargetDeserializerDelegate, TaskEnvironmentDeserializerDelegate, TaskDeserializerDelegate, UniquingDeserializerDelegate {
     /// The `MacroNamespace` to use to deserialize `MacroEvaluationTable`s and their content.
     ///
     /// This will return the `userNamespace` of the `Workspace` the receiver was created with.
@@ -1592,6 +1628,8 @@ package final class BuildDescriptionDeserializerDelegate: DeserializerDelegate, 
 
     /// A list of `ConfigureTarget`s built up during deserialization so that after one has been deserialized, later references can be looked up by index based on the order they were deserialized.
     package var configuredTargets = [ConfiguredTarget]()
+
+    var taskEnvironmentBases = [TaskEnvironmentBase]()
 
     /// The specification registry to use to look up `CommandLineToolSpec`s for deserializing Task.type properties.
     package let specRegistry: SpecRegistry

@@ -112,6 +112,16 @@ final class TAPISymbolExtractorTaskProducer: PhasedTaskProducer, TaskProducer {
 
         commandOrderingInputs += inputNodes
 
+        if SwiftSymbolExtractor.shouldSkipObjectiveCSymbolExtraction(cbcWithoutInputs) {
+            await appendGeneratedTasks(&tasks) { delegate in
+                for scope in tripleSpecificSubScopes {
+                    let cbc = CommandBuildContext(producer: context, scope: scope, inputs: [], outputs: [], commandOrderingInputs: commandOrderingInputs)
+                    await context.swiftSymbolExtractor?.constructTasks(cbc, delegate)
+                }
+            }
+            return tasks
+        }
+
         if SWBFeatureFlag.enableClangExtractAPI.value {
             await appendGeneratedTasks(&tasks) { delegate in
                 for scope in tripleSpecificSubScopes {
@@ -204,7 +214,7 @@ final class TAPISymbolExtractorTaskProducer: PhasedTaskProducer, TaskProducer {
             func computeProductHeader(for fileRef: SWBCore.FileReference, isFramework: Bool, visibility: TAPIFileList.HeaderVisibility, inputNodes: inout [any PlannedNode]) -> TAPIFileList.HeaderInfo? {
                 // The JSON file should have the product headers, not the source headers, so we need to compute the output path.
                 // FIXME: We should be able to get this info from - or at least share it with - the HeadersTaskProducer.
-                let path = producer.context.settings.filePathResolver.resolveAbsolutePath(fileRef, resolveParameterizedProductName: false)
+                let path = producer.context.filePathResolver.resolveAbsolutePath(fileRef, resolveParameterizedProductName: false)
 
                 let language: String?
                 if let languageDialect = producer.context.lookupFileType(reference: fileRef)?.languageDialect, GCCCompatibleLanguageDialect.allCLanguages.contains(languageDialect) {

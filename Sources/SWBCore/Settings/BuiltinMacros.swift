@@ -87,6 +87,7 @@ public final class BuiltinMacros {
     public static let DERIVED_DATA_DIR = BuiltinMacros.declarePathMacro("DERIVED_DATA_DIR")
     public static let INDEX_DATA_STORE_DIR = BuiltinMacros.declarePathMacro("INDEX_DATA_STORE_DIR")
     public static let INDEX_ENABLE_DATA_STORE = BuiltinMacros.declareBooleanMacro("INDEX_ENABLE_DATA_STORE")
+    public static let INDEX_MODULE_CACHE_DIR = BuiltinMacros.declarePathMacro("INDEX_MODULE_CACHE_DIR")
     public static let INDEX_PRECOMPS_DIR = BuiltinMacros.declarePathMacro("INDEX_PRECOMPS_DIR")
     public static let MODULE_CACHE_DIR = BuiltinMacros.declarePathMacro("MODULE_CACHE_DIR")
     public static let SHARED_PRECOMPS_DIR = BuiltinMacros.declarePathMacro("SHARED_PRECOMPS_DIR")
@@ -311,6 +312,7 @@ public final class BuiltinMacros {
 
     public static let SYSTEM_DEVELOPER_DIR = BuiltinMacros.declareStringMacro("SYSTEM_DEVELOPER_DIR")
     public static let DEVELOPER_DIR = BuiltinMacros.declarePathMacro("DEVELOPER_DIR")
+    public static let _DEVELOPER_DIR_IS_XCODE = BuiltinMacros.declareBooleanMacro("_DEVELOPER_DIR_IS_XCODE")
     public static let LEGACY_DEVELOPER_DIR = BuiltinMacros.declarePathMacro("LEGACY_DEVELOPER_DIR")
     public static let SYSTEM_DEVELOPER_APPS_DIR = BuiltinMacros.declareStringMacro("SYSTEM_DEVELOPER_APPS_DIR")
     public static let DEVELOPER_APPLICATIONS_DIR = BuiltinMacros.declareStringMacro("DEVELOPER_APPLICATIONS_DIR")
@@ -382,6 +384,7 @@ public final class BuiltinMacros {
 
     public static let ENABLE_GENERIC_TASK_CACHING = BuiltinMacros.declareBooleanMacro("ENABLE_GENERIC_TASK_CACHING")
     public static let GENERIC_TASK_CACHE_ENABLE_DIAGNOSTIC_REMARKS = BuiltinMacros.declareBooleanMacro("GENERIC_TASK_CACHE_ENABLE_DIAGNOSTIC_REMARKS")
+    public static let GENERIC_TASK_CACHE_PRESERVE_SANDBOX_DIR = BuiltinMacros.declareBooleanMacro("GENERIC_TASK_CACHE_PRESERVE_SANDBOX_DIR")
 
     // MARK: App Sandbox Settings
     public static let ENABLE_APP_SANDBOX = BuiltinMacros.declareBooleanMacro("ENABLE_APP_SANDBOX")
@@ -434,6 +437,7 @@ public final class BuiltinMacros {
 
     public static let INTERNAL_AUTOMATION_SUPPORT_FRAMEWORK_PATH = BuiltinMacros.declareStringMacro("INTERNAL_AUTOMATION_SUPPORT_FRAMEWORK_PATH")
     public static let INTERNAL_TEST_LIBRARIES_OVERRIDE_PATH = BuiltinMacros.declareStringMacro("INTERNAL_TEST_LIBRARIES_OVERRIDE_PATH")
+    public static let INTERNAL_TEST_LIBRARY_NAMES = BuiltinMacros.declareStringListMacro("INTERNAL_TEST_LIBRARY_NAMES")
     public static let INTERNAL_TESTING_FRAMEWORK_PATH = BuiltinMacros.declareStringMacro("INTERNAL_TESTING_FRAMEWORK_PATH")
     public static let TEST_BUILD_STYLE = BuiltinMacros.declareStringMacro("TEST_BUILD_STYLE")
     public static let TEST_HOST = BuiltinMacros.declareStringMacro("TEST_HOST")
@@ -524,6 +528,8 @@ public final class BuiltinMacros {
     public static let BUNDLE_FORMAT = BuiltinMacros.declareStringMacro("BUNDLE_FORMAT")
     public static let BUNDLE_LOADER = BuiltinMacros.declarePathMacro("BUNDLE_LOADER")
     public static let C_COMPILER_LAUNCHER = BuiltinMacros.declareStringMacro("C_COMPILER_LAUNCHER")
+    public static let CAS_SANDBOX_OTHER_SOURCE_DIRS = BuiltinMacros.declarePathListMacro("CAS_SANDBOX_OTHER_SOURCE_DIRS")
+    public static let CAS_SANDBOX_SEARCH_PATH_INGESTION_DEPTH = BuiltinMacros.declareStringMacro("CAS_SANDBOX_SEARCH_PATH_INGESTION_DEPTH")
     public static let CC = BuiltinMacros.declarePathMacro("CC")
     public static let CFBundleIdentifier = BuiltinMacros.declareStringMacro("CFBundleIdentifier")
     public static let CHMOD = BuiltinMacros.declarePathMacro("CHMOD")
@@ -809,6 +815,8 @@ public final class BuiltinMacros {
     public static let INDEX_ENABLE_BUILD_ARENA = BuiltinMacros.declareBooleanMacro("INDEX_ENABLE_BUILD_ARENA")
     public static let INDEX_ENABLE_OPTIMIZATION_LEVEL_OVERRIDE = BuiltinMacros.declareBooleanMacro("INDEX_ENABLE_OPTIMIZATION_LEVEL_OVERRIDE")
     public static let INDEX_FORCE_SCRIPT_EXECUTION = BuiltinMacros.declareBooleanMacro("INDEX_FORCE_SCRIPT_EXECUTION")
+    public static let INDEX_MODULES_PRUNE_AFTER = BuiltinMacros.declareStringMacro("INDEX_MODULES_PRUNE_AFTER")
+    public static let INDEX_MODULES_PRUNE_INTERVAL = BuiltinMacros.declareStringMacro("INDEX_MODULES_PRUNE_INTERVAL")
     public static let INDEX_PREPARED_MODULE_CONTENT_MARKER_PATH = BuiltinMacros.declareStringMacro("INDEX_PREPARED_MODULE_CONTENT_MARKER_PATH")
     public static let INDEX_PREPARED_TARGET_MARKER_PATH = BuiltinMacros.declareStringMacro("INDEX_PREPARED_TARGET_MARKER_PATH")
     public static let INDEX_REGULAR_BUILD_PRODUCTS_DIR = BuiltinMacros.declareStringMacro("INDEX_REGULAR_BUILD_PRODUCTS_DIR")
@@ -1104,11 +1112,13 @@ public final class BuiltinMacros {
     public static let SWIFT_EMIT_IR_FILES = BuiltinMacros.declareBooleanMacro("SWIFT_EMIT_IR_FILES")
     public static let SWIFT_EMIT_OPT_RECORDS = BuiltinMacros.declareBooleanMacro("SWIFT_EMIT_OPT_RECORDS")
     public static let SWIFT_ENABLE_BATCH_MODE = BuiltinMacros.declareBooleanMacro("SWIFT_ENABLE_BATCH_MODE")
+    public static let SWIFT_ENABLE_CAS_SANDBOX = BuiltinMacros.declareBooleanMacro("SWIFT_ENABLE_CAS_SANDBOX")
     public static let SWIFT_ENABLE_INCREMENTAL_COMPILATION = BuiltinMacros.declareBooleanMacro("SWIFT_ENABLE_INCREMENTAL_COMPILATION")
     public static let SWIFT_ENABLE_INCREMENTAL_SCAN = BuiltinMacros.declareBooleanMacro("SWIFT_ENABLE_INCREMENTAL_SCAN")
     public static let SWIFT_ENABLE_IPI_LIBRARY_LEVEL = BuiltinMacros.declareBooleanMacro("SWIFT_ENABLE_IPI_LIBRARY_LEVEL")
     public static let SWIFT_ENABLE_LAYOUT_STRING_VALUE_WITNESSES = BuiltinMacros.declareBooleanMacro("SWIFT_ENABLE_LAYOUT_STRING_VALUE_WITNESSES")
     public static let SWIFT_ENABLE_LIBRARY_EVOLUTION = BuiltinMacros.declareBooleanMacro("SWIFT_ENABLE_LIBRARY_EVOLUTION")
+    public static let SWIFT_ENABLE_PRESCAN_CACHING = BuiltinMacros.declareBooleanMacro("SWIFT_ENABLE_PRESCAN_CACHING")
     public static let SWIFT_ENABLE_BARE_SLASH_REGEX = BuiltinMacros.declareBooleanMacro("SWIFT_ENABLE_BARE_SLASH_REGEX")
     public static let SWIFT_ENABLE_EMIT_CONST_VALUES = BuiltinMacros.declareBooleanMacro("SWIFT_ENABLE_EMIT_CONST_VALUES")
     public static let SWIFT_ENABLE_OPAQUE_TYPE_ERASURE = BuiltinMacros.declareBooleanMacro("SWIFT_ENABLE_OPAQUE_TYPE_ERASURE")
@@ -1207,6 +1217,7 @@ public final class BuiltinMacros {
     public static let DOCC_SKIP_SYNTHESIZED_MEMBERS = BuiltinMacros.declareBooleanMacro("DOCC_SKIP_SYNTHESIZED_MEMBERS")
     public static let DOCC_EXTRACT_EXTENSION_SYMBOLS = BuiltinMacros.declareBooleanMacro("DOCC_EXTRACT_EXTENSION_SYMBOLS")
     public static let DOCC_EXTRACT_SWIFT_INFO_FOR_OBJC_SYMBOLS = BuiltinMacros.declareBooleanMacro("DOCC_EXTRACT_SWIFT_INFO_FOR_OBJC_SYMBOLS")
+    public static let DOCC_EXTRACT_ONLY_SWIFT_INFO_FOR_OBJC_SYMBOLS = BuiltinMacros.declareBooleanMacro("DOCC_EXTRACT_ONLY_SWIFT_INFO_FOR_OBJC_SYMBOLS")
     public static let DOCC_EXTRACT_OBJC_INFO_FOR_SWIFT_SYMBOLS = BuiltinMacros.declareBooleanMacro("DOCC_EXTRACT_OBJC_INFO_FOR_SWIFT_SYMBOLS")
     public static let DOCC_ENABLE_CXX_SUPPORT = BuiltinMacros.declareBooleanMacro("DOCC_ENABLE_CXX_SUPPORT")
     public static let DOCC_INPUTS = BuiltinMacros.declareStringMacro("DOCC_INPUTS")
@@ -1337,6 +1348,7 @@ public final class BuiltinMacros {
     public static let INFOPLIST_KEY_ITSEncryptionExportComplianceCode = BuiltinMacros.declareStringMacro("INFOPLIST_KEY_ITSEncryptionExportComplianceCode")
     public static let INFOPLIST_KEY_NFCReaderUsageDescription = BuiltinMacros.declareStringMacro("INFOPLIST_KEY_NFCReaderUsageDescription")
     public static let INFOPLIST_KEY_NSAccessoryTrackingUsageDescription = BuiltinMacros.declareStringMacro("INFOPLIST_KEY_NSAccessoryTrackingUsageDescription")
+    public static let INFOPLIST_KEY_NSAppDataAccessNotify = BuiltinMacros.declareBooleanMacro("INFOPLIST_KEY_NSAppDataAccessNotify")
     public static let INFOPLIST_KEY_NSAppDataUsageDescription = BuiltinMacros.declareStringMacro("INFOPLIST_KEY_NSAppDataUsageDescription")
     public static let INFOPLIST_KEY_NSAppleEventsUsageDescription = BuiltinMacros.declareStringMacro("INFOPLIST_KEY_NSAppleEventsUsageDescription")
     public static let INFOPLIST_KEY_NSAppleMusicUsageDescription = BuiltinMacros.declareStringMacro("INFOPLIST_KEY_NSAppleMusicUsageDescription")
@@ -1597,6 +1609,8 @@ public final class BuiltinMacros {
         BUNDLE_LOADER,
         CACHE_ROOT,
         C_COMPILER_LAUNCHER,
+        CAS_SANDBOX_OTHER_SOURCE_DIRS,
+        CAS_SANDBOX_SEARCH_PATH_INGESTION_DEPTH,
         CC,
         CCHROOT,
         CFBundleIdentifier,
@@ -1755,6 +1769,7 @@ public final class BuiltinMacros {
         DEVELOPER_APPLICATIONS_DIR,
         DEVELOPER_BIN_DIR,
         DEVELOPER_DIR,
+        _DEVELOPER_DIR_IS_XCODE,
         DEVELOPER_FRAMEWORKS_DIR,
         DEVELOPER_FRAMEWORKS_DIR_QUOTED,
         DEVELOPER_INSTALL_DIR,
@@ -1791,6 +1806,7 @@ public final class BuiltinMacros {
         DOCC_EXTRACT_PROJECT_HEADERS_DOCUMENTATION,
         DOCC_EXTRACT_EXTENSION_SYMBOLS,
         DOCC_EXTRACT_SWIFT_INFO_FOR_OBJC_SYMBOLS,
+        DOCC_EXTRACT_ONLY_SWIFT_INFO_FOR_OBJC_SYMBOLS,
         DOCC_EXTRACT_OBJC_INFO_FOR_SWIFT_SYMBOLS,
         DOCC_ENABLE_CXX_SUPPORT,
         DOCC_CATALOG_IDENTIFIER,
@@ -1852,6 +1868,7 @@ public final class BuiltinMacros {
         ENABLE_CLOUD_SIGNING,
         ENABLE_GENERIC_TASK_CACHING,
         GENERIC_TASK_CACHE_ENABLE_DIAGNOSTIC_REMARKS,
+        GENERIC_TASK_CACHE_PRESERVE_SANDBOX_DIR,
         ENABLE_HARDENED_RUNTIME,
         ENABLE_HEADER_DEPENDENCIES,
         ENABLE_LIBRARY_VALIDATION,
@@ -1983,6 +2000,9 @@ public final class BuiltinMacros {
         INDEX_ENABLE_BUILD_ARENA,
         INDEX_ENABLE_OPTIMIZATION_LEVEL_OVERRIDE,
         INDEX_FORCE_SCRIPT_EXECUTION,
+        INDEX_MODULE_CACHE_DIR,
+        INDEX_MODULES_PRUNE_AFTER,
+        INDEX_MODULES_PRUNE_INTERVAL,
         INDEX_PREPARED_MODULE_CONTENT_MARKER_PATH,
         INDEX_PREPARED_TARGET_MARKER_PATH,
         INDEX_REGULAR_BUILD_PRODUCTS_DIR,
@@ -2028,6 +2048,7 @@ public final class BuiltinMacros {
         INTENTS_CODEGEN_LANGUAGE,
         INTERNAL_AUTOMATION_SUPPORT_FRAMEWORK_PATH,
         INTERNAL_TEST_LIBRARIES_OVERRIDE_PATH,
+        INTERNAL_TEST_LIBRARY_NAMES,
         INTERNAL_TESTING_FRAMEWORK_PATH,
         IOS_UNZIPPERED_TWIN_PREFIX_PATH,
         IPHONEOS_DEPLOYMENT_TARGET,
@@ -2401,11 +2422,13 @@ public final class BuiltinMacros {
         SWIFT_EMIT_IR_FILES,
         SWIFT_EMIT_OPT_RECORDS,
         SWIFT_ENABLE_BATCH_MODE,
+        SWIFT_ENABLE_CAS_SANDBOX,
         SWIFT_ENABLE_INCREMENTAL_COMPILATION,
         SWIFT_ENABLE_INCREMENTAL_SCAN,
         SWIFT_ENABLE_IPI_LIBRARY_LEVEL,
         SWIFT_ENABLE_LAYOUT_STRING_VALUE_WITNESSES,
         SWIFT_ENABLE_LIBRARY_EVOLUTION,
+        SWIFT_ENABLE_PRESCAN_CACHING,
         SWIFT_USE_INTEGRATED_DRIVER,
         SWIFT_EAGER_MODULE_EMISSION_IN_WMO,
         SWIFT_ENABLE_EXPLICIT_MODULES,
@@ -2705,6 +2728,7 @@ public final class BuiltinMacros {
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption,
         INFOPLIST_KEY_ITSEncryptionExportComplianceCode,
         INFOPLIST_KEY_NSAccessoryTrackingUsageDescription,
+        INFOPLIST_KEY_NSAppDataAccessNotify,
         INFOPLIST_KEY_NSAppDataUsageDescription,
         INFOPLIST_KEY_NFCReaderUsageDescription,
         INFOPLIST_KEY_NSAppleEventsUsageDescription,

@@ -2,7 +2,7 @@
 //
 // This source file is part of the Swift open source project
 //
-// Copyright (c) 2025 Apple Inc. and the Swift project authors
+// Copyright (c) 2025-2026 Apple Inc. and the Swift project authors
 // Licensed under Apache License v2.0 with Runtime Library Exception
 //
 // See http://swift.org/LICENSE.txt for license information
@@ -139,13 +139,21 @@
             },
             {
                 Name = "SWIFT_CROSS_MODULE_OPTIMIZATION";
-                Type = Boolean;
-                DefaultValue = NO;
+                Type = Enumeration;
+                Values = (
+                    YES,
+                    NO,
+                    "compiler-default",
+                );
+                DefaultValue = "compiler-default";
                 CommandLineArgs = {
                     YES = (
                         "-cross-module-optimization",
                     );
-                    NO = ();
+                    NO = (
+                        "-disable-cmo",
+                    );
+                    "compiler-default" = ();
                 };
             },
             {
@@ -253,6 +261,18 @@
                 DisplayName = "Diagnostic Groups Treated as Errors";
                 Description = "Specify diagnostic groups that should be treated as errors (format: '<group>')";
                 CommandLineFlag = "-Werror";
+            },
+            {
+                Name = "swift_clang_diagnostic_message_length";
+                Type = String;
+                DefaultValue = "$(diagnostic_message_length)";
+                CommandLineArgs = {
+                    "" = ();
+                    "<<otherwise>>" = (
+                        "-Xcc",
+                        "-fmessage-length=$(value)"
+                    );
+                };
             },
             {
                 Name = "SWIFT_OBJC_BRIDGING_HEADER";
@@ -1508,6 +1528,19 @@
                 };
             },
 
+            {
+                Name = "SWIFT_ENABLE_CAS_SANDBOX";
+                Type = Boolean;
+                // Prescan caching requires the CAS sandbox.
+                DefaultValue = "$(SWIFT_ENABLE_PRESCAN_CACHING)";
+            },
+
+            {
+                Name = "SWIFT_DISABLE_HEADERMAPS";
+                Type = Boolean;
+                DefaultValue = "$(SWIFT_ENABLE_CAS_SANDBOX)";
+            },
+
             // Swift caching options.
             {
                 Name = "SWIFT_ENABLE_PREFIX_MAPPING";
@@ -1517,11 +1550,21 @@
                     YES = (
                         "-scanner-prefix-map-sdk", "/^sdk",
                         "-scanner-prefix-map-toolchain", "/^toolchain",
-                        "-scanner-prefix-map", "$(DEVELOPER_DIR)=/^xcode",
                     );
                     NO = ();
                 };
                 Condition = "$(SWIFT_ENABLE_COMPILE_CACHE)";
+            },
+            {
+                Name = "_DEVELOPER_DIR_IS_XCODE";
+                Type = Boolean;
+                CommandLineArgs = {
+                    YES = (
+                        "-scanner-prefix-map", "$(DEVELOPER_DIR)=/^xcode",
+                    );
+                    NO = ();
+                };
+                Condition = "$(SWIFT_ENABLE_COMPILE_CACHE) && $(SWIFT_ENABLE_PREFIX_MAPPING)";
             },
             {
                 Name = "SWIFT_ENABLE_PROJECT_PREFIX_MAPPING";
@@ -1533,6 +1576,8 @@
                         "-scanner-prefix-map", "$(PROJECT_TEMP_DIR)=/^derived",
                         "-scanner-prefix-map", "$(BUILT_PRODUCTS_DIR)=/^built",
                         "-scanner-prefix-map", "$(WORKSPACE_DIR)=/^workspace",
+                        "-scanner-prefix-map", "$(OBJROOT)=/^intermediates",
+                        "-scanner-prefix-map", "$(BUILD_DIR)=/^products",
                     );
                     NO = ();
                 };
@@ -1623,6 +1668,19 @@
                     "extensive" = ("-Xcc", "-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE");
                     "debug" = ("-Xcc", "-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG");
                     "<<otherwise>>" = ();
+                };
+            },
+
+            // Hidden clang importer options to control C++ behavior
+            // in the clang importer, not visible in build settings.
+            {
+                Name = "SWIFT_CLANG_INLINES_ARE_PRIVATE_EXTERN";
+                Type = Boolean;
+                DefaultValue = "$(GCC_INLINES_ARE_PRIVATE_EXTERN)";
+                Condition = "$(SWIFT_OBJC_INTEROP_MODE) == 'objcxx'";
+                CommandLineArgs = {
+                    YES = ("-Xcc", "-fvisibility-inlines-hidden");
+                    NO = ();
                 };
             },
 

@@ -344,9 +344,22 @@ public actor SWBBuildServer: QueueBasedMessageHandler {
                         ).encodeToLSPAny()
                     )
                 }
+                // Listing copied headers lets SourceKit-LSP send locations in the copies to the headers in the project.
+                let copiedHeaders = swbSourcesItem.copiedHeaders.map { header in
+                    SourceItem(
+                        uri: DocumentURI(URL(filePath: header.path.pathString)),
+                        kind: .file,
+                        generated: false,
+                        dataKind: .sourceKit,
+                        data: SourceKitSourceItemData(
+                            kind: .header,
+                            copyDestinations: header.copyDestinations.map { DocumentURI(URL(filePath: $0.pathString)) }
+                        ).encodeToLSPAny()
+                    )
+                }
                 return SourcesItem(
                     target: try BuildTargetIdentifier(configuredTargetIdentifier: swbSourcesItem.configuredTarget),
-                    sources: sources
+                    sources: sources + copiedHeaders
                 )
             }
             return BuildTargetSourcesResponse(items: sourcesItems)
@@ -386,9 +399,10 @@ public actor SWBBuildServer: QueueBasedMessageHandler {
                 delegate: PlanningOperationDelegate()
             )
             var buildDescriptionID: BuildDescriptionID? = nil
+            var targetsWithChangedOptions: [BuildTargetIdentifier] = []
             try await self.logTaskToClient(name: "Build preparation") { taskID in
                 let events = try await buildOperation.start()
-                buildDescriptionID = await self.reportEventStream(events)
+                (buildDescriptionID, targetsWithChangedOptions) = await self.reportEventStream(events)
                 await buildOperation.waitForCompletion()
             }
 
@@ -412,13 +426,19 @@ public actor SWBBuildServer: QueueBasedMessageHandler {
                 implicitlyPreparedTargets = []
             }
 
-            return BuildTargetPrepareRequest.Response(implicitlyPreparedTargets: implicitlyPreparedTargets)
+            return BuildTargetPrepareRequest.Response(
+                implicitlyPreparedTargets: implicitlyPreparedTargets,
+                targetsWithChangedOptions: targetsWithChangedOptions
+            )
         }.valuePropagatingCancellation
     }
 
-    private func reportEventStream(_ events: AsyncStream<SwiftBuildMessage>) async -> BuildDescriptionID? {
+    /// Reports the build's progress to the client, returning the build description it used and the targets whose
+    /// index compiler arguments it changed.
+    private func reportEventStream(_ events: AsyncStream<SwiftBuildMessage>) async -> (buildDescriptionID: BuildDescriptionID?, targetsWithChangedOptions: [BuildTargetIdentifier]) {
         var targetNameByID: [Int: String] = [:]
         var buildDescriptionID: BuildDescriptionID? = nil
+        var targetsWithChangedOptions: [BuildTargetIdentifier] = []
         for try await event in events {
             switch event {
             case .planningOperationStarted(_):
@@ -472,11 +492,16 @@ public actor SWBBuildServer: QueueBasedMessageHandler {
                 )
             case .reportBuildDescription(let info):
                 buildDescriptionID = BuildDescriptionID(info.buildDescriptionID)
+            case .indexOptionsChanged(let info):
+                let identifier = SWBConfiguredTargetIdentifier(rawGUID: info.configuredTargetGUID, targetGUID: SWBTargetGUID(TargetGUID(rawValue: info.targetGUID)))
+                if let target = try? BuildTargetIdentifier(configuredTargetIdentifier: identifier) {
+                    targetsWithChangedOptions.append(target)
+                }
             case .backtraceFrame, .reportPathMap, .preparedForIndex, .buildOutput, .targetOutput, .targetUpToDate, .taskUpToDate, .taskOutput, .taskCacheKey, .casOptions, .output:
                 break
             }
         }
-        return buildDescriptionID
+        return (buildDescriptionID, targetsWithChangedOptions)
     }
 
     private func logToClient(_ kind: BuildServerProtocol.MessageType, _ message: String, task: TaskId? = nil, _ structure: BuildServerProtocol.StructuredLogKind? = nil) {

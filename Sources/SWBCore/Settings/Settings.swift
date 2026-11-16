@@ -179,6 +179,7 @@ fileprivate struct PreOverridesSettings {
         case .xcode(let path):
             let legacyDeveloperPath = path.dirname.join("PlugIns/Xcode3Core.ideplugin/Contents/SharedSupport/Developer")
             table.push(BuiltinMacros.LEGACY_DEVELOPER_DIR, literal: legacyDeveloperPath.str)
+            table.push(BuiltinMacros._DEVELOPER_DIR_IS_XCODE, literal: true)
         default:
             break
         }
@@ -592,6 +593,14 @@ final class WorkspaceSettings: Sendable {
             table.push(BuiltinMacros.SWIFT_ENABLE_COMPILE_CACHE, literal: true)
         }
 
+        if SWBFeatureFlag.enableClangPrefixMappingByDefault.value {
+            table.push(BuiltinMacros.CLANG_ENABLE_PREFIX_MAPPING, literal: true)
+        }
+
+        if SWBFeatureFlag.enableSwiftPrefixMappingByDefault.value {
+            table.push(BuiltinMacros.SWIFT_ENABLE_PREFIX_MAPPING, literal: true)
+        }
+
         return table
     }
 }
@@ -680,8 +689,10 @@ public final class Settings: PlatformBuildContext, TripleLookup, Sendable {
     /// The global evaluation scope.
     public let globalScope: MacroEvaluationScope
 
-    /// The file path resolver.
-    public let filePathResolver: FilePathResolver
+    /// Create a new file path resolver which evaluates paths in the global scope.
+    public func makeFilePathResolver(cacheResults: Bool) -> FilePathResolver {
+        return FilePathResolver(scope: globalScope, projectDir: project == nil ? .root : nil, cacheResults: cacheResults)
+    }
 
     /// The executable search paths.
     public let executableSearchPaths: StackedSearchPath
@@ -872,9 +883,6 @@ public final class Settings: PlatformBuildContext, TripleLookup, Sendable {
         // Create the global evaluation scope.  This uses the bound SDK if the SettingsContext's purpose wants that condition.
         let globalScope = builder.createScope(sdkToUse: settingsContext.purpose.bindToSDK ? self.sdk : nil)
         self.globalScope = globalScope
-
-        // Create the file path resolver.
-        self.filePathResolver = FilePathResolver(scope: globalScope, projectDir: settingsContext.project == nil ? .root : nil)
 
         // Compute the executable search paths.
         self.executableSearchPaths = workspaceContext.createExecutableSearchPaths(platform: boundProperties.platform, toolchains: boundProperties.toolchains)
@@ -2805,6 +2813,17 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
                 }
             }
 
+            // SDKs which don't support availability or back deployment have no deployment target setting, so fall back to the SDK's default deployment target instead.
+            if variant.deploymentTargetSettingName == nil, let defaultDeploymentTarget = variant.defaultDeploymentTarget {
+                let version = defaultDeploymentTarget.canonicalDeploymentTargetForm.description
+                if sdkTable.lookupMacro(BuiltinMacros.SWIFT_DEPLOYMENT_TARGET) == nil {
+                    sdkTable.push(BuiltinMacros.SWIFT_DEPLOYMENT_TARGET, literal: version)
+                }
+                if sdkTable.lookupMacro(BuiltinMacros.LLVM_TARGET_TRIPLE_OS_VERSION) == nil {
+                    sdkTable.push(BuiltinMacros.LLVM_TARGET_TRIPLE_OS_VERSION, sdkTable.namespace.parseString("$(SWIFT_PLATFORM_TARGET_PREFIX)$(SWIFT_DEPLOYMENT_TARGET)"))
+                }
+            }
+
             if variant.isMacCatalyst {
                 sdkTable.push(BuiltinMacros.EFFECTIVE_PLATFORM_NAME_MAC_CATALYST_USE_DISTINCT_BUILD_DIR, literal: true)
                 sdkTable.push(sdkTable.namespace.lookupOrDeclareMacro(StringMacroDeclaration.self, "EFFECTIVE_PLATFORM_NAME_MAC_CATALYST_USE_DISTINCT_BUILD_DIR_YES"), sdkTable.namespace.parseLiteralString(MacCatalystInfo.publicSDKBuiltProductsDirSuffix))
@@ -2991,7 +3010,9 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
                             table.namespace.parseStringList(["$(inherited)", "$(OTHER_LDFLAGS_FROM_TOOLSET_LINKER_DRIVER_$(LINKER_DRIVER))"])
                         )
 
+                        var previousOption: String?
                         for option in extraCLIOptions {
+                            defer { previousOption = option }
                             switch option {
                             // Previously we set SWIFT_FORCE_STATIC_LINK_STDLIB here if the toolset contained -static-stdlib,
                             // to ensure the static resource directory was selected. However, as of 4/1/26, The WebAssembly
@@ -3006,6 +3027,14 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
                                 // ALTERNATE_LINKER override which applies to any linker driver.
                                 let alternateLinker = String(option.dropFirst("-use-ld=".count))
                                 table.push(BuiltinMacros.ALTERNATE_LINKER, literal: alternateLinker)
+                            case _ where previousOption == "-Xclang-linker" && option.hasPrefix("-fuse-ld="):
+                                // Toolsets commonly select the linker with '-Xclang-linker -fuse-ld=<name>', which only reaches
+                                // swiftc link driver invocations. Map it to the same ALTERNATE_LINKER override as '-use-ld=' so
+                                // clang-driven links select the same linker. Paths belong in the toolset's linker.path.
+                                let name = String(option.dropFirst("-fuse-ld=".count))
+                                if !name.isEmpty && !name.contains("/") {
+                                    table.push(BuiltinMacros.ALTERNATE_LINKER, literal: name)
+                                }
                             default:
                                 break
                             }
@@ -3016,6 +3045,12 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
                     }
                     if let extraCLIOptions = toolset.cCompiler?.extraCLIOptions, !extraCLIOptions.isEmpty {
                         table.push(BuiltinMacros.OTHER_CFLAGS, table.namespace.parseStringList(["$(inherited)"] + extraCLIOptions))
+                        // Swift's clang importer needs the same C flags (libc include paths, target options),
+                        // matching SwiftPM's native build, which passes toolset C flags to swiftc via -Xcc.
+                        table.push(
+                            BuiltinMacros.OTHER_SWIFT_FLAGS,
+                            table.namespace.parseStringList(["$(inherited)"] + extraCLIOptions.flatMap { ["-Xcc", $0] })
+                        )
                     }
                     if let path = toolset.cxxCompiler?.path {
                         table.push(BuiltinMacros.CPLUSPLUS, literal: toolset.resolveToolPath(path, toolsetPath: toolsetPath).str)
@@ -3153,7 +3188,7 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
             // Resolve the path.
             //
             // FIXME: It is unfortunate that we need to create a custom file path resolver just for this case (which will not use any cached values). This is also unfortunate from a user perspective, as it is not at all clear what settings could be used in an xcconfig file path. We should consider defining this more formally in a way that can also efficiently be evaluated.
-            let resolver = FilePathResolver(scope: createScope(sdkToUse: sdk))
+            let resolver = FilePathResolver(scope: createScope(sdkToUse: sdk), cacheResults: false)
             let path = resolver.resolveAbsolutePath(configFileRef, resolveParameterizedProductName: false)
             inputPathsAffectingSettings.append(path)
 
@@ -3397,7 +3432,7 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
             // Resolve the path.
             //
             // FIXME: It is unfortunate that we need to create a custom file path resolver just for this case. See the similar comment for adding project settings.
-            let resolver = FilePathResolver(scope: createScope(sdkToUse: sdk))
+            let resolver = FilePathResolver(scope: createScope(sdkToUse: sdk), cacheResults: false)
             let path = resolver.resolveAbsolutePath(configFileRef, resolveParameterizedProductName: false)
             inputPathsAffectingSettings.append(path)
 
@@ -4232,6 +4267,9 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
         // This is to avoid conflicts of outputs of a target configured for multiple platforms, and to avoid using same build directory outputs as a normal build.
         table.push(BuiltinMacros.DEPLOYMENT_LOCATION, literal: false)
 
+        // Use a separate module cache for the index build, so that its modules are kept and pruned separately from the regular build's.
+        table.push(BuiltinMacros.MODULE_CACHE_DIR, Static { BuiltinMacros.namespace.parseString("$(INDEX_MODULE_CACHE_DIR:default=$(inherited))") })
+
         if let variant, variant.isMacCatalyst {
             // Some projects force EFFECTIVE_PLATFORM_NAME to be the same for macOS vs macCatalyst, but they need to be distinct for the index build, otherwise there will be conflicting tasks.
             table.push(BuiltinMacros.EFFECTIVE_PLATFORM_NAME, literal: MacCatalystInfo.publicSDKBuiltProductsDirSuffix)
@@ -4266,8 +4304,9 @@ private class SettingsBuilder: ProjectMatchLookup, TripleLookup {
                 derivedDataPath = workspaceContext.workspaceSettings.getCacheRoot()
             }
 
-            // If there is no DerivedData then intentionally remove the MODULE_CACHE_DIR and SDK_EXPLICIT_MODULES_OUTPUT_PATH settings (which are defined in terms of it).
+            // If there is no DerivedData then intentionally remove the MODULE_CACHE_DIR, INDEX_MODULE_CACHE_DIR and SDK_EXPLICIT_MODULES_OUTPUT_PATH settings (which are defined in terms of it).
             table.push(BuiltinMacros.MODULE_CACHE_DIR, literal: "")
+            table.push(BuiltinMacros.INDEX_MODULE_CACHE_DIR, literal: "")
             table.push(BuiltinMacros.SDK_EXPLICIT_MODULES_OUTPUT_PATH, literal: "")
         }
 

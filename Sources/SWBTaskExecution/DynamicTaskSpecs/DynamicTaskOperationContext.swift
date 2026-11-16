@@ -14,6 +14,7 @@ import Foundation
 package import SWBCore
 package import SWBCAS
 package import SWBUtil
+import Synchronization
 
 public final class DynamicTaskOperationContext {
     private let core: Core
@@ -22,16 +23,78 @@ public final class DynamicTaskOperationContext {
     package private(set) var compilationCachingUploader: CompilationCachingUploader
     package private(set) var compilationCachingDataPruner: CompilationCachingDataPruner
     package let definingTargetsByModuleName: [String: OrderedSet<ConfiguredTarget>]
-    package let cas: ToolchainCAS?
 
-    package init(core: Core, definingTargetsByModuleName: [String: OrderedSet<ConfiguredTarget>], cas: ToolchainCAS?) {
+    private let casPluginInstances: SWBMutex<[Path: ToolchainCASPlugin]> = .init([:])
+    private let casInstances: SWBMutex<[CASOptions.CreationOptions: ToolchainCAS]> = .init([:])
+    private let casfsIngestionCache: SWBMutex<[Path: String]> = .init([:])
+
+    private struct SearchPathIngestionKey: Hashable {
+        let path: Path
+        let depth: Int
+    }
+    private let casfsSearchPathIngestionCache: SWBMutex<[SearchPathIngestionKey: String]> = .init([:])
+
+    package init(core: Core, definingTargetsByModuleName: [String: OrderedSet<ConfiguredTarget>]) {
         self.core = core
         self.clangModuleDependencyGraph = ClangModuleDependencyGraph(core: core, definingTargetsByModuleName: definingTargetsByModuleName)
         self.swiftModuleDependencyGraph = SwiftModuleDependencyGraph()
         self.compilationCachingUploader = CompilationCachingUploader()
         self.compilationCachingDataPruner = CompilationCachingDataPruner()
         self.definingTargetsByModuleName = definingTargetsByModuleName
-        self.cas = cas
+    }
+
+    package func getOrCreateCAS(options: CASOptions.CreationOptions) throws -> ToolchainCAS {
+        var opts = options
+        if opts.pluginPath == nil {
+            guard let pluginPath = core.lookupCASPluginPath() else {
+                throw StubError.error("could not find CAS plugin path")
+            }
+            opts.pluginPath = pluginPath
+        }
+
+        return try casInstances.withLock { instances in
+            try instances.getOrInsert(opts) {
+                try createCAS(options: opts)
+            }
+        }
+    }
+
+    private func getOrCreateCASPlugin(pluginPath: Path) throws -> ToolchainCASPlugin {
+        return try casPluginInstances.withLock { instances in
+            try instances.getOrInsert(pluginPath) {
+                try ToolchainCASPlugin(dylib: pluginPath)
+            }
+        }
+    }
+
+    private func createCAS(options: CASOptions.CreationOptions) throws -> ToolchainCAS {
+        guard let pluginPath = options.pluginPath else {
+            fatalError("caller should have resolved the plugin path")
+        }
+        let casPlugin = try getOrCreateCASPlugin(pluginPath: pluginPath)
+        let pluginOpts: [String: String]
+        if let servicePath = options.remoteServicePath {
+            pluginOpts = ["remote-service-path": servicePath.str]
+        } else {
+            pluginOpts = [:]
+        }
+        return try casPlugin.createCAS(path: options.casPath, options: pluginOpts)
+    }
+
+    package func getCachedCASFSIngestion(_ path: Path) -> String? {
+        return casfsIngestionCache.withLock { $0[path] }
+    }
+
+    package func setCachedCASFSIngestion(_ path: Path, rootID: String) {
+        casfsIngestionCache.withLock{ $0[path] = rootID }
+    }
+
+    package func getCachedCASFSSearchPathIngestion(_ path: Path, depth: Int) -> String? {
+        return casfsSearchPathIngestionCache.withLock { $0[SearchPathIngestionKey(path: path, depth: depth)] }
+    }
+
+    package func setCachedCASFSSearchPathIngestion(_ path: Path, depth: Int, rootID: String) {
+        casfsSearchPathIngestionCache.withLock { $0[SearchPathIngestionKey(path: path, depth: depth)] = rootID }
     }
 
     @discardableResult package func waitForCompletion() async -> DynamicTaskOperationContextCompletionToken {
@@ -48,6 +111,10 @@ public final class DynamicTaskOperationContext {
             self.swiftModuleDependencyGraph = SwiftModuleDependencyGraph()
             self.compilationCachingUploader = CompilationCachingUploader()
             self.compilationCachingDataPruner = CompilationCachingDataPruner()
+            self.casPluginInstances.withLock { $0.removeAll() }
+            self.casInstances.withLock { $0.removeAll() }
+            self.casfsIngestionCache.withLock { $0.removeAll() }
+            self.casfsSearchPathIngestionCache.withLock { $0.removeAll() }
         }
     }
 

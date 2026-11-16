@@ -13,6 +13,7 @@ add_library(SWBTaskExecution
   BuildDescriptionManager.swift
   BuildDescriptionSignature.swift
   BuiltinTaskActionsExtension.swift
+  DynamicTaskSpecs/CASCachingDynamicTaskSpecs.swift
   DynamicTaskSpecs/ClangCachingKeyQueryDynamicTaskSpec.swift
   DynamicTaskSpecs/ClangCachingMaterializeKeyDynamicTaskSpec.swift
   DynamicTaskSpecs/ClangCachingOutputMaterializerDynamicTaskSpec.swift
@@ -22,16 +23,21 @@ add_library(SWBTaskExecution
   DynamicTaskSpecs/CompilationCachingUploader.swift
   DynamicTaskSpecs/DynamicTaskOperationContext.swift
   DynamicTaskSpecs/DynamicTaskSpecRegistry.swift
+  DynamicTaskSpecs/IngestCASFSRootDynamicTaskSpec.swift
   DynamicTaskSpecs/PrecompileClangModuleDynamicTaskSpec.swift
   DynamicTaskSpecs/SwiftCachingDynamicTaskSpec.swift
   DynamicTaskSpecs/SwiftCachingTaskKeys.swift
   DynamicTaskSpecs/SwiftDriverJobDynamicTaskSpec.swift
   DynamicTaskSpecs/SwiftDriverPlanningDynamicTaskSpec.swift
+  EnvironmentBaseTable.swift
   ProjectPlanner.swift
   ResponseFileFormat+ExpressibleByArgument.swift
   Task.swift
   TaskActionExtensionPoint.swift
   TaskActions/AuxiliaryFileTaskAction.swift
+  TaskActions/CASCachingKeyQueryTaskAction.swift
+  TaskActions/CASCachingMaterializeKeyTaskAction.swift
+  TaskActions/CASCachingObjectMaterializerTaskAction.swift
   TaskActions/ClangCachingKeyQueryTaskAction.swift
   TaskActions/ClangCachingMaterializeKeyTaskAction.swift
   TaskActions/ClangCachingOutputMaterializerTaskAction.swift
@@ -51,6 +57,7 @@ add_library(SWBTaskExecution
   TaskActions/GenerateEmbedInCodeAccessorTaskAction.swift
   TaskActions/GenericCachingTaskAction.swift
   TaskActions/InfoPlistProcessorTaskAction.swift
+  TaskActions/IngestCASFSRootTaskAction.swift
   TaskActions/LinkAssetCatalogTaskAction.swift
   TaskActions/LinkerTaskAction.swift
   TaskActions/LSRegisterURLTaskAction.swift
@@ -64,6 +71,7 @@ add_library(SWBTaskExecution
   TaskActions/ProcessXCFrameworkTaskAction.swift
   TaskActions/RegisterExecutionPolicyExceptionTaskAction.swift
   TaskActions/SignatureCollectionTaskAction.swift
+  TaskActions/SwiftCachingCacheDepscanPlanTaskAction.swift
   TaskActions/SwiftCachingKeyQueryTaskAction.swift
   TaskActions/SwiftCachingMaterializeKeyTaskAction.swift
   TaskActions/SwiftCachingOutputMaterializerTaskAction.swift
@@ -76,8 +84,10 @@ add_library(SWBTaskExecution
   TaskActions/SwiftDriverTaskAction.swift
   TaskActions/SwiftHeaderToolTaskAction.swift
   TaskActions/TaskAction.swift
+  TaskActions/TouchTaskAction.swift
   TaskActions/ValidateDevelopmentAssetsTaskAction.swift
   TaskActions/ValidateProductTaskAction.swift
+  TaskEnvironmentBase.swift
   TaskResult.swift
   TaskStore.swift)
 set_target_properties(SWBTaskExecution PROPERTIES

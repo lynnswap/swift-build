@@ -252,7 +252,7 @@ package final class BuildDescriptionManager: Sendable {
                 let settings = plan.globalProductPlan.getTargetSettings(target)
                 let moduleInfo = plan.globalProductPlan.getModuleInfo(target)
                 let specLookupContext = SpecLookupCtxt(specRegistry: planRequest.workspaceContext.core.specRegistry, platform: settings.platform)
-                let buildingAnySwiftSourceFiles = (target.target as? BuildPhaseTarget)?.sourcesBuildPhase?.containsSwiftSources(planRequest.workspaceContext.workspace, specLookupContext, settings.globalScope, settings.filePathResolver) ?? false
+                let buildingAnySwiftSourceFiles = (target.target as? BuildPhaseTarget)?.sourcesBuildPhase?.containsSwiftSources(planRequest.workspaceContext.workspace, specLookupContext, settings.globalScope, settings.makeFilePathResolver(cacheResults: true)) ?? false
                 if buildingAnySwiftSourceFiles {
                     let swiftModuleName = settings.globalScope.evaluate(BuiltinMacros.SWIFT_MODULE_NAME)
                     definingTargetsByModuleName[swiftModuleName, default: []].append(target)
@@ -886,6 +886,10 @@ extension BuildSystemTaskPlanningDelegate: TaskActionCreationDelegate {
         return CreateBuildDirectoryTaskAction()
     }
 
+    func createTouchTaskAction() -> any PlannedTaskAction {
+        return TouchTaskAction()
+    }
+
     func createSwiftHeaderToolTaskAction() -> any PlannedTaskAction {
         return SwiftHeaderToolTaskAction()
     }
@@ -898,12 +902,16 @@ extension BuildSystemTaskPlanningDelegate: TaskActionCreationDelegate {
         return FileCopyTaskAction(context)
     }
 
-    func createGenericCachingTaskAction(enableCacheDebuggingRemarks: Bool, enableTaskSandboxEnforcement: Bool, sandboxDirectory: Path, extraSandboxSubdirectories: [Path], developerDirectory: Path, casOptions: CASOptions) -> any PlannedTaskAction {
-        return GenericCachingTaskAction(enableCacheDebuggingRemarks: enableCacheDebuggingRemarks, enableTaskSandboxEnforcement: enableTaskSandboxEnforcement, sandboxDirectory: sandboxDirectory, extraSandboxSubdirectories: extraSandboxSubdirectories, developerDirectory: developerDirectory, casOptions: casOptions)
+    func createGenericCachingTaskAction(enableCacheDebuggingRemarks: Bool, enableTaskSandboxEnforcement: Bool, sandboxDirectory: Path, preserveSandboxDirectory: Bool, extraSandboxSubdirectories: [Path], developerDirectory: Path, casOptions: CASOptions) -> any PlannedTaskAction {
+        return GenericCachingTaskAction(enableCacheDebuggingRemarks: enableCacheDebuggingRemarks, enableTaskSandboxEnforcement: enableTaskSandboxEnforcement, sandboxDirectory: sandboxDirectory, preserveSandboxDirectory: preserveSandboxDirectory, extraSandboxSubdirectories: extraSandboxSubdirectories, developerDirectory: developerDirectory, casOptions: casOptions)
     }
 
     func createInfoPlistProcessorTaskAction(_ contextPath: Path) -> any PlannedTaskAction {
         return InfoPlistProcessorTaskAction(contextPath)
+    }
+
+    func createIngestCASFSRootTaskAction() -> any PlannedTaskAction {
+        return IngestCASFSRootTaskAction()
     }
 
     func createMergeInfoPlistTaskAction() -> any PlannedTaskAction {

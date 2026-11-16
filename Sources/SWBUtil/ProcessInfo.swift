@@ -175,6 +175,14 @@ public struct LinuxDistribution: Hashable, Sendable {
     }
 }
 
+#if !canImport(Darwin)
+extension ProcessInfo {
+    public var isMacCatalystApp: Bool {
+        false
+    }
+}
+#endif
+
 public enum OperatingSystem: Hashable, Sendable {
     case macOS
     case iOS(simulator: Bool)
@@ -225,6 +233,18 @@ public enum OperatingSystem: Hashable, Sendable {
             return .pe
         case .linux, .freebsd, .openbsd, .android, .unknown:
             return .elf
+        }
+    }
+
+    /// Whether compiler processes can safely be interrupted if a build is cancelled.
+    ///
+    /// On Windows, llbuild interrupts processes using `TerminateProcess`, which gives them no chance to clean up. A compiler terminated while building an implicit module leaves the module's lock file behind in the module cache, and because LLVM's `LockFileManager` cannot detect that the owner of a lock file has exited on Windows, every subsequent compiler which needs that module waits for the lock to time out.
+    public var canSafelyInterruptCompilerProcesses: Bool {
+        switch self {
+        case .windows:
+            return false
+        case .macOS, .iOS, .tvOS, .watchOS, .visionOS, .linux, .freebsd, .openbsd, .android, .unknown:
+            return true
         }
     }
 

@@ -100,8 +100,8 @@ public final class BuildRequestContext: Sendable {
     }
 
     /// Get the cached settings for the given parameters, without considering the context of any project/target.
-    package func getCachedSettings(_ parameters: BuildParameters) -> Settings {
-        workspaceContext.workspaceSettingsCache.getCachedSettings(parameters, buildRequestContext: self, purpose: .build, filesSignature: filesSignature(for:))
+    package func getCachedSettings(_ parameters: BuildParameters, purpose: SettingsPurpose = .build) -> Settings {
+        workspaceContext.workspaceSettingsCache.getCachedSettings(parameters, buildRequestContext: self, purpose: purpose, filesSignature: filesSignature(for:))
     }
 
     /// Get the cached settings for the given parameters and project.
@@ -216,8 +216,9 @@ extension BuildRequestContext {
                 guard currentPlatformFilter.matches(buildFile.platformFilters) else { return nil }
                 return try workspace.resolveBuildableItemReference(buildFile.buildableItem)
             }) {
+                let filePathResolver = settings.makeFilePathResolver(cacheResults: true)
                 for ref in buildableReferences {
-                    let sourceCodeFile = settings.filePathResolver.resolveAbsolutePath(ref, resolveParameterizedProductName: false)
+                    let sourceCodeFile = filePathResolver.resolveAbsolutePath(ref, resolveParameterizedProductName: false)
                     sourceCodeFileToBuildableReference[sourceCodeFile] = ref
                 }
             }

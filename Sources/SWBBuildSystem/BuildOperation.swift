@@ -113,6 +113,9 @@ package protocol BuildOperationDelegate {
     /// Called when a target has been "prepared-for-index", passing along the results info.
     func targetPreparedForIndex(_ operation: any BuildSystemOperation, target: Target, info: PreparedForIndexResultInfo)
 
+    /// Called when a task changed the compiler arguments used to index a target.
+    func targetIndexOptionsChanged(_ operation: any BuildSystemOperation, configuredTarget: ConfiguredTarget)
+
     /// Update the progress of an ongoing build operation
     func updateBuildProgress(statusMessage: String, showInLog: Bool)
 
@@ -969,6 +972,10 @@ package final class BuildOperation: BuildSystemOperation {
         }
     }
 
+    package func indexOptionsChanged(for target: ConfiguredTarget) {
+        delegate.targetIndexOptionsChanged(self, configuredTarget: target)
+    }
+
     package func taskDiscoveredRequiredTargetDependency(target: ConfiguredTarget, antecedent: ConfiguredTarget, reason: RequiredTargetDependencyReason, warningLevel: BooleanWarningLevel) {
         if !transitiveDependencyExists(target: target, antecedent: antecedent) {
 
@@ -1166,14 +1173,14 @@ private struct OperatorSystemAdaptorDynamicContext: DynamicTaskExecutionDelegate
     }
 
     @discardableResult
-    func spawn(commandLine: [String], environment: [String: String], workingDirectory: Path, processDelegate: any ProcessDelegate) async throws -> Bool {
+    func spawn(commandLine: [String], environment: [String: String], workingDirectory: Path, canSafelyInterrupt: Bool, processDelegate: any ProcessDelegate) async throws -> Bool {
         guard let jobContext else {
             throw StubError.error("API misuse. Spawning processes is only allowed from `performTaskAction`.")
         }
 
-        // This calls into llb_buildsystem_command_interface_spawn, which can block, so ensure it's shunted to a new thread so as not to block the Swift Concurrency thread pool. This shouldn't risk thread explosion because this function is only allowed to be called from performTaskAction, which in turn should be bounded to ncores based on the number of active llbuild lane threads.
+        // This calls into llb_buildsystem_command_interface_spawn_v2, which can block, so ensure it's shunted to a new thread so as not to block the Swift Concurrency thread pool. This shouldn't risk thread explosion because this function is only allowed to be called from performTaskAction, which in turn should be bounded to ncores based on the number of active llbuild lane threads.
         return await _Concurrency.Task.detachNewThread(name: "llb_buildsystem_command_interface_spawn") { [commandInterface, jobContext, processDelegate] in
-            commandInterface.spawn(jobContext, commandLine: commandLine, environment: environment, workingDirectory: workingDirectory.str, processDelegate: processDelegate)
+            commandInterface.spawn(jobContext, commandLine: commandLine, environment: environment, workingDirectory: workingDirectory.str, canSafelyInterrupt: canSafelyInterrupt, processDelegate: processDelegate)
         }
     }
 
@@ -1327,7 +1334,7 @@ private class InProcessCommand: SWBLLBuild.ExternalCommand, SWBLLBuild.ExternalD
 
         if outputDelegate.result == nil {
             let duration = timer.elapsedTime()
-            let metrics = SWBCore.CommandMetrics(utime: duration.microseconds, stime: duration.microseconds, maxRSS: 0, wcDuration: duration)
+            let metrics = SWBCore.CommandMetrics(utime: nil, stime: nil, maxRSS: nil, wcDuration: duration)
             switch result {
             case .succeeded:
                 outputDelegate.updateResult(.succeeded(metrics: metrics))
@@ -1511,27 +1518,8 @@ internal final class OperationSystemAdaptor: SWBLLBuild.BuildSystemDelegate, Act
         self.priorBuildDescription = priorBuildDescription
         self._progressStatistics = BuildOperation.ProgressStatistics(numCommandsLowerBound: operation.buildDescription.targetTaskCounts.values.reduce(0, { $0 + $1 }))
         self.core = core
-        let cas: ToolchainCAS?
-        do {
-            cas = try Self.setupCAS(core: core, operation: operation)
-        } catch {
-            buildOutputDelegate.error(error.localizedDescription)
-            cas = nil
-        }
-        self.dynamicOperationContext = DynamicTaskOperationContext(core: core, definingTargetsByModuleName: operation.buildDescription.definingTargetsByModuleName, cas: cas)
+        self.dynamicOperationContext = DynamicTaskOperationContext(core: core, definingTargetsByModuleName: operation.buildDescription.definingTargetsByModuleName)
         self.queue = SWBQueue(label: "SWBBuildSystem.OperationSystemAdaptor.queue", qos: operation.request.qos, autoreleaseFrequency: .workItem)
-    }
-
-    private static func setupCAS(core: Core, operation: BuildOperation) throws -> ToolchainCAS? {
-        let settings = operation.requestContext.getCachedSettings(operation.request.parameters)
-        let casOptions = try CASOptions.create(settings.globalScope, .generic)
-        let casPlugin: ToolchainCASPlugin?
-        if let pluginPath = casOptions.pluginPath {
-            casPlugin = try? ToolchainCASPlugin(dylib: pluginPath)
-        } else {
-            casPlugin = core.lookupCASPlugin()
-        }
-        return try? casPlugin?.createCAS(path: casOptions.casPath, options: [:])
     }
 
     /// Reset the operation for a new build.
@@ -2103,8 +2091,10 @@ internal final class OperationSystemAdaptor: SWBLLBuild.BuildSystemDelegate, Act
             // ExternalCommand, so only update the exit status in output delegate if
             // it is nil. However, always update the status if the result is failed,
             // since that should override the result of the process execution (for
-            // example if we failed to process discovered dependencies).
-            if outputDelegate.result == nil || result == .failed {
+            // example if we failed to process discovered dependencies), unless the
+            // command already recorded a failed exit, to keep its status.
+            let alreadyFailed = if case let .exit(exitStatus, _)? = outputDelegate.result { !exitStatus.isSuccess } else { false }
+            if outputDelegate.result == nil || (result == .failed && !alreadyFailed) {
                 if failedTaskSetup {
                     outputDelegate.updateResult(.failedSetup)
                 } else {
